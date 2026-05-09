@@ -1,5 +1,5 @@
-# Data
-data/
+# Data (top-level only, not src/data/)
+/data/
 *.csv
 *.json
 *.gz
