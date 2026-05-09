@@ -1,0 +1,43 @@
+# Data
+data/
+*.csv
+*.json
+*.gz
+*.tar
+*.zip
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# Environment
+.venv/
+env/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Notebooks
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Experiment outputs (track configs, not results)
+experiments/results/
+
+# Model checkpoints
+checkpoints/
+*.pt
+*.pth

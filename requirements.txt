@@ -1,0 +1,22 @@
+# HyperMamba-NIDS: Coordination-Aware Hypergraph Networks for Multi-Stage IDS
+# Python 3.10+ required
+
+# === Phase 1: Data + Kill Switch (Weeks 2-3) ===
+numpy>=1.24
+pandas>=2.0
+scikit-learn>=1.3        # Random Forest for kill switch, metrics
+scipy>=1.11
+tqdm>=4.65
+
+# === Phase 2: Graph + Hypergraph (Weeks 4-7) ===
+torch>=2.1
+torch_geometric>=2.4     # PyG for graph/hypergraph operations
+dhg>=0.9.4               # DeepHypergraph library
+
+# === Phase 3: Evaluation (Weeks 8-11) ===
+matplotlib>=3.7
+seaborn>=0.12
+
+# === Utilities ===
+pyyaml>=6.0
+jsonlines>=3.1           # For DARPA TC JSON parsing
