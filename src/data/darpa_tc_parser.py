@@ -5,11 +5,14 @@ Reads the extracted JSON shard files line-by-line (memory-efficient),
 extracts Events, Subjects, and Objects into clean pandas DataFrames,
 and saves them as parquet files for fast reloading.
 
+Memory-safe: parses one shard at a time, saves per-shard parquets,
+then merges. Supports 8 GB RAM machines with 35+ GB of raw JSON.
+
 Usage:
     # Parse first shard only (for testing)
     python -m src.data.darpa_tc_parser --shards 0
 
-    # Parse all shards
+    # Parse all shards (incremental, memory-safe)
     python -m src.data.darpa_tc_parser --shards all
 
     # Load previously parsed data
@@ -17,20 +20,20 @@ Usage:
 
 Output:
     data/processed/darpa_tc_e3/theia/
-        events.parquet       # All events with flattened fields
-        subjects.parquet     # All subjects (processes)
-        objects.parquet      # All objects (files, network, memory)
+        events.parquet       # All events (merged, sorted)
+        subjects.parquet     # All subjects (deduplicated)
+        objects.parquet      # All objects (deduplicated)
+        shards/              # Per-shard parquets (intermediate)
         summary.json         # Parsing statistics
 """
 
 import argparse
+import gc
 import json
-import os
 import sys
 import time
 from collections import Counter
 from pathlib import Path
-from typing import Generator
 
 import numpy as np
 import pandas as pd
@@ -142,7 +145,7 @@ def extract_netflow_object(record_data: dict) -> dict:
         "local_port": unwrap(record_data.get("localPort")),
         "remote_address": unwrap(record_data.get("remoteAddress")),
         "remote_port": unwrap(record_data.get("remotePort")),
-        "filename": None,  # Consistent schema with FileObject
+        "filename": None,
         "dev": None,
         "inode": None,
         "host_id": record_data.get("baseObject", {}).get("hostId") if record_data.get("baseObject") else None,
@@ -206,7 +209,6 @@ def count_lines(filepath: Path) -> int:
     """Count lines in a file efficiently for progress bar."""
     count = 0
     with open(filepath, "rb") as f:
-        # Read in 64KB chunks for speed
         buf = f.raw.read(65536)
         while buf:
             count += buf.count(b"\n")
@@ -232,7 +234,6 @@ def parse_shard(filepath: Path, show_progress: bool = True) -> dict:
     parse_errors = 0
     skipped_types = Counter()
 
-    # Count lines for progress bar
     if show_progress:
         print(f"Counting lines in {filepath.name}...")
         total_lines = count_lines(filepath)
@@ -260,13 +261,11 @@ def parse_shard(filepath: Path, show_progress: bool = True) -> dict:
             if not datum or not isinstance(datum, dict):
                 continue
 
-            # Get the record type (single key in datum dict)
             record_type = next(iter(datum))
             record_data = datum[record_type]
 
             handler = RECORD_HANDLERS.get(record_type)
             if handler is None:
-                # Skip metadata records (Host, Principal, TimeMarker, etc.)
                 short_name = record_type.split(".")[-1]
                 skipped_types[short_name] += 1
                 continue
@@ -305,26 +304,20 @@ def build_dataframes(parsed: dict) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataF
     Returns:
         (events_df, subjects_df, objects_df)
     """
-    # --- Events DataFrame ---
+    # --- Events ---
     events_df = pd.DataFrame(parsed["events"])
     if len(events_df) > 0:
-        # Convert timestamp from nanoseconds to datetime for readability,
-        # but keep the raw nanos for precise computation
         events_df["timestamp_nanos"] = pd.to_numeric(
             events_df["timestamp_nanos"], errors="coerce"
         )
-        # Convert nanos to seconds for datetime
         valid_ts = events_df["timestamp_nanos"].notna()
         events_df.loc[valid_ts, "timestamp"] = pd.to_datetime(
             events_df.loc[valid_ts, "timestamp_nanos"], unit="ns"
         )
-        # Sort by timestamp
         events_df = events_df.sort_values("timestamp_nanos").reset_index(drop=True)
-
-        # Use categorical dtype for event type (saves memory, 18 unique values)
         events_df["type"] = events_df["type"].astype("category")
 
-    # --- Subjects DataFrame ---
+    # --- Subjects ---
     subjects_df = pd.DataFrame(parsed["subjects"])
     if len(subjects_df) > 0:
         subjects_df["type"] = subjects_df["type"].astype("category")
@@ -332,7 +325,7 @@ def build_dataframes(parsed: dict) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataF
             subjects_df["start_timestamp_nanos"], errors="coerce"
         )
 
-    # --- Objects DataFrame ---
+    # --- Objects ---
     objects_df = pd.DataFrame(parsed["objects"])
     if len(objects_df) > 0:
         objects_df["object_type"] = objects_df["object_type"].astype("category")
@@ -349,14 +342,16 @@ def main():
         description="Parse DARPA TC E3 JSON into structured DataFrames"
     )
     parser.add_argument(
-        "--shards",
-        default="0",
+        "--shards", default="0",
         help="Which shards to parse: '0', '0,1,2', or 'all' (default: '0')",
     )
     parser.add_argument(
-        "--load-only",
-        action="store_true",
+        "--load-only", action="store_true",
         help="Just load and summarize previously saved parquet files",
+    )
+    parser.add_argument(
+        "--merge-only", action="store_true",
+        help="Skip parsing, just merge existing per-shard parquets",
     )
     args = parser.parse_args()
 
@@ -370,12 +365,17 @@ def main():
             path = processed_dir / f"{name}.parquet"
             if path.exists():
                 df = pd.read_parquet(path)
-                print(f"\n{name}: {len(df):,} rows, {df.memory_usage(deep=True).sum() / 1e6:.1f} MB")
+                print(f"\n{name}: {len(df):,} rows, "
+                      f"{df.memory_usage(deep=True).sum() / 1e6:.1f} MB")
                 print(f"  Columns: {list(df.columns)}")
                 if name == "events" and "type" in df.columns:
                     print(f"  Event types: {df['type'].value_counts().to_dict()}")
+                if name == "events" and "timestamp" in df.columns:
+                    print(f"  Time range: {df['timestamp'].min()} to "
+                          f"{df['timestamp'].max()}")
                 if name == "objects" and "object_type" in df.columns:
-                    print(f"  Object types: {df['object_type'].value_counts().to_dict()}")
+                    print(f"  Object types: "
+                          f"{df['object_type'].value_counts().to_dict()}")
             else:
                 print(f"\n{name}: NOT FOUND at {path}")
         return
@@ -386,116 +386,134 @@ def main():
         if f.is_file() and ".json" in f.name and ".tar.gz" not in f.name
     ])
 
-    if not all_shards:
+    if not all_shards and not args.merge_only:
         print(f"No JSON shards found in {raw_dir}")
-        print("Run: python -m src.data.download_darpa_tc --extract")
         sys.exit(1)
 
-    print(f"Available shards ({len(all_shards)}):")
-    for i, s in enumerate(all_shards):
-        size_gb = s.stat().st_size / (1024**3)
-        print(f"  [{i}] {s.name}: {size_gb:.2f} GB")
+    if not args.merge_only:
+        print(f"Available shards ({len(all_shards)}):")
+        for i, s in enumerate(all_shards):
+            size_gb = s.stat().st_size / (1024**3)
+            print(f"  [{i}] {s.name}: {size_gb:.2f} GB")
 
-    # Select shards to parse
     if args.shards == "all":
         selected = list(range(len(all_shards)))
     else:
         selected = [int(x.strip()) for x in args.shards.split(",")]
 
-    selected_shards = [all_shards[i] for i in selected]
-    print(f"\nParsing {len(selected_shards)} shard(s): {[s.name for s in selected_shards]}")
-
-    # --- Parse each shard ---
-    all_events = []
-    all_subjects = []
-    all_objects = []
-    total_parse_errors = 0
-
+    shard_dir = processed_dir / "shards"
+    shard_dir.mkdir(parents=True, exist_ok=True)
     start_time = time.time()
 
-    for shard_path in selected_shards:
-        print(f"\n{'='*60}")
-        print(f"Parsing: {shard_path.name}")
-        print(f"{'='*60}")
+    # ---- STEP 1: Parse each shard independently (memory-safe) ----
+    if not args.merge_only:
+        selected_shards = [all_shards[i] for i in selected]
+        print(f"\nParsing {len(selected_shards)} shard(s) incrementally...")
 
-        parsed = parse_shard(shard_path, show_progress=True)
+        for shard_idx, shard_path in zip(selected, selected_shards):
+            shard_parquet = shard_dir / f"events_shard{shard_idx}.parquet"
 
-        print(f"  Events:   {len(parsed['events']):,}")
-        print(f"  Subjects: {len(parsed['subjects']):,}")
-        print(f"  Objects:  {len(parsed['objects']):,}")
+            # Skip if already parsed
+            if shard_parquet.exists():
+                n = len(pd.read_parquet(shard_parquet, columns=["uuid"]))
+                print(f"\n[Shard {shard_idx}] Already parsed ({n:,} events) → skip")
+                continue
 
-        all_events.extend(parsed["events"])
-        all_subjects.extend(parsed["subjects"])
-        all_objects.extend(parsed["objects"])
-        total_parse_errors += parsed["parse_errors"]
+            print(f"\n{'='*60}")
+            print(f"Parsing shard {shard_idx}: {shard_path.name}")
+            print(f"{'='*60}")
 
+            parsed = parse_shard(shard_path, show_progress=True)
+            print(f"  Events: {len(parsed['events']):,}, "
+                  f"Subjects: {len(parsed['subjects']):,}, "
+                  f"Objects: {len(parsed['objects']):,}")
+
+            events_df, subjects_df, objects_df = build_dataframes(parsed)
+            del parsed
+
+            events_df.to_parquet(shard_parquet, index=False)
+            subjects_df.to_parquet(
+                shard_dir / f"subjects_shard{shard_idx}.parquet", index=False)
+            objects_df.to_parquet(
+                shard_dir / f"objects_shard{shard_idx}.parquet", index=False)
+
+            print(f"  ✓ Saved shard {shard_idx} parquets")
+            del events_df, subjects_df, objects_df
+            gc.collect()
+
+    elapsed_parse = time.time() - start_time
+    print(f"\nParsing phase done in {elapsed_parse:.1f}s")
+
+    # ---- STEP 2: Merge per-shard parquets ----
+    print(f"\n{'='*60}")
+    print("MERGING SHARDS")
+    print(f"{'='*60}")
+
+    event_parts = sorted(shard_dir.glob("events_shard*.parquet"))
+    print(f"\nMerging {len(event_parts)} event shards...")
+
+    # Merge events
+    events_all = pd.concat(
+        [pd.read_parquet(p) for p in event_parts], ignore_index=True
+    )
+    events_all = events_all.sort_values("timestamp_nanos").reset_index(drop=True)
+    events_all["type"] = events_all["type"].astype("category")
+    events_all.to_parquet(processed_dir / "events.parquet", index=False)
+    n_ev = len(events_all)
+    mem_ev = events_all.memory_usage(deep=True).sum() / 1e6
+    ts_min = events_all["timestamp"].min()
+    ts_max = events_all["timestamp"].max()
+    ev_types = events_all["type"].value_counts().to_dict()
+    del events_all; gc.collect()
+    print(f"  events.parquet: {n_ev:,} rows ({mem_ev:.0f} MB)")
+
+    # Merge subjects (dedup)
+    subj_parts = sorted(shard_dir.glob("subjects_shard*.parquet"))
+    print(f"Merging {len(subj_parts)} subject shards...")
+    subjects_all = pd.concat(
+        [pd.read_parquet(p) for p in subj_parts], ignore_index=True
+    ).drop_duplicates(subset=["uuid"], keep="first")
+    subjects_all.to_parquet(processed_dir / "subjects.parquet", index=False)
+    n_sub = len(subjects_all)
+    del subjects_all; gc.collect()
+    print(f"  subjects.parquet: {n_sub:,} rows (deduplicated)")
+
+    # Merge objects (dedup)
+    obj_parts = sorted(shard_dir.glob("objects_shard*.parquet"))
+    print(f"Merging {len(obj_parts)} object shards...")
+    objects_all = pd.concat(
+        [pd.read_parquet(p) for p in obj_parts], ignore_index=True
+    ).drop_duplicates(subset=["uuid"], keep="first")
+    objects_all.to_parquet(processed_dir / "objects.parquet", index=False)
+    n_obj = len(objects_all)
+    del objects_all; gc.collect()
+    print(f"  objects.parquet: {n_obj:,} rows (deduplicated)")
+
+    # ---- Summary ----
     elapsed = time.time() - start_time
-    print(f"\nParsing completed in {elapsed:.1f}s")
-
-    # --- Build DataFrames ---
-    print(f"\nBuilding DataFrames...")
-    events_df, subjects_df, objects_df = build_dataframes({
-        "events": all_events,
-        "subjects": all_subjects,
-        "objects": all_objects,
-    })
-
-    # Free the raw lists to save memory
-    del all_events, all_subjects, all_objects
-
-    # --- Print summaries ---
     print(f"\n{'='*60}")
     print(f"PARSING SUMMARY")
     print(f"{'='*60}")
+    print(f"  Events:   {n_ev:,}")
+    print(f"  Subjects: {n_sub:,}")
+    print(f"  Objects:  {n_obj:,}")
+    print(f"  Time range: {ts_min} to {ts_max}")
+    print(f"\n  Event type distribution:")
+    for etype, count in sorted(ev_types.items(), key=lambda x: -x[1]):
+        pct = 100 * count / n_ev
+        print(f"    {etype:30s} {count:>10,}  ({pct:5.1f}%)")
 
-    print(f"\nEvents: {len(events_df):,} rows")
-    print(f"  Memory: {events_df.memory_usage(deep=True).sum() / 1e6:.1f} MB")
-    if len(events_df) > 0:
-        print(f"  Time range: {events_df['timestamp'].min()} to {events_df['timestamp'].max()}")
-        print(f"  Unique subjects: {events_df['subject_uuid'].nunique():,}")
-        print(f"  Unique objects:  {events_df['predicate_object_uuid'].nunique():,}")
-        print(f"\n  Event type distribution:")
-        for etype, count in events_df["type"].value_counts().items():
-            pct = 100 * count / len(events_df)
-            print(f"    {etype:30s} {count:>10,}  ({pct:5.1f}%)")
-
-    print(f"\nSubjects: {len(subjects_df):,} rows")
-    if len(subjects_df) > 0:
-        print(f"  Types: {subjects_df['type'].value_counts().to_dict()}")
-
-    print(f"\nObjects: {len(objects_df):,} rows")
-    if len(objects_df) > 0:
-        print(f"  Types: {objects_df['object_type'].value_counts().to_dict()}")
-
-    # --- Save to parquet ---
-    print(f"\nSaving to: {processed_dir}")
-
-    events_df.to_parquet(processed_dir / "events.parquet", index=False)
-    print(f"  events.parquet: {len(events_df):,} rows")
-
-    subjects_df.to_parquet(processed_dir / "subjects.parquet", index=False)
-    print(f"  subjects.parquet: {len(subjects_df):,} rows")
-
-    objects_df.to_parquet(processed_dir / "objects.parquet", index=False)
-    print(f"  objects.parquet: {len(objects_df):,} rows")
-
-    # Save summary
     summary = {
-        "shards_parsed": [s.name for s in selected_shards],
-        "total_events": len(events_df),
-        "total_subjects": len(subjects_df),
-        "total_objects": len(objects_df),
-        "parse_errors": total_parse_errors,
-        "event_types": events_df["type"].value_counts().to_dict() if len(events_df) > 0 else {},
-        "object_types": objects_df["object_type"].value_counts().to_dict() if len(objects_df) > 0 else {},
+        "shards_parsed": [p.name for p in event_parts],
+        "total_events": n_ev,
+        "total_subjects": n_sub,
+        "total_objects": n_obj,
         "elapsed_seconds": round(elapsed, 1),
     }
     with open(processed_dir / "summary.json", "w") as f:
         json.dump(summary, f, indent=2, default=str)
-    print(f"  summary.json")
 
     print(f"\n✓ Done. Total time: {elapsed:.1f}s")
-    print(f"  Next step: python -m src.data.darpa_tc_parser --load-only")
 
 
 if __name__ == "__main__":
