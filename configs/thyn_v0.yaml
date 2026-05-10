@@ -1,0 +1,29 @@
+# THyN v0 Configuration
+model:
+  d_model: 64
+  d_hidden: 64
+  n_layers: 2
+  dropout: 0.1
+  use_conv: true
+  encoder_type: "gru"   # "gru" for now, swap to "mamba" with CUDA
+
+data:
+  max_seq_len: 512
+  stride: 512
+  min_seq_len: 2
+  train_shards: [0, 1, 2, 3, 4, 5, 6]
+  val_shards: [7]
+  test_shards: [8, 9]
+
+training:
+  batch_size: 64
+  lr: 0.001
+  weight_decay: 0.0001
+  epochs: 20
+  patience: 5          # early stopping patience
+  pos_weight: 3.0      # BCE pos_weight (benign:attack ≈ 3:1 in broad)
+  grad_clip: 1.0
+  log_every: 100       # print loss every N batches
+
+evaluation:
+  metrics: ["auprc", "auroc", "f1", "size3_recall"]

@@ -44,16 +44,16 @@ from tqdm import tqdm
 # Paths
 # ============================================================
 
-def get_raw_dir() -> Path:
-    """Return path to raw DARPA TC E3 theia data."""
+def get_raw_dir(dataset: str) -> Path:
+    """Return path to raw DARPA TC E3 data for a dataset."""
     project_root = Path(__file__).resolve().parent.parent.parent
-    return project_root / "data" / "raw" / "darpa_tc_e3" / "theia"
+    return project_root / "data" / "raw" / "darpa_tc_e3" / dataset
 
 
-def get_processed_dir() -> Path:
+def get_processed_dir(dataset: str) -> Path:
     """Return path to processed output, creating it if needed."""
     project_root = Path(__file__).resolve().parent.parent.parent
-    out_dir = project_root / "data" / "processed" / "darpa_tc_e3" / "theia"
+    out_dir = project_root / "data" / "processed" / "darpa_tc_e3" / dataset
     out_dir.mkdir(parents=True, exist_ok=True)
     return out_dir
 
@@ -353,10 +353,14 @@ def main():
         "--merge-only", action="store_true",
         help="Skip parsing, just merge existing per-shard parquets",
     )
+    parser.add_argument(
+        "--dataset", type=str, default="theia", choices=["theia", "trace", "cadets"],
+        help="Which dataset to process",
+    )
     args = parser.parse_args()
 
-    raw_dir = get_raw_dir()
-    processed_dir = get_processed_dir()
+    raw_dir = get_raw_dir(args.dataset)
+    processed_dir = get_processed_dir(args.dataset)
 
     # --- Load-only mode ---
     if args.load_only:

@@ -1,0 +1,335 @@
+"""
+THyN Training Script.
+
+Trains the Temporal Hypergraph Network with masked BCE loss,
+evaluates on validation set per epoch, and saves the best model.
+
+Usage:
+    python -m src.pipeline.train --config configs/thyn_v0.yaml
+    python -m src.pipeline.train --config configs/thyn_v0.yaml --quick
+"""
+
+import argparse
+import gc
+import time
+from pathlib import Path
+
+import numpy as np
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
+from sklearn.metrics import (
+    average_precision_score, roc_auc_score, f1_score,
+)
+import yaml
+
+from src.data.thyn_dataset import THyNDataset
+from src.model.thyn import THyN
+
+
+DATA_ROOT = (
+    Path(__file__).resolve().parent.parent.parent
+    / "data" / "processed" / "darpa_tc_e3"
+)
+
+
+def masked_bce_loss(logits, y, mask, pos_weight):
+    """Compute BCE loss only on non-padded positions."""
+    real = mask.bool()
+    logits_real = logits[real]
+    y_real = y[real].float()
+    loss = nn.functional.binary_cross_entropy_with_logits(
+        logits_real, y_real,
+        pos_weight=torch.tensor([pos_weight], device=logits.device),
+    )
+    return loss
+
+
+def compute_metrics(all_logits, all_labels):
+    """Compute AUPRC, AUROC, F1 from collected predictions."""
+    probs = torch.sigmoid(torch.tensor(all_logits)).numpy()
+    labels = np.array(all_labels)
+
+    metrics = {}
+    try:
+        metrics["auprc"] = average_precision_score(labels, probs)
+    except ValueError:
+        metrics["auprc"] = 0.0
+    try:
+        metrics["auroc"] = roc_auc_score(labels, probs)
+    except ValueError:
+        metrics["auroc"] = 0.0
+
+    preds = (probs > 0.5).astype(int)
+    metrics["f1"] = f1_score(labels, preds, zero_division=0)
+    metrics["n_attack"] = int(labels.sum())
+    metrics["n_benign"] = int((labels == 0).sum())
+    metrics["pred_attack"] = int(preds.sum())
+
+    return metrics
+
+
+def train_epoch(model, loader, optimizer, pos_weight, grad_clip, device,
+                log_every=100):
+    """Train one epoch."""
+    model.train()
+    total_loss = 0.0
+    n_batches = 0
+
+    for i, batch in enumerate(loader):
+        X = batch["X"].to(device)
+        y = batch["y"].to(device)
+        mask = batch["mask"].to(device)
+        ent = batch["entity_ids"].to(device)
+
+        logits = model(X, entity_ids=ent, mask=mask)
+        loss = masked_bce_loss(logits, y, mask, pos_weight)
+
+        optimizer.zero_grad()
+        loss.backward()
+        if grad_clip > 0:
+            nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        optimizer.step()
+
+        total_loss += loss.item()
+        n_batches += 1
+
+        if log_every and (i + 1) % log_every == 0:
+            avg = total_loss / n_batches
+            print(f"    batch {i+1}: loss={avg:.4f}")
+
+    return total_loss / max(n_batches, 1)
+
+
+@torch.no_grad()
+def evaluate(model, loader, pos_weight, device, max_batches=None):
+    """Evaluate model, return loss and metrics."""
+    model.eval()
+    total_loss = 0.0
+    n_batches = 0
+    all_logits = []
+    all_labels = []
+
+    for i, batch in enumerate(loader):
+        if max_batches and i >= max_batches:
+            break
+
+        X = batch["X"].to(device)
+        y = batch["y"].to(device)
+        mask = batch["mask"].to(device)
+        ent = batch["entity_ids"].to(device)
+
+        logits = model(X, entity_ids=ent, mask=mask)
+        loss = masked_bce_loss(logits, y, mask, pos_weight)
+
+        total_loss += loss.item()
+        n_batches += 1
+
+        # Collect real predictions
+        real = mask.bool()
+        all_logits.extend(logits[real].cpu().tolist())
+        all_labels.extend(y[real].cpu().tolist())
+
+    avg_loss = total_loss / max(n_batches, 1)
+    metrics = compute_metrics(all_logits, all_labels)
+    metrics["loss"] = avg_loss
+
+    return metrics
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Train THyN")
+    parser.add_argument("--config", default="configs/thyn_v0.yaml")
+    parser.add_argument("--dataset", default="theia")
+    parser.add_argument("--quick", action="store_true",
+                        help="Quick test: 1 epoch, small subset")
+    parser.add_argument("--device", default=None)
+    args = parser.parse_args()
+
+    # Load config
+    with open(args.config) as f:
+        cfg = yaml.safe_load(f)
+
+    # Device
+    if args.device:
+        device = torch.device(args.device)
+    elif torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+
+    data_root = DATA_ROOT / args.dataset
+    save_dir = Path("checkpoints") / "thyn_v0"
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    print("=" * 60)
+    print("TRAIN THyN v0")
+    print("=" * 60)
+    print(f"  Device:    {device}")
+    print(f"  Config:    {args.config}")
+    print(f"  Quick:     {args.quick}")
+
+    # ============================================================
+    # Data
+    # ============================================================
+    print(f"\n[1/4] Loading data...")
+
+    max_seq_len = cfg["data"]["max_seq_len"]
+    batch_size = cfg["training"]["batch_size"]
+
+    train_ds = THyNDataset(
+        cfg["data"]["train_shards"], data_root,
+        max_seq_len=max_seq_len,
+        stride=cfg["data"].get("stride", max_seq_len),
+    )
+    val_ds = THyNDataset(
+        cfg["data"]["val_shards"], data_root,
+        max_seq_len=max_seq_len,
+    )
+
+    train_loader = DataLoader(
+        train_ds, batch_size=batch_size, shuffle=True,
+        num_workers=0, pin_memory=(device.type != "cpu"),
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=batch_size, shuffle=False,
+        num_workers=0, pin_memory=(device.type != "cpu"),
+    )
+
+    n_features = train_ds.n_features
+    print(f"  Train: {len(train_ds):,} windows, "
+          f"{len(train_ds.X):,} events")
+    print(f"  Val:   {len(val_ds):,} windows, "
+          f"{len(val_ds.X):,} events")
+    print(f"  Features: {n_features}")
+
+    # ============================================================
+    # Model
+    # ============================================================
+    print(f"\n[2/4] Building model...")
+
+    model = THyN(
+        n_features=n_features,
+        d_model=cfg["model"]["d_model"],
+        d_hidden=cfg["model"]["d_hidden"],
+        n_layers=cfg["model"]["n_layers"],
+        dropout=cfg["model"]["dropout"],
+        use_conv=cfg["model"]["use_conv"],
+        encoder_type=cfg["model"]["encoder_type"],
+    ).to(device)
+
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"  Architecture: {cfg['model']['encoder_type'].upper()}")
+    print(f"  Parameters: {n_params:,}")
+    print(f"  HG Conv: {cfg['model']['use_conv']}")
+
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=cfg["training"]["lr"],
+        weight_decay=cfg["training"]["weight_decay"],
+    )
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="max", factor=0.5, patience=2, verbose=True)
+
+    pos_weight = cfg["training"]["pos_weight"]
+    grad_clip = cfg["training"]["grad_clip"]
+    epochs = 1 if args.quick else cfg["training"]["epochs"]
+    patience = cfg["training"]["patience"]
+    log_every = cfg["training"]["log_every"]
+
+    # ============================================================
+    # Training
+    # ============================================================
+    print(f"\n[3/4] Training...")
+    print(f"  Epochs: {epochs}, Batch: {batch_size}, "
+          f"LR: {cfg['training']['lr']}, PosW: {pos_weight}")
+
+    best_auprc = 0.0
+    best_epoch = 0
+    no_improve = 0
+
+    for epoch in range(1, epochs + 1):
+        t0 = time.time()
+        print(f"\n  ── Epoch {epoch}/{epochs} ──")
+
+        # Train
+        train_loss = train_epoch(
+            model, train_loader, optimizer, pos_weight, grad_clip,
+            device, log_every=log_every)
+        train_time = time.time() - t0
+
+        # Validate
+        t1 = time.time()
+        val_max_batches = 50 if args.quick else None
+        val_metrics = evaluate(
+            model, val_loader, pos_weight, device,
+            max_batches=val_max_batches)
+        val_time = time.time() - t1
+
+        # LR scheduler
+        scheduler.step(val_metrics["auprc"])
+
+        print(f"  Train: loss={train_loss:.4f} ({train_time:.0f}s)")
+        print(f"  Val:   loss={val_metrics['loss']:.4f}, "
+              f"AUPRC={val_metrics['auprc']:.4f}, "
+              f"AUROC={val_metrics['auroc']:.4f}, "
+              f"F1={val_metrics['f1']:.4f} ({val_time:.0f}s)")
+        print(f"         attack={val_metrics['n_attack']:,}, "
+              f"benign={val_metrics['n_benign']:,}, "
+              f"pred_atk={val_metrics['pred_attack']:,}")
+
+        # Early stopping
+        if val_metrics["auprc"] > best_auprc:
+            best_auprc = val_metrics["auprc"]
+            best_epoch = epoch
+            no_improve = 0
+            # Save best
+            torch.save({
+                "epoch": epoch,
+                "model_state": model.state_dict(),
+                "optimizer_state": optimizer.state_dict(),
+                "val_metrics": val_metrics,
+                "config": cfg,
+            }, save_dir / "best.pt")
+            print(f"  ✓ New best! Saved to {save_dir}/best.pt")
+        else:
+            no_improve += 1
+            if no_improve >= patience:
+                print(f"  Early stopping at epoch {epoch} "
+                      f"(best={best_epoch}, AUPRC={best_auprc:.4f})")
+                break
+
+    # ============================================================
+    # Final evaluation
+    # ============================================================
+    print(f"\n[4/4] Final evaluation on best model (epoch {best_epoch})...")
+
+    ckpt = torch.load(save_dir / "best.pt", map_location=device)
+    model.load_state_dict(ckpt["model_state"])
+
+    val_metrics = evaluate(model, val_loader, pos_weight, device)
+
+    print(f"\n{'='*60}")
+    print("RESULTS (best model)")
+    print(f"{'='*60}")
+    print(f"  Epoch:  {best_epoch}")
+    print(f"  AUPRC:  {val_metrics['auprc']:.4f}")
+    print(f"  AUROC:  {val_metrics['auroc']:.4f}")
+    print(f"  F1:     {val_metrics['f1']:.4f}")
+    print(f"  Loss:   {val_metrics['loss']:.4f}")
+
+    # Save final results
+    results = {
+        "best_epoch": best_epoch,
+        "val_metrics": val_metrics,
+        "config": cfg,
+        "n_params": n_params,
+    }
+    torch.save(results, save_dir / "results.pt")
+    print(f"\n  Results saved to {save_dir}/results.pt")
+
+
+if __name__ == "__main__":
+    main()

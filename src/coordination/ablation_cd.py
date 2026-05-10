@@ -18,6 +18,11 @@ import gc
 import time
 import warnings
 
+import argparse
+import gc
+import time
+import warnings
+
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -26,14 +31,11 @@ from sklearn.model_selection import StratifiedKFold, cross_val_score
 from sklearn.preprocessing import StandardScaler
 
 from src.coordination.feature_extraction import extract_group_features
-from src.coordination.ground_truth_e3 import label_events, label_windows
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
-DATA_DIR = (
-    Path(__file__).resolve().parent.parent.parent
-    / "data" / "processed" / "darpa_tc_e3" / "theia"
-)
+def get_data_dir(dataset: str) -> Path:
+    return Path(__file__).resolve().parent.parent.parent / "data" / "processed" / "darpa_tc_e3" / dataset
 
 # The 4 CD-specific columns
 CD_COLS = {"tc", "bd", "es", "cd"}
@@ -66,15 +68,27 @@ def run_classifier(X, y, label, seed=42):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset", type=str, default="theia", choices=["theia", "trace"])
+    args = parser.parse_args()
+
     print("="*60)
-    print("ABLATION STUDY: Is CD the active ingredient?")
+    print(f"ABLATION STUDY: Is CD the active ingredient? ({args.dataset.upper()})")
     print("="*60)
+
+    # Dynamic import of ground truth labeler
+    if args.dataset == "theia":
+        from src.coordination.ground_truth_e3 import label_events, label_windows
+    else:
+        from src.coordination.ground_truth_trace import label_events, label_windows
+
+    data_dir = get_data_dir(args.dataset)
 
     # Load data
     print("\nLoading data...")
-    events_df = pd.read_parquet(DATA_DIR / "events.parquet")
-    subjects_df = pd.read_parquet(DATA_DIR / "subjects.parquet")
-    objects_df = pd.read_parquet(DATA_DIR / "objects.parquet")
+    events_df = pd.read_parquet(data_dir / "events.parquet")
+    subjects_df = pd.read_parquet(data_dir / "subjects.parquet")
+    objects_df = pd.read_parquet(data_dir / "objects.parquet")
     print(f"  Events: {len(events_df):,}")
 
     # Label

@@ -36,15 +36,13 @@ from pathlib import Path
 # ============================================================
 # Data directory layout
 # ============================================================
-# data/raw/darpa_tc_e3/theia/
-#   ta1-theia-e3-official-1r.json.tar.gz   (downloaded archive)
-#   ta1-theia-e3-official-1r.json          (extracted shard 0)
-#   ta1-theia-e3-official-1r.json.1        (extracted shard 1)
-#   ...
-#   ta1-theia-e3-official-1r.json.9        (extracted shard 9)
+# data/raw/darpa_tc_e3/<dataset>/
+#   <archive>.json.tar.gz   (downloaded archive)
+#   <archive>.json          (extracted shard 0)
+#   <archive>.json.1        (extracted shard 1)
 # ============================================================
 
-# CDM18 record type short names (for cleaner output)
+# CDM18 record type short names
 RECORD_TYPE_SHORT = {
     "com.bbn.tc.schema.avro.cdm18.Event": "Event",
     "com.bbn.tc.schema.avro.cdm18.Subject": "Subject",
@@ -61,29 +59,29 @@ RECORD_TYPE_SHORT = {
     "com.bbn.tc.schema.avro.cdm18.EndMarker": "EndMarker",
 }
 
+DATASET_ARCHIVES = {
+    "theia": "ta1-theia-e3-official-1r.json.tar.gz",
+    "trace": "ta1-trace-e3-official-1.json.tar.gz",
+    "cadets": "ta1-cadets-e3-official-2.json.tar.gz",
+}
 
-def get_data_dir() -> Path:
-    """Return the project data directory for DARPA TC E3."""
+def get_data_dir(dataset: str) -> Path:
+    """Return the project data directory for DARPA TC E3 dataset."""
     project_root = Path(__file__).resolve().parent.parent.parent
-    data_dir = project_root / "data" / "raw" / "darpa_tc_e3" / "theia"
+    data_dir = project_root / "data" / "raw" / "darpa_tc_e3" / dataset
     data_dir.mkdir(parents=True, exist_ok=True)
     return data_dir
 
 
-def extract_tar(data_dir: Path) -> list[Path]:
-    """
-    Extract .json.tar.gz archive into individual JSON shard files.
-
-    Returns:
-        List of extracted file paths.
-    """
+def extract_tar(data_dir: Path, dataset: str) -> list[Path]:
+    """Extract .json.tar.gz archive into individual JSON shard files."""
     tar_files = sorted(data_dir.glob("*.json.tar.gz"))
     if not tar_files:
         print(f"ERROR: No .json.tar.gz files found in {data_dir}")
         print(f"\nDownload instructions:")
         print(f"  1. Go to: https://drive.google.com/drive/folders/1QlbUFWAGq3Hpl8wVdzOdIoZLFxkII4EK")
-        print(f"  2. Navigate: Engagement3 > data > theia")
-        print(f"  3. Download: ta1-theia-e3-official-1r.json.tar.gz (1.09 GB)")
+        print(f"  2. Navigate: Engagement3 > data > {dataset}")
+        print(f"  3. Download: {DATASET_ARCHIVES.get(dataset, 'the appropriate archive')}")
         print(f"  4. Place in: {data_dir}")
         sys.exit(1)
 
@@ -93,10 +91,8 @@ def extract_tar(data_dir: Path) -> list[Path]:
         size_gb = tar_path.stat().st_size / (1024**3)
         print(f"  Archive size: {size_gb:.2f} GB")
 
-        # Check if already extracted
         topic_name = tar_path.name.replace(".json.tar.gz", "")
         existing_shards = sorted(data_dir.glob(f"{topic_name}.json*"))
-        # Filter out the tar.gz itself
         existing_shards = [f for f in existing_shards if ".tar.gz" not in f.name]
 
         if existing_shards:
@@ -104,7 +100,6 @@ def extract_tar(data_dir: Path) -> list[Path]:
             extracted.extend(existing_shards)
             continue
 
-        # Extract
         try:
             with tarfile.open(tar_path, "r:gz") as tar:
                 members = tar.getmembers()
@@ -125,7 +120,6 @@ def extract_tar(data_dir: Path) -> list[Path]:
 
 def find_json_shards(data_dir: Path) -> list[Path]:
     """Find all extracted JSON shard files (not tar archives)."""
-    # Match: topic.json, topic.json.1, topic.json.2, etc.
     shards = []
     for f in sorted(data_dir.iterdir()):
         if f.is_file() and ".json" in f.name and ".tar.gz" not in f.name:
@@ -134,17 +128,6 @@ def find_json_shards(data_dir: Path) -> list[Path]:
 
 
 def unwrap_avro_union(value):
-    """
-    Unwrap Avro union-encoded values.
-
-    Avro JSON encodes union types as {"type_name": value}.
-    Examples:
-        {"string": "hello"} -> "hello"
-        {"long": 12345} -> 12345
-        {"com.bbn.tc.schema.avro.cdm18.UUID": "ABC-123"} -> "ABC-123"
-        null -> None
-        {"map": {"key": "val"}} -> {"key": "val"}
-    """
     if value is None:
         return None
     if isinstance(value, dict) and len(value) == 1:
@@ -154,23 +137,6 @@ def unwrap_avro_union(value):
 
 
 def verify_shard(filepath: Path, max_records: int = 50000) -> dict:
-    """
-    Read a JSON shard file and return summary statistics.
-
-    Each line in the file is one JSON object:
-    {
-      "datum": {"com.bbn.tc.schema.avro.cdm18.<Type>": {fields}},
-      "CDMVersion": "18",
-      "source": "SOURCE_LINUX_THEIA"
-    }
-
-    Args:
-        filepath: Path to JSON shard file.
-        max_records: Maximum records to read (0 = all).
-
-    Returns:
-        Dictionary with counts and samples.
-    """
     print(f"\nVerifying: {filepath.name}")
     size_gb = filepath.stat().st_size / (1024**3)
     print(f"  File size: {size_gb:.2f} GB")
@@ -200,26 +166,22 @@ def verify_shard(filepath: Path, max_records: int = 50000) -> dict:
 
             total_records += 1
 
-            # Extract record type from the datum wrapper
             datum = record.get("datum", {})
             if not datum:
                 continue
 
-            # datum has exactly one key: the fully-qualified record type
             record_type = next(iter(datum))
             record_data = datum[record_type]
             short_type = RECORD_TYPE_SHORT.get(record_type, record_type.split(".")[-1])
 
             type_counts[short_type] += 1
 
-            # Track event subtypes
             if short_type == "Event" and isinstance(record_data, dict):
                 event_type = record_data.get("type", "UNKNOWN")
                 event_type_counts[event_type] += 1
                 if sample_event is None:
                     sample_event = record_data
 
-            # Capture samples
             if short_type == "Subject" and sample_subject is None:
                 sample_subject = record_data
             if short_type == "FileObject" and sample_file_object is None:
@@ -242,7 +204,6 @@ def verify_shard(filepath: Path, max_records: int = 50000) -> dict:
         "sample_netflow": sample_netflow,
     }
 
-    # Print summary
     print(f"  Records read: {total_records:,}")
     if parse_errors:
         print(f"  Parse errors: {parse_errors}")
@@ -261,7 +222,6 @@ def verify_shard(filepath: Path, max_records: int = 50000) -> dict:
 
 
 def print_sample_records(result: dict):
-    """Print sample records for manual inspection of field structure."""
     print(f"\n{'='*60}")
     print("SAMPLE RECORDS (for verifying field structure)")
     print(f"{'='*60}")
@@ -277,9 +237,6 @@ def print_sample_records(result: dict):
         print(f"  predicateObject2:{unwrap_avro_union(ev.get('predicateObject2'))}")
         print(f"  name:            {unwrap_avro_union(ev.get('name'))}")
         print(f"  size:            {unwrap_avro_union(ev.get('size'))}")
-        props = unwrap_avro_union(ev.get("properties"))
-        if props:
-            print(f"  properties:      {props}")
 
     if result.get("sample_subject"):
         sub = result["sample_subject"]
@@ -289,57 +246,25 @@ def print_sample_records(result: dict):
         print(f"  cid (pid):       {sub.get('cid')}")
         print(f"  parentSubject:   {unwrap_avro_union(sub.get('parentSubject'))}")
         print(f"  cmdLine:         {unwrap_avro_union(sub.get('cmdLine'))}")
-        print(f"  startTimestamp:  {sub.get('startTimestampNanos')}")
-        props = unwrap_avro_union(sub.get("properties"))
-        if props:
-            print(f"  properties:      {props}")
 
     if result.get("sample_file_object"):
         fo = result["sample_file_object"]
         print(f"\n--- Sample FileObject ---")
         print(f"  uuid:            {fo.get('uuid')}")
-        base = fo.get("baseObject", {})
-        print(f"  permission:      {unwrap_avro_union(base.get('permission'))}")
-        props = unwrap_avro_union(base.get("properties"))
-        if props:
-            print(f"  properties:      {props}")
 
     if result.get("sample_netflow"):
         nf = result["sample_netflow"]
         print(f"\n--- Sample NetFlowObject ---")
         print(f"  uuid:            {nf.get('uuid')}")
-        print(f"  localAddress:    {unwrap_avro_union(nf.get('localAddress'))}")
-        print(f"  localPort:       {unwrap_avro_union(nf.get('localPort'))}")
-        print(f"  remoteAddress:   {unwrap_avro_union(nf.get('remoteAddress'))}")
-        print(f"  remotePort:      {unwrap_avro_union(nf.get('remotePort'))}")
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Extract and verify DARPA TC E3 data"
-    )
-    parser.add_argument(
-        "--extract",
-        action="store_true",
-        help="Extract .json.tar.gz archives before verifying",
-    )
-    parser.add_argument(
-        "--verify",
-        action="store_true",
-        help="Verify extracted JSON shard files",
-    )
-    parser.add_argument(
-        "--max-records",
-        type=int,
-        default=50000,
-        help="Max records to read per shard for verification (0=all, default=50000)",
-    )
-    parser.add_argument(
-        "--shard",
-        type=int,
-        default=0,
-        help="Which shard to verify (default: 0 = first shard only)",
-    )
+    parser = argparse.ArgumentParser(description="Extract and verify DARPA TC E3 data")
+    parser.add_argument("--extract", action="store_true", help="Extract .json.tar.gz archives")
+    parser.add_argument("--verify", action="store_true", help="Verify extracted JSON shard files")
+    parser.add_argument("--max-records", type=int, default=50000, help="Max records to read (0=all)")
+    parser.add_argument("--shard", type=int, default=0, help="Which shard to verify")
+    parser.add_argument("--dataset", type=str, default="theia", choices=["theia", "trace", "cadets"], help="Which dataset to process")
     args = parser.parse_args()
 
     if not args.extract and not args.verify:
@@ -347,20 +272,19 @@ def main():
         parser.print_help()
         sys.exit(1)
 
-    data_dir = get_data_dir()
+    data_dir = get_data_dir(args.dataset)
+    print(f"Dataset: {args.dataset.upper()}")
     print(f"Data directory: {data_dir}")
 
-    # Step 1: Extract tar archives
     if args.extract:
-        extracted = extract_tar(data_dir)
+        extracted = extract_tar(data_dir, args.dataset)
         print(f"\nExtracted {len(extracted)} shard file(s)")
 
-    # Step 2: Verify
     if args.verify:
         shards = find_json_shards(data_dir)
         if not shards:
             print(f"\nNo extracted JSON files found in {data_dir}")
-            print("Run with --extract first.")
+            print(f"Run: python -m src.data.download_darpa_tc --extract --dataset {args.dataset}")
             sys.exit(1)
 
         print(f"\nFound {len(shards)} JSON shard(s):")
@@ -369,7 +293,6 @@ def main():
             marker = " <-- verifying" if i == args.shard else ""
             print(f"  [{i}] {s.name}: {size_gb:.2f} GB{marker}")
 
-        # Verify the selected shard
         if args.shard >= len(shards):
             print(f"ERROR: shard {args.shard} out of range (0-{len(shards)-1})")
             sys.exit(1)
@@ -382,16 +305,13 @@ def main():
         result = verify_shard(target_shard, max_records=args.max_records)
         print_sample_records(result)
 
-        # Final summary
         print(f"\n{'='*60}")
         print(f"VERIFICATION COMPLETE")
         print(f"{'='*60}")
         total_events = sum(result.get("event_type_counts", {}).values())
         print(f"  Records sampled:    {result['total_records']:,}")
         print(f"  Events found:       {total_events:,}")
-        print(f"  Event types:        {len(result.get('event_type_counts', {}))}")
-        print(f"  Parse errors:       {result.get('parse_errors', 0)}")
-        print(f"\n  ✓ Data pipeline verified. Ready for full parsing.")
+        print(f"\n  ✓ Data pipeline verified for {args.dataset.upper()}.")
 
 
 if __name__ == "__main__":
