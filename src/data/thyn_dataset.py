@@ -76,7 +76,9 @@ class THyNDataset(Dataset):
         self._valid_max = shard_ends[shard_ids[-1]]
 
         # --- Identify feature columns ---
-        feat_names_path = features_dir / "feature_names.txt"
+        feat_names_path = data_root / "features" / "feature_names.txt"
+        if not feat_names_path.exists():
+            feat_names_path = features_dir / "feature_names.txt"
         all_feat_names = feat_names_path.read_text().strip().split("\n")
         etype_cols = [i for i, n in enumerate(all_feat_names)
                       if n.startswith("etype_")]
