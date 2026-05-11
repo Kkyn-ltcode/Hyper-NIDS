@@ -126,37 +126,35 @@ def run_experiment(name, ckpt_path, cfg, dataset, device):
 
     data_root = DATA_ROOT / dataset
 
-    # Load model
-    ckpt = torch.load(ckpt_path, map_location=device)
-    model = THyN(
-        n_cont_features=8,  # will be overridden
-        num_event_types=18,
-        d_type=mcfg.get("d_type", 16),
-        d_model=mcfg["d_model"],
-        d_hidden=mcfg["d_hidden"],
-        n_layers=mcfg["n_layers"],
-        dropout=0.0,  # no dropout at eval
-        model_type=mcfg["model_type"],
-        encoder_type=mcfg["encoder_type"],
-    )
-
-    # Adjust n_cont_features from checkpoint
+    # Load checkpoint — prefer its saved config over YAML
+    ckpt = torch.load(ckpt_path, map_location=device,
+                      weights_only=False)
     state = ckpt["model_state"]
+
+    # Use checkpoint's config if available (handles GRU/Mamba mismatch)
+    ckpt_cfg = ckpt.get("config", {}).get("model", {})
+
+    # Infer architecture from checkpoint
     proj_weight = state["input_proj.0.weight"]
-    d_type = mcfg.get("d_type", 16)
+    d_type = ckpt_cfg.get("d_type", mcfg.get("d_type", 16))
     n_cont = proj_weight.shape[1] - d_type
     num_etypes = state["type_emb.weight"].shape[0]
+    encoder_type = ckpt_cfg.get("encoder_type", mcfg["encoder_type"])
+    model_type = ckpt_cfg.get("model_type", mcfg["model_type"])
+
+    print(f"  Checkpoint encoder: {encoder_type}")
+    print(f"  Checkpoint model:   {model_type}")
 
     model = THyN(
         n_cont_features=n_cont,
         num_event_types=num_etypes,
         d_type=d_type,
-        d_model=mcfg["d_model"],
-        d_hidden=mcfg["d_hidden"],
-        n_layers=mcfg["n_layers"],
+        d_model=ckpt_cfg.get("d_model", mcfg["d_model"]),
+        d_hidden=ckpt_cfg.get("d_hidden", mcfg["d_hidden"]),
+        n_layers=ckpt_cfg.get("n_layers", mcfg["n_layers"]),
         dropout=0.0,
-        model_type=mcfg["model_type"],
-        encoder_type=mcfg["encoder_type"],
+        model_type=model_type,
+        encoder_type=encoder_type,
     ).to(device)
     model.load_state_dict(state)
 
