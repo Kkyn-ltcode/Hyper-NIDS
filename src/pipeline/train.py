@@ -208,6 +208,7 @@ def main():
     log(f"  World size: {world_size}")
     log(f"  Model type: {cfg['model']['model_type']}")
     log(f"  Encoder:    {cfg['model']['encoder_type']}")
+    log(f"  Labels:     {dcfg.get('label_type', 'broad')}")
 
     # ── Data ──
     log(f"\n[1/4] Loading data...")
@@ -215,14 +216,18 @@ def main():
     dcfg = cfg["data"]
     tcfg = cfg["training"]
 
+    label_type = dcfg.get("label_type", "broad")
+
     train_ds = THyNDataset(
         dcfg["train_shards"], data_root,
         max_seq_len=dcfg["max_seq_len"],
         stride=dcfg.get("stride", dcfg["max_seq_len"]),
+        label_type=label_type,
     )
     val_ds = THyNDataset(
         dcfg["val_shards"], data_root,
         max_seq_len=dcfg["max_seq_len"],
+        label_type=label_type,
     )
 
     train_sampler = (DistributedSampler(train_ds, shuffle=True)
@@ -276,7 +281,15 @@ def main():
         optimizer, mode="max", factor=0.5, patience=2,
         verbose=is_main())
 
-    pw_t = torch.tensor([tcfg["pos_weight"]], device=device)
+    # Auto-compute pos_weight from training data
+    pw_val = tcfg.get("pos_weight", "auto")
+    if pw_val == "auto":
+        n_pos = int((train_ds.y == 1).sum())
+        n_neg = int((train_ds.y == 0).sum())
+        pw_val = n_neg / max(n_pos, 1)
+        log(f"  Auto pos_weight: {pw_val:.1f} "
+            f"(neg={n_neg:,} / pos={n_pos:,})")
+    pw_t = torch.tensor([pw_val], device=device)
     grad_clip = tcfg["grad_clip"]
     epochs = 1 if args.quick else tcfg["epochs"]
     patience = tcfg["patience"]

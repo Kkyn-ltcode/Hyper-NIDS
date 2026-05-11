@@ -103,34 +103,52 @@ def _get_basename(path_str: str) -> str:
     return path_str.rstrip("/").rsplit("/", 1)[-1].lower()
 
 
+def _get_process_basenames(subjects_df: pd.DataFrame) -> pd.Series:
+    """Extract process basenames from whichever column is available."""
+    if "process_path" in subjects_df.columns and subjects_df["process_path"].notna().any():
+        return subjects_df["process_path"].fillna("").apply(_get_basename)
+    elif "cmd_line" in subjects_df.columns:
+        # TRACE: cmd_line is like "/usr/sbin/sshd -D -R", extract first token
+        def _cmd_basename(cmd):
+            if not cmd:
+                return ""
+            first_token = cmd.strip().split()[0] if cmd.strip() else ""
+            return _get_basename(first_token)
+        return subjects_df["cmd_line"].fillna("").apply(_cmd_basename)
+    return pd.Series("", index=subjects_df.index)
+
+
+def _match_entry_process(subjects_df: pd.DataFrame, entry: str) -> pd.Series:
+    """Match the attack entry process against available columns."""
+    if "/" in entry:
+        # Exact path match — try process_path first, then cmd_line
+        if "process_path" in subjects_df.columns and subjects_df["process_path"].notna().any():
+            return subjects_df["process_path"] == entry
+        elif "cmd_line" in subjects_df.columns:
+            return subjects_df["cmd_line"].fillna("").str.startswith(entry)
+    # Basename match
+    basenames = _get_process_basenames(subjects_df)
+    return basenames == _get_basename(entry)
+
+
 def build_attack_subject_uuids(
     subjects_df: pd.DataFrame,
     gt: GroundTruth,
 ) -> set:
     """
     Build set of attack-related subject UUIDs.
-
-    Uses:
-        1. Exact basename match for known malicious processes
-        2. Firefox/attack entry process tree (BFS on parent_uuid)
+    Works with both Theia (process_path) and TRACE (cmd_line) schemas.
     """
     attack_uuids = set()
 
-    # Method 1: Exact basename match
-    if "process_path" in subjects_df.columns:
-        basenames = subjects_df["process_path"].fillna("").apply(_get_basename)
-        malicious_mask = basenames.isin(gt.malicious_process_basenames)
-        attack_uuids.update(subjects_df.loc[malicious_mask, "uuid"].values)
+    # Method 1: Exact basename match for malicious processes
+    basenames = _get_process_basenames(subjects_df)
+    malicious_mask = basenames.isin(gt.malicious_process_basenames)
+    attack_uuids.update(subjects_df.loc[malicious_mask, "uuid"].values)
 
     # Method 2: Attack entry process tree
     if gt.attack_entry_process:
-        if "/" in gt.attack_entry_process:
-            # Exact path match
-            entry_mask = subjects_df["process_path"] == gt.attack_entry_process
-        else:
-            # Basename match
-            basenames = subjects_df["process_path"].fillna("").apply(_get_basename)
-            entry_mask = basenames == gt.attack_entry_process
+        entry_mask = _match_entry_process(subjects_df, gt.attack_entry_process)
         entry_uuids = set(subjects_df.loc[entry_mask, "uuid"].values)
         attack_uuids.update(entry_uuids)
 
@@ -189,12 +207,7 @@ def label_events(
     gt: GroundTruth,
 ) -> pd.Series:
     """
-    Label each event as attack (1) or benign (0).
-
-    An event is attack if ANY of:
-        - Its subject is in the attack subject set
-        - Its predicate_object is an attack object
-        - Its predicate_object2 is an attack object
+    BROAD labels: event is attack if ANY of its entities are attack-related.
     """
     attack_sub = build_attack_subject_uuids(subjects_df, gt)
     attack_obj = build_attack_object_uuids(objects_df, gt)
@@ -215,3 +228,140 @@ def label_events(
         labels[events_df["predicate_object2_uuid"].isin(attack_obj)] = 1
 
     return labels
+
+
+def build_child_only_subject_uuids(
+    subjects_df: pd.DataFrame,
+    gt: GroundTruth,
+) -> set:
+    """
+    Build set of attack child process UUIDs, EXCLUDING the entry
+    process (Firefox) itself. Only malicious binaries spawned by
+    the attack chain are included (clean, cache, xtmp, etc.).
+
+    This tests cross-process campaign propagation detection.
+    """
+    child_uuids = set()
+
+    # Method 1: Exact basename match for malicious binaries
+    basenames = _get_process_basenames(subjects_df)
+    malicious_mask = basenames.isin(gt.malicious_process_basenames)
+    child_uuids.update(subjects_df.loc[malicious_mask, "uuid"].values)
+
+    # Method 2: Get Firefox's children but NOT Firefox itself
+    if gt.attack_entry_process:
+        entry_mask = _match_entry_process(subjects_df, gt.attack_entry_process)
+
+        entry_uuids = set(subjects_df.loc[entry_mask, "uuid"].values)
+
+        # BFS from Firefox to find descendants (but don't include Firefox)
+        frontier = set(entry_uuids)
+        for _ in range(20):
+            children = subjects_df[
+                subjects_df["parent_uuid"].isin(frontier)
+                & ~subjects_df["uuid"].isin(child_uuids | entry_uuids)
+            ]["uuid"].values
+            if len(children) == 0:
+                break
+            child_uuids.update(children)
+            frontier = set(children)
+
+    return child_uuids
+
+
+def label_crossprocess_events(
+    events_df: pd.DataFrame,
+    subjects_df: pd.DataFrame,
+    objects_df: pd.DataFrame,
+    gt: GroundTruth,
+) -> pd.Series:
+    """
+    CROSS-PROCESS labels: event is attack only if the subject is a
+    child of the attack entry process (NOT the entry process itself).
+
+    Firefox events are labeled 0 (benign). Only events from spawned
+    malicious processes (clean, cache, xtmp) are labeled 1.
+
+    This tests whether the model can detect campaign propagation
+    across process boundaries — the harder, more realistic task.
+    """
+    child_uuids = build_child_only_subject_uuids(subjects_df, gt)
+
+    labels = pd.Series(0, index=events_df.index, dtype=np.int8)
+    labels[events_df["subject_uuid"].isin(child_uuids)] = 1
+
+    n_atk = int(labels.sum())
+    print(f"  Cross-process labels: {n_atk:,} attack / {len(labels):,} "
+          f"total ({100*n_atk/len(labels):.3f}%)")
+
+    return labels
+
+
+def label_narrow_events(
+    events_df: pd.DataFrame,
+    subjects_df: pd.DataFrame,
+    objects_df: pd.DataFrame,
+    gt: GroundTruth,
+) -> pd.Series:
+    """
+    NARROW labels: event is attack only if it directly involves an
+    IoC object (malicious file, C2 IP, malicious process output).
+
+    An event must satisfy BOTH:
+        - Subject is in the attack process tree (broad condition)
+        - At least one object is a known IoC (file path, IP address)
+
+    This filters out the ~90% of attack-subject events that are
+    routine benign operations (reads, mprotects) by the attack process.
+    """
+    attack_sub = build_attack_subject_uuids(subjects_df, gt)
+    attack_obj = build_attack_object_uuids(objects_df, gt)
+
+    labels = pd.Series(0, index=events_df.index, dtype=np.int8)
+
+    # Must be from attack subject AND touch an IoC object
+    is_attack_sub = events_df["subject_uuid"].isin(attack_sub)
+    touches_ioc_obj = events_df["predicate_object_uuid"].isin(attack_obj)
+    if "predicate_object2_uuid" in events_df.columns:
+        touches_ioc_obj = touches_ioc_obj | \
+            events_df["predicate_object2_uuid"].isin(attack_obj)
+
+    labels[is_attack_sub & touches_ioc_obj] = 1
+
+    n_atk = int(labels.sum())
+    print(f"  Narrow labels: {n_atk:,} attack / {len(labels):,} total "
+          f"({100*n_atk/len(labels):.3f}%)")
+
+    return labels
+
+
+def label_ioc_events(
+    events_df: pd.DataFrame,
+    subjects_df: pd.DataFrame,
+    objects_df: pd.DataFrame,
+    gt: GroundTruth,
+) -> pd.Series:
+    """
+    IoC-ONLY labels: event is attack only if it directly interacts
+    with a known-malicious IP address or file path.
+
+    No subject filter — any event touching an IoC is labeled.
+    This is the strictest, most realistic labeling.
+    """
+    attack_obj = build_attack_object_uuids(objects_df, gt)
+
+    labels = pd.Series(0, index=events_df.index, dtype=np.int8)
+
+    touches_ioc = events_df["predicate_object_uuid"].isin(attack_obj)
+    if "predicate_object2_uuid" in events_df.columns:
+        touches_ioc = touches_ioc | \
+            events_df["predicate_object2_uuid"].isin(attack_obj)
+
+    labels[touches_ioc] = 1
+
+    n_atk = int(labels.sum())
+    print(f"  IoC labels: {n_atk:,} attack / {len(labels):,} total "
+          f"({100*n_atk/len(labels):.4f}%)")
+
+    return labels
+

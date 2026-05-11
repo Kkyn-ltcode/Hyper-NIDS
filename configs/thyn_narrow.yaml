@@ -1,0 +1,29 @@
+name: "thyn_narrow"
+
+model:
+  model_type: "thyn"
+  encoder_type: "gru"
+  d_type: 16
+  d_model: 64
+  d_hidden: 64
+  n_layers: 2
+  dropout: 0.1
+
+data:
+  label_type: "narrow"      # ← the key change
+  max_seq_len: 512
+  stride: 512
+  min_seq_len: 2
+  train_shards: [0, 1, 2, 3, 4, 5, 6]
+  val_shards: [7]
+  test_shards: [8, 9]
+
+training:
+  batch_size: 64
+  lr: 0.001
+  weight_decay: 0.0001
+  epochs: 30
+  patience: 7
+  pos_weight: "auto"        # auto-computed from label ratio
+  grad_clip: 1.0
+  log_every: 100

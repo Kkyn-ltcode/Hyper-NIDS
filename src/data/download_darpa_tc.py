@@ -62,6 +62,7 @@ RECORD_TYPE_SHORT = {
 DATASET_ARCHIVES = {
     "theia": "ta1-theia-e3-official-1r.json.tar.gz",
     "trace": "ta1-trace-e3-official-1.json.tar.gz",
+    "trace-1": "ta1-trace-e3-official.json.tar.gz",
     "cadets": "ta1-cadets-e3-official-2.json.tar.gz",
 }
 
@@ -264,7 +265,7 @@ def main():
     parser.add_argument("--verify", action="store_true", help="Verify extracted JSON shard files")
     parser.add_argument("--max-records", type=int, default=50000, help="Max records to read (0=all)")
     parser.add_argument("--shard", type=int, default=0, help="Which shard to verify")
-    parser.add_argument("--dataset", type=str, default="theia", choices=["theia", "trace", "cadets"], help="Which dataset to process")
+    parser.add_argument("--dataset", type=str, default="theia", choices=["theia", "trace", "cadets", "trace-1"], help="Which dataset to process")
     args = parser.parse_args()
 
     if not args.extract and not args.verify:

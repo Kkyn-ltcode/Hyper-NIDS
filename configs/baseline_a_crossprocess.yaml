@@ -1,0 +1,29 @@
+name: "baseline_a_crossprocess"
+
+model:
+  model_type: "baseline_a"
+  encoder_type: "gru"
+  d_type: 16
+  d_model: 64
+  d_hidden: 64
+  n_layers: 2
+  dropout: 0.1
+
+data:
+  label_type: "crossprocess"
+  max_seq_len: 512
+  stride: 512
+  min_seq_len: 2
+  train_shards: [0, 1, 2, 3, 4, 5, 6]
+  val_shards: [7]
+  test_shards: [8, 9]
+
+training:
+  batch_size: 64
+  lr: 0.001
+  weight_decay: 0.0001
+  epochs: 30
+  patience: 7
+  pos_weight: "auto"
+  grad_clip: 1.0
+  log_every: 100

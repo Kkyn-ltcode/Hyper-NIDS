@@ -354,7 +354,7 @@ def main():
         help="Skip parsing, just merge existing per-shard parquets",
     )
     parser.add_argument(
-        "--dataset", type=str, default="theia", choices=["theia", "trace", "cadets"],
+        "--dataset", type=str, default="theia", choices=["theia", "trace", "cadets", "trace-1"],
         help="Which dataset to process",
     )
     args = parser.parse_args()

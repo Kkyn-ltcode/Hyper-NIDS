@@ -45,6 +45,7 @@ class THyNDataset(Dataset):
         max_seq_len: int = 512,
         stride: int | None = None,
         min_seq_len: int = 2,
+        label_type: str = "broad",  # "broad", "narrow", "ioc", "crossprocess"
     ):
         data_root = Path(data_root)
         features_dir = data_root / "features_norm"
@@ -93,12 +94,30 @@ class THyNDataset(Dataset):
               f"{len(cont_cols)} continuous")
 
         # --- Load features + labels ---
-        print(f"  Loading features for shards {shard_ids}...")
+        self.label_type = label_type
+        label_col = f"label_{label_type}"
+        print(f"  Loading features for shards {shard_ids} "
+              f"(labels={label_type})...")
+
         Xs, ys = [], []
         for sid in shard_ids:
             d = np.load(features_dir / f"thyne_shard{sid}.npz")
             Xs.append(d["X"])
-            ys.append(d["y_broad"])
+
+            if label_type == "broad":
+                ys.append(d["y_broad"])
+            else:
+                # Load narrow/ioc labels from labeled parquets
+                ldf = pd.read_parquet(
+                    labeled_dir / f"labeled_shard{sid}.parquet",
+                    columns=[label_col])
+                y_arr = ldf[label_col].values.astype(np.int64)
+                if (y_arr == -1).all():
+                    raise ValueError(
+                        f"label_{label_type} is all -1 in shard {sid}. "
+                        f"Run: python -m src.pipeline.relabel --dataset ...")
+                ys.append(y_arr)
+                del ldf
 
         # Align feature dimensions
         max_cols = max(x.shape[1] for x in Xs)
@@ -110,6 +129,10 @@ class THyNDataset(Dataset):
 
         X_all = np.concatenate(Xs)
         self.y = np.concatenate(ys).astype(np.int64)
+        n_atk = int((self.y == 1).sum())
+        print(f"    Label distribution: {n_atk:,} attack / "
+              f"{len(self.y) - n_atk:,} benign "
+              f"({100*n_atk/len(self.y):.3f}%)")
         del Xs, ys; gc.collect()
 
         # Split into event type index + continuous features
