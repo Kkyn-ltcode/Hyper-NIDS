@@ -1,11 +1,11 @@
-name: "thyn_v0"
+name: "baseline_a"
 
 model:
-  model_type: "thyn"       # "thyn" | "baseline_a" | "baseline_b"
-  encoder_type: "gru"      # "gru" (macOS) | "mamba" (CUDA)
-  d_type: 16               # event type embedding dim
-  d_model: 64              # input projection dim
-  d_hidden: 64             # encoder hidden dim
+  model_type: "baseline_a"  # pairwise conv — drops predicateObject2
+  encoder_type: "gru"
+  d_type: 16
+  d_model: 64
+  d_hidden: 64
   n_layers: 2
   dropout: 0.1
 

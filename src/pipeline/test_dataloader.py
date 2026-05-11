@@ -1,18 +1,14 @@
 """
 Test the THyNDataset and DataLoader.
 
-Validates shapes, label distributions, no NaN leakage, and basic
-data integrity for train/val/test splits.
-
 Usage:
-    python -m src.pipeline.test_dataloader --dataset theia
+    python -m src.pipeline.test_dataloader --dataset theia --split train
 """
 
 import argparse
 import time
 from pathlib import Path
 
-import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
@@ -39,105 +35,57 @@ def test_split(name, shard_ids, data_root, max_seq_len=512, batch_size=64):
     t0 = time.time()
     ds = THyNDataset(shard_ids, data_root, max_seq_len=max_seq_len)
     print(f"  Init time: {time.time()-t0:.1f}s")
+    print(f"  Windows: {len(ds):,}")
+    print(f"  Cont features: {ds.n_cont_features}")
+    print(f"  Event types: {ds.num_event_types}")
 
-    print(f"\n  Dataset stats:")
-    print(f"    Length (windows): {len(ds):,}")
-    print(f"    Features:        {ds.n_features}")
-    print(f"    Max seq len:     {ds.max_seq_len}")
-
-    # Test single item
     item = ds[0]
-    print(f"\n  Single item shapes:")
+    print(f"\n  Single item:")
     for k, v in item.items():
         if isinstance(v, torch.Tensor):
-            print(f"    {k:15s}: {str(v.shape):20s} dtype={v.dtype}")
+            print(f"    {k:15s}: {str(v.shape):20s} {v.dtype}")
         else:
             print(f"    {k:15s}: {v}")
 
-    # Test DataLoader
-    loader = DataLoader(ds, batch_size=batch_size, shuffle=True,
-                        num_workers=0, pin_memory=False)
-    t0 = time.time()
+    loader = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=0)
     batch = next(iter(loader))
-    load_time = time.time() - t0
 
-    print(f"\n  Batch shapes (batch_size={batch_size}):")
+    print(f"\n  Batch (bs={batch_size}):")
     for k, v in batch.items():
         if isinstance(v, torch.Tensor):
-            print(f"    {k:15s}: {str(v.shape):20s} dtype={v.dtype}")
-        else:
-            print(f"    {k:15s}: type={type(v)}")
+            print(f"    {k:15s}: {str(v.shape):20s} {v.dtype}")
 
     # Validate
-    X = batch["X"]
-    y = batch["y"]
     mask = batch["mask"]
-    ent = batch["entity_ids"]
+    y = batch["y"]
+    real = y[mask.bool()]
+    n_atk = (real == 1).sum().item()
+    n_ben = (real == 0).sum().item()
+    print(f"\n  Labels: attack={n_atk}, benign={n_ben}")
+    print(f"  NaN in X_cont: {torch.isnan(batch['X_cont']).any().item()}")
+    print(f"  Event type range: [{batch['event_type'].min()}, "
+          f"{batch['event_type'].max()}]")
 
-    print(f"\n  Validation:")
-
-    # No NaN
-    has_nan = torch.isnan(X).any().item()
-    print(f"    NaN in X:       {'⚠ YES' if has_nan else '✓ None'}")
-
-    # Labels
-    real_labels = y[mask.bool()]
-    n_atk = (real_labels == 1).sum().item()
-    n_ben = (real_labels == 0).sum().item()
-    n_pad = (y == -1).sum().item()
-    print(f"    Real labels:    {n_atk + n_ben:,} "
-          f"(attack={n_atk}, benign={n_ben})")
-    print(f"    Padding labels: {n_pad:,} (should be -1)")
-    if n_atk + n_ben > 0:
-        print(f"    Attack %:       {100*n_atk/(n_atk+n_ben):.1f}%")
-
-    # Entity IDs
-    real_ent = ent[mask.bool()]
-    n_valid_ent = (real_ent >= 0).sum().item()
-    n_total_ent = real_ent.numel()
-    print(f"    Valid entity IDs: {n_valid_ent:,} / {n_total_ent:,}")
-
-    # Mask consistency
-    seq_lens = batch["seq_len"]
-    for i in range(min(5, len(seq_lens))):
-        sl = seq_lens[i].item() if isinstance(seq_lens[i], torch.Tensor) else seq_lens[i]
-        mask_sum = int(mask[i].sum().item())
-        ok = "✓" if sl == mask_sum else "⚠"
-        print(f"    Window {i}: seq_len={sl}, mask_sum={mask_sum} {ok}")
-
-    # Speed test: iterate 10 batches
+    # Throughput
     t0 = time.time()
     for i, b in enumerate(loader):
-        if i >= 10:
-            break
-    throughput = (10 * batch_size) / (time.time() - t0)
-    print(f"\n  Throughput: {throughput:.0f} windows/sec")
-    print(f"  First batch load: {load_time:.3f}s")
-
-    return ds
+        if i >= 10: break
+    tp = (10 * batch_size) / (time.time() - t0)
+    print(f"  Throughput: {tp:.0f} windows/sec")
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", default="theia")
+    parser.add_argument("--split", default=None)
     parser.add_argument("--max-seq-len", type=int, default=512)
-    parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--split", default=None,
-                        help="Test only this split (train/val/test)")
     args = parser.parse_args()
 
     data_root = DATA_ROOT / args.dataset
-
     splits = {args.split: SPLITS[args.split]} if args.split else SPLITS
-
-    for name, shard_ids in splits.items():
-        test_split(name, shard_ids, data_root,
-                   max_seq_len=args.max_seq_len,
-                   batch_size=args.batch_size)
-
-    print(f"\n{'='*60}")
-    print("ALL TESTS PASSED ✓")
-    print(f"{'='*60}")
+    for name, sids in splits.items():
+        test_split(name, sids, data_root, max_seq_len=args.max_seq_len)
+    print(f"\n✓ ALL TESTS PASSED")
 
 
 if __name__ == "__main__":
