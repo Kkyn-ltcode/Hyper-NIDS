@@ -82,7 +82,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Run HyperMamba-NIDS pipeline stages")
     parser.add_argument("--dataset", required=True,
-                        choices=["theia", "trace"],
+                        choices=["theia", "trace", "trace-1"],
                         help="Dataset to process")
     parser.add_argument("--start-from", default=None,
                         choices=STAGES,
