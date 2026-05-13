@@ -283,8 +283,7 @@ def main():
         model.parameters(), lr=effective_lr,
         weight_decay=tcfg["weight_decay"])
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="max", factor=0.5, patience=2,
-        verbose=is_main())
+        optimizer, mode="max", factor=0.5, patience=2)
 
     # Auto-compute pos_weight from training data
     pw_val = tcfg.get("pos_weight", "auto")
