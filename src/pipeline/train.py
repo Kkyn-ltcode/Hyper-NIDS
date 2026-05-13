@@ -74,6 +74,10 @@ def masked_bce_loss(logits, y, mask, pos_weight_t):
 def compute_metrics(all_logits, all_labels):
     probs = torch.sigmoid(torch.tensor(all_logits)).numpy()
     labels = np.array(all_labels)
+    # Filter out padding labels (-1)
+    valid = labels >= 0
+    probs = probs[valid]
+    labels = labels[valid]
     m = {}
     try:
         m["auprc"] = float(average_precision_score(labels, probs))
@@ -201,20 +205,21 @@ def main():
     if is_main():
         save_dir.mkdir(parents=True, exist_ok=True)
 
+    mcfg = cfg["model"]
+    dcfg = cfg["data"]
+    tcfg = cfg["training"]
+
     log("=" * 60)
     log(f"TRAIN: {cfg.get('name', 'THyN v0').upper()}")
     log("=" * 60)
     log(f"  Device:     {device}")
     log(f"  World size: {world_size}")
-    log(f"  Model type: {cfg['model']['model_type']}")
-    log(f"  Encoder:    {cfg['model']['encoder_type']}")
+    log(f"  Model type: {mcfg['model_type']}")
+    log(f"  Encoder:    {mcfg['encoder_type']}")
     log(f"  Labels:     {dcfg.get('label_type', 'broad')}")
 
     # ── Data ──
     log(f"\n[1/4] Loading data...")
-    mcfg = cfg["model"]
-    dcfg = cfg["data"]
-    tcfg = cfg["training"]
 
     label_type = dcfg.get("label_type", "broad")
 

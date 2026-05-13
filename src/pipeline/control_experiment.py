@@ -41,22 +41,21 @@ DATA_ROOT = (
 
 
 class ShuffledDataset(Dataset):
-    """Wraps THyNDataset with optional temporal/label shuffling."""
+    """Wraps THyNDataset with optional temporal/label/entity shuffling."""
 
     def __init__(self, base_ds, mode="temporal", seed=42):
         """
         Args:
             base_ds: THyNDataset instance
-            mode: "temporal" — shuffle event order within windows
-                  "labels"   — randomly reassign labels across windows
+            mode: "temporal"   — shuffle event order within windows
+                  "labels"     — randomly reassign labels across windows
+                  "entity_ids" — shuffle entity IDs within windows
         """
         self.base = base_ds
         self.mode = mode
         self.rng = np.random.RandomState(seed)
 
         if mode == "labels":
-            # Pre-shuffle: randomly permute window→label mapping
-            # Collect per-window majority labels
             self.label_perm = self.rng.permutation(len(base_ds))
 
     def __len__(self):
@@ -64,7 +63,6 @@ class ShuffledDataset(Dataset):
 
     def __getitem__(self, idx):
         if self.mode == "labels":
-            # Get features from idx, labels from permuted index
             item = self.base[idx]
             donor = self.base[self.label_perm[idx]]
             item["y"] = donor["y"]
@@ -78,8 +76,28 @@ class ShuffledDataset(Dataset):
                 item["X_cont"][:seq_len] = item["X_cont"][perm]
                 item["event_type"][:seq_len] = item["event_type"][perm]
                 item["entity_ids"][:seq_len] = item["entity_ids"][perm]
-                # Labels stay aligned with (shuffled) features
                 item["y"][:seq_len] = item["y"][perm]
+            return item
+
+        elif self.mode == "entity_ids":
+            item = self.base[idx]
+            seq_len = item["seq_len"]
+            if seq_len > 1:
+                ent = item["entity_ids"][:seq_len]  # (L, 3)
+                # Collect all unique entity IDs in this window
+                unique_ids = torch.unique(ent[ent > 0])
+                if len(unique_ids) > 1:
+                    # Create random permutation mapping
+                    perm = unique_ids[torch.randperm(len(unique_ids))]
+                    id_map = {old.item(): new.item()
+                              for old, new in zip(unique_ids, perm)}
+                    # Apply mapping to entity_ids
+                    for i in range(seq_len):
+                        for j in range(3):
+                            v = ent[i, j].item()
+                            if v > 0 and v in id_map:
+                                ent[i, j] = id_map[v]
+                    item["entity_ids"][:seq_len] = ent
             return item
 
         return self.base[idx]
@@ -185,7 +203,16 @@ def run_experiment(name, ckpt_path, cfg, dataset, device):
         print(f"  Temporal (seed={seed}): AUPRC={m['auprc']:.4f} "
               f"AUROC={m['auroc']:.4f} F1={m['f1']:.4f}")
 
-    # 3. Label shuffle (3 seeds)
+    # 3. Entity-ID shuffle (3 seeds)
+    for seed in [42, 123, 456]:
+        ds = ShuffledDataset(val_ds, mode="entity_ids", seed=seed)
+        loader = DataLoader(ds, batch_size=64, shuffle=False, num_workers=0)
+        m = evaluate_control(model, loader, pw_t, device)
+        results[f"entity_s{seed}"] = m
+        print(f"  Entity (seed={seed}):   AUPRC={m['auprc']:.4f} "
+              f"AUROC={m['auroc']:.4f} F1={m['f1']:.4f}")
+
+    # 4. Label shuffle (3 seeds)
     for seed in [42, 123, 456]:
         ds = ShuffledDataset(val_ds, mode="labels", seed=seed)
         loader = DataLoader(ds, batch_size=64, shuffle=False, num_workers=0)
@@ -198,6 +225,8 @@ def run_experiment(name, ckpt_path, cfg, dataset, device):
     normal_auprc = results["normal"]["auprc"]
     temporal_auprcs = [results[f"temporal_s{s}"]["auprc"]
                        for s in [42, 123, 456]]
+    entity_auprcs = [results[f"entity_s{s}"]["auprc"]
+                     for s in [42, 123, 456]]
     label_auprcs = [results[f"labels_s{s}"]["auprc"]
                     for s in [42, 123, 456]]
 
@@ -206,6 +235,9 @@ def run_experiment(name, ckpt_path, cfg, dataset, device):
     print(f"  Temporal shuffle:     {np.mean(temporal_auprcs):.4f} "
           f"± {np.std(temporal_auprcs):.4f} "
           f"(Δ = {normal_auprc - np.mean(temporal_auprcs):+.4f})")
+    print(f"  Entity-ID shuffle:    {np.mean(entity_auprcs):.4f} "
+          f"± {np.std(entity_auprcs):.4f} "
+          f"(Δ = {normal_auprc - np.mean(entity_auprcs):+.4f})")
     print(f"  Label shuffle:        {np.mean(label_auprcs):.4f} "
           f"± {np.std(label_auprcs):.4f} "
           f"(Δ = {normal_auprc - np.mean(label_auprcs):+.4f})")
