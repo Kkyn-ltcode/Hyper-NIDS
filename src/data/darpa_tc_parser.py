@@ -234,18 +234,12 @@ def parse_shard(filepath: Path, show_progress: bool = True) -> dict:
     parse_errors = 0
     skipped_types = Counter()
 
-    if show_progress:
-        print(f"Counting lines in {filepath.name}...")
-        total_lines = count_lines(filepath)
-        print(f"  {total_lines:,} lines")
-    else:
-        total_lines = None
 
-    iterator = open(filepath, "r")
-    if show_progress:
-        iterator = tqdm(iterator, total=total_lines, desc=filepath.name, unit=" records")
+    total_lines = None
 
-    try:
+    with open(filepath, "r") as f:
+        iterator = tqdm(f, total=total_lines, desc=filepath.name, unit=" records") \
+            if show_progress else f
         for line in iterator:
             line = line.strip()
             if not line:
@@ -280,10 +274,6 @@ def parse_shard(filepath: Path, show_progress: bool = True) -> dict:
             elif category == "object":
                 objects.append(extracted)
 
-    finally:
-        if show_progress and hasattr(iterator, "close"):
-            iterator.close()
-
     if parse_errors:
         print(f"  Parse errors: {parse_errors}")
     if skipped_types:
@@ -306,7 +296,7 @@ def build_dataframes(parsed: dict) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataF
     """
     # --- Events ---
     events_df = pd.DataFrame(parsed["events"])
-    if len(events_df) > 0:
+    if len(events_df) > 0 and "type" in events_df.columns:
         events_df["timestamp_nanos"] = pd.to_numeric(
             events_df["timestamp_nanos"], errors="coerce"
         )
@@ -319,7 +309,7 @@ def build_dataframes(parsed: dict) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataF
 
     # --- Subjects ---
     subjects_df = pd.DataFrame(parsed["subjects"])
-    if len(subjects_df) > 0:
+    if len(subjects_df) > 0 and "type" in subjects_df.columns:
         subjects_df["type"] = subjects_df["type"].astype("category")
         subjects_df["start_timestamp_nanos"] = pd.to_numeric(
             subjects_df["start_timestamp_nanos"], errors="coerce"
@@ -327,7 +317,7 @@ def build_dataframes(parsed: dict) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataF
 
     # --- Objects ---
     objects_df = pd.DataFrame(parsed["objects"])
-    if len(objects_df) > 0:
+    if len(objects_df) > 0 and "object_type" in objects_df.columns:
         objects_df["object_type"] = objects_df["object_type"].astype("category")
 
     return events_df, subjects_df, objects_df

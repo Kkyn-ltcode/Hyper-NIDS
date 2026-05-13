@@ -147,6 +147,11 @@ def main():
 
     all_he_indices = []
     all_ent_indices = []
+    all_labels_broad = []
+    all_labels_narrow = []
+    all_labels_ioc = []
+    all_event_types = []
+    all_timestamps = []
     total_events = 0
 
     # Track hyperedge sizes (will vary now: 2 or 3)
@@ -158,22 +163,25 @@ def main():
         shard_idx = int(shard_name.replace("labeled_shard", ""))
         print(f"  Processing {shard_name}...")
 
-        df = pd.read_parquet(f, columns=[
-            "subject_uuid", "predicate_object_uuid",
-            "predicate_object2_uuid",
-        ])
+        LABEL_COLS = ["label_broad", "label_narrow", "label_ioc",
+                      "type", "timestamp_nanos"]
+        available = pd.read_parquet(f, columns=None).columns.tolist()
+        load_cols = ["subject_uuid", "predicate_object_uuid",
+                     "predicate_object2_uuid"] + \
+                    [c for c in LABEL_COLS if c in available]
+        df = pd.read_parquet(f, columns=load_cols)
         n = len(df)
 
         # Map UUIDs to integer IDs (excluded UUIDs will map to NaN)
-        subj_ids = pd.to_numeric(
-            df["subject_uuid"].map(uuid_to_id), errors="coerce"
-        ).fillna(-1).astype(np.int64).values
-        obj1_ids = pd.to_numeric(
-            df["predicate_object_uuid"].map(uuid_to_id), errors="coerce"
-        ).fillna(-1).astype(np.int64).values
-        obj2_ids = pd.to_numeric(
-            df["predicate_object2_uuid"].map(uuid_to_id), errors="coerce"
-        ).fillna(-1).astype(np.int64).values
+        def map_col(series):
+            return np.fromiter(
+                (uuid_to_id.get(u, -1) for u in series.fillna("")),
+                dtype=np.int64, count=len(series)
+            )
+
+        subj_ids = map_col(df["subject_uuid"])
+        obj1_ids = map_col(df["predicate_object_uuid"])
+        obj2_ids = map_col(df["predicate_object2_uuid"])
 
         # Count hyperedge sizes
         has_sub = subj_ids >= 0
@@ -195,11 +203,13 @@ def main():
         size_2_count += int((sizes == 2).sum())
         size_3_count += int((sizes == 3).sum())
 
-        # Global hyperedge IDs
+        # Use n (total events) as offset unit — degenerate events
+        # still occupy an index slot (labels array aligns with events)
         he_ids = np.arange(he_global_offset, he_global_offset + n,
                            dtype=np.int64)
         shard_offsets.append((shard_idx, he_global_offset,
-                              he_global_offset + n))
+                              he_global_offset + n,
+                              int(valid_he.sum())))  # valid count for reference
 
         # Build COO entries (skip sentinel -1)
         for ent_col in [subj_ids, obj1_ids, obj2_ids]:
@@ -212,6 +222,20 @@ def main():
         n_sz3 = int((sizes == 3).sum())
         print(f"    {n:,} events | size-2: {n - n_sz3:,} | "
               f"size-3: {n_sz3:,} ({100*n_sz3/n:.1f}%)")
+
+        for col, store in [
+            ("label_broad",    all_labels_broad),
+            ("label_narrow",   all_labels_narrow),
+            ("label_ioc",      all_labels_ioc),
+        ]:
+            arr = df[col].values.astype(np.int8) if col in df.columns \
+                  else np.full(n, -1, dtype=np.int8)
+            store.append(arr)
+
+        if "type" in df.columns:
+            all_event_types.append(df["type"].astype("category").cat.codes.values.astype(np.int16))
+        if "timestamp_nanos" in df.columns:
+            all_timestamps.append(df["timestamp_nanos"].values.astype(np.int64))
 
         del df, subj_ids, obj1_ids, obj2_ids, he_ids
         gc.collect()
@@ -236,6 +260,7 @@ def main():
         shard_idx=np.array([s[0] for s in shard_offsets]),
         start=np.array([s[1] for s in shard_offsets]),
         end=np.array([s[2] for s in shard_offsets]),
+        n_valid=np.array([s[3] for s in shard_offsets]),
     )
 
     # ============================================================
@@ -259,6 +284,21 @@ def main():
 
     incidence_path = graph_dir / "incidence.npz"
     sparse.save_npz(incidence_path, H_csr)
+    labels_path = graph_dir / "hyperedge_labels.npz"
+    np.savez_compressed(
+        labels_path,
+        y_broad=np.concatenate(all_labels_broad),
+        y_narrow=np.concatenate(all_labels_narrow) if all_labels_narrow else np.array([]),
+        y_ioc=np.concatenate(all_labels_ioc) if all_labels_ioc else np.array([]),
+    )
+
+    meta_path = graph_dir / "hyperedge_metadata.npz"
+    np.savez_compressed(
+        meta_path,
+        event_type=np.concatenate(all_event_types) if all_event_types else np.array([]),
+        timestamp_nanos=np.concatenate(all_timestamps) if all_timestamps else np.array([]),
+    )
+    print(f"    hyperedge_labels.npz, hyperedge_metadata.npz saved")
 
     print(f"  Shape: {H_csr.shape}")
     print(f"  Non-zeros: {H_csr.nnz:,}")
@@ -300,13 +340,12 @@ def main():
         print(f"    {rank+1:>4d} {deg:>10,} {etype:>12s} {uuid:>40s}")
 
     # Hyperedge sizes
-    he_sizes = np.array(H_csr.sum(axis=0)).flatten()
-    size_counts = np.bincount(he_sizes)
     print(f"\n  Hyperedge size distribution:")
-    for s in range(len(size_counts)):
-        if size_counts[s] > 0:
-            print(f"    size {s}: {size_counts[s]:,} "
-                  f"({100*size_counts[s]/num_hyperedges:.1f}%)")
+    n_degen = num_hyperedges - size_2_count - size_3_count
+    if n_degen > 0:
+        print(f"    size <2: {n_degen:,} (filtered)")
+    print(f"    size 2:  {size_2_count:,} ({100*size_2_count/num_hyperedges:.1f}%)")
+    print(f"    size 3:  {size_3_count:,} ({100*size_3_count/num_hyperedges:.1f}%)")
 
     # Entity type breakdown
     print(f"\n  Entity type breakdown:")

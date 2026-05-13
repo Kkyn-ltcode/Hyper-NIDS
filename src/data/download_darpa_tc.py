@@ -84,7 +84,7 @@ def extract_tar(data_dir: Path, dataset: str) -> list[Path]:
         print(f"  2. Navigate: Engagement3 > data > {dataset}")
         print(f"  3. Download: {DATASET_ARCHIVES.get(dataset, 'the appropriate archive')}")
         print(f"  4. Place in: {data_dir}")
-        sys.exit(1)
+        raise FileNotFoundError(f"No .json.tar.gz found in {data_dir}")
 
     extracted = []
     for tar_path in tar_files:
@@ -113,8 +113,7 @@ def extract_tar(data_dir: Path, dataset: str) -> list[Path]:
                         print(f"  Extracted: {m.name} ({size_gb:.2f} GB)")
                         extracted.append(extracted_path)
         except Exception as e:
-            print(f"  ERROR extracting: {e}")
-            sys.exit(1)
+            raise RuntimeError(f"Failed to extract {tar_path}: {e}") from e
 
     return sorted(extracted)
 
@@ -122,7 +121,7 @@ def extract_tar(data_dir: Path, dataset: str) -> list[Path]:
 def find_json_shards(data_dir: Path) -> list[Path]:
     """Find all extracted JSON shard files (not tar archives)."""
     shards = []
-    for f in sorted(data_dir.iterdir()):
+    for f in sorted(data_dir.iterdir(), key=lambda x: x.name):
         if f.is_file() and ".json" in f.name and ".tar.gz" not in f.name:
             shards.append(f)
     return sorted(shards)
@@ -165,11 +164,11 @@ def verify_shard(filepath: Path, max_records: int = 50000) -> dict:
                     print(f"  WARNING: Parse error on line {line_num}")
                 continue
 
-            total_records += 1
-
             datum = record.get("datum", {})
             if not datum:
                 continue
+
+            total_records += 1
 
             record_type = next(iter(datum))
             record_data = datum[record_type]

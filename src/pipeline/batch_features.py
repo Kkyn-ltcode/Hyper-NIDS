@@ -154,7 +154,10 @@ def main():
         else:
             # Ensure consistent feature names (types may vary across shards)
             if feat_names != all_feat_names:
-                print(f"    ⚠ Feature name mismatch! Padding...")
+                new_feats = set(feat_names) - set(all_feat_names)
+                if new_feats:
+                    print(f"    ⚠ Dropping new features not in shard 0: {new_feats}")
+                print(f"    ⚠ Feature name mismatch! Aligning to shard-0 schema...")
                 # Align columns: add missing types as zero columns
                 X_aligned = np.zeros(
                     (n, len(all_feat_names)), dtype=np.float32)
@@ -168,8 +171,12 @@ def main():
             npz_path,
             X=X,
             y_broad=df["label_broad"].values,
+            y_narrow=df["label_narrow"].values if "label_narrow" in df.columns else np.full(n, -1, dtype=np.int8),
+            y_ioc=df["label_ioc"].values if "label_ioc" in df.columns else np.full(n, -1, dtype=np.int8),
+            y_crossprocess=df["label_crossprocess"].values if "label_crossprocess" in df.columns else np.full(n, -1, dtype=np.int8),
             timestamp_nanos=df["timestamp_nanos"].values,
             subject_uuid=df["subject_uuid"].values,
+            predicate_object_uuid=df["predicate_object_uuid"].values,
         )
 
         elapsed = time.time() - t0
@@ -198,7 +205,17 @@ def main():
     # ============================================================
     # Validation
     # ============================================================
-    if args.validate or True:  # Always validate
+    if args.validate:
+        if all_feat_names is None:
+            # Load from saved file if all shards were skipped
+            names_path = features_dir / "feature_names.txt"
+            if names_path.exists():
+                with open(names_path) as f:
+                    all_feat_names = [l.strip() for l in f if l.strip()]
+            else:
+                print("  Cannot validate: feature_names.txt not found.")
+                return
+
         print(f"\n{'='*60}")
         print("VALIDATION")
         print(f"{'='*60}")

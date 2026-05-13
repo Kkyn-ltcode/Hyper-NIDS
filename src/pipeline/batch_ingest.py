@@ -13,6 +13,7 @@ Usage:
     python -m src.pipeline.batch_ingest --dataset theia --validate-only
 """
 
+import json
 import argparse
 import gc
 import time
@@ -22,9 +23,8 @@ import numpy as np
 import pandas as pd
 
 from src.data.ground_truth import load_ground_truth, label_events
-from src.data.build_hypergraph import build_entity_vocab
 from src.data.build_sequences import build_subject_sequences, sequence_stats
-
+from src.data.ground_truth import label_narrow_events, label_ioc_events
 
 DATA_ROOT = (
     Path(__file__).resolve().parent.parent.parent
@@ -61,18 +61,23 @@ def process_shard(
     shard_dir = DATA_ROOT / dataset / "shards"
     out_path = output_dir / f"labeled_shard{shard_idx}.parquet"
 
-    # Skip if already processed
+    REQUIRED_COLS = {"label_broad", "label_narrow", "label_ioc", "he_size"}
     if out_path.exists():
-        # Quick validation: load and count
-        df = pd.read_parquet(out_path, columns=["label_broad"])
-        stats = {
-            "shard": shard_idx,
-            "n_events": len(df),
-            "n_attack_broad": int((df["label_broad"] == 1).sum()),
-            "skipped": True,
-        }
-        del df
-        return stats
+        import pyarrow.parquet as pq
+        existing_cols = set(pq.read_schema(out_path).names)
+        if not REQUIRED_COLS.issubset(existing_cols):
+            print(f"    WARNING: Shard {shard_idx} missing columns "
+                  f"{REQUIRED_COLS - existing_cols}, reprocessing...")
+        else:
+            df = pd.read_parquet(out_path, columns=["label_broad"])
+            stats = {
+                "shard": shard_idx,
+                "n_events": len(df),
+                "n_attack_broad": int((df["label_broad"] == 1).sum()),
+                "skipped": True,
+            }
+            del df
+            return stats
 
     # Load
     events_df = pd.read_parquet(shard_dir / f"events_shard{shard_idx}.parquet")
@@ -82,7 +87,9 @@ def process_shard(
     n_events = len(events_df)
 
     # Label (broad = entire process tree)
-    labels_broad = label_events(events_df, subjects_df, objects_df, gt)
+    labels_broad  = label_events(events_df, subjects_df, objects_df, gt)
+    labels_narrow = label_narrow_events(events_df, subjects_df, objects_df, gt)
+    labels_ioc    = label_ioc_events(events_df, subjects_df, objects_df, gt)
 
     # Hyperedge sizes
     has_sub = events_df["subject_uuid"].notna()
@@ -96,9 +103,9 @@ def process_shard(
     del sequences
 
     # Add label columns to events
-    events_df["label_broad"] = labels_broad.values
-    events_df["label_narrow"] = np.int8(-1)   # Placeholder
-    events_df["label_ioc"] = np.int8(-1)      # Placeholder
+    events_df["label_broad"]  = labels_broad.values
+    events_df["label_narrow"] = labels_narrow.values
+    events_df["label_ioc"]    = labels_ioc.values
     events_df["he_size"] = he_sizes.values.astype(np.int8)
 
     # Save labeled shard
@@ -126,8 +133,17 @@ def process_shard(
     return stats
 
 
-def validate_totals(output_dir: Path, expected_total: int = 44_023_627):
+def validate_totals(output_dir: Path, dataset: str, expected_total: int = None):
     """Validate total counts across all labeled shards."""
+    if expected_total is None:
+        summary_path = DATA_ROOT / dataset / "summary.json"
+        if summary_path.exists():
+            with open(summary_path) as f:
+                expected_total = json.load(f).get("total_events", 0)
+        else:
+            expected_total = 0
+
+
     print(f"\n{'='*60}")
     print("VALIDATION")
     print(f"{'='*60}")
@@ -241,7 +257,7 @@ def main():
     print(f"\n  Total time: {time.time()-t_total:.1f}s")
 
     # Validate
-    validate_totals(output_dir)
+    validate_totals(output_dir, dataset=args.dataset)
 
 
 if __name__ == "__main__":

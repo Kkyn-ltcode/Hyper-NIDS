@@ -46,7 +46,7 @@ def detect_binary_features(
                 continue
             col = X[:, j]
             unique_vals = np.unique(col[~np.isnan(col)])
-            if len(unique_vals) > 2 or not all(v in (0.0, 1.0, -1.0)
+            if len(unique_vals) > 2 or not all(v in (0.0, 1.0)
                                                 for v in unique_vals):
                 is_binary[j] = False
         del data, X
@@ -79,17 +79,23 @@ def compute_train_stats(
         data = np.load(features_dir / f"thyne_shard{idx}.npz")
         X = data["X"].astype(np.float64)
 
-        for j in range(n_features):
-            if is_binary[j]:
+        cont_mask = np.array([not b for b in is_binary])
+        X_cont = X[:, cont_mask]  # shape (N, n_continuous)
+        finite_mask = np.isfinite(X_cont)
+
+        for j, gj in enumerate(np.where(cont_mask)[0]):
+            valid = X_cont[finite_mask[:, j], j]
+            n_new = len(valid)
+            if n_new == 0:
                 continue
-            col = X[:, j]
-            valid = col[~np.isnan(col)]
-            for val in valid:
-                count[j] += 1
-                delta = val - mean[j]
-                mean[j] += delta / count[j]
-                delta2 = val - mean[j]
-                m2[j] += delta * delta2
+            new_mean = valid.mean()
+            new_m2 = valid.var() * n_new
+            # Parallel Welford merge
+            n_total = count[gj] + n_new
+            delta = new_mean - mean[gj]
+            mean[gj] += delta * n_new / n_total
+            m2[gj] += new_m2 + delta**2 * count[gj] * n_new / n_total
+            count[gj] = n_total
 
         del data, X
         gc.collect()
@@ -208,13 +214,10 @@ def main():
         n = len(X)
         n_atk = int((data["y_broad"] == 1).sum())
 
-        np.savez_compressed(
-            dst_path,
-            X=X,
-            y_broad=data["y_broad"],
-            timestamp_nanos=data["timestamp_nanos"],
-            subject_uuid=data["subject_uuid"],
-        )
+        # Copy all arrays from source, only replace X
+        save_kwargs = {k: data[k] for k in data.files}
+        save_kwargs["X"] = X
+        np.savez_compressed(dst_path, **save_kwargs)
 
         print(f"  Shard {idx} [{split}]: {n:>10,} events, "
               f"{n_atk:>8,} attack, "

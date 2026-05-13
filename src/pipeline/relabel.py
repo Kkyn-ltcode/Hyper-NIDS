@@ -38,7 +38,6 @@ def main():
     args = parser.parse_args()
 
     labeled_dir = DATA_ROOT / args.dataset / "labeled"
-    shard_dir = DATA_ROOT / args.dataset / "shards"
     shard_files = sorted(labeled_dir.glob("labeled_shard*.parquet"))
 
     gt = load_ground_truth(args.dataset)
@@ -55,6 +54,11 @@ def main():
     total_xproc = 0
     total_events = 0
 
+    subjects_df = pd.read_parquet(DATA_ROOT / args.dataset / "subjects.parquet")
+    objects_df  = pd.read_parquet(DATA_ROOT / args.dataset / "objects.parquet")
+    print(f"  Global subjects: {len(subjects_df):,}")
+    print(f"  Global objects:  {len(objects_df):,}")
+
     for f in shard_files:
         shard_name = f.stem
         shard_idx = int(shard_name.replace("labeled_shard", ""))
@@ -64,12 +68,6 @@ def main():
         # Load labeled events
         events_df = pd.read_parquet(f)
         n = len(events_df)
-
-        # Load subjects/objects from raw shards (needed for label functions)
-        subjects_df = pd.read_parquet(
-            shard_dir / f"subjects_shard{shard_idx}.parquet")
-        objects_df = pd.read_parquet(
-            shard_dir / f"objects_shard{shard_idx}.parquet")
 
         # Compute narrow labels
         narrow = label_narrow_events(events_df, subjects_df, objects_df, gt)
@@ -84,7 +82,9 @@ def main():
         events_df["label_crossprocess"] = xproc.values
 
         # Overwrite parquet
-        events_df.to_parquet(f, index=False)
+        tmp_path = f.with_suffix(".tmp.parquet")
+        events_df.to_parquet(tmp_path, index=False)
+        tmp_path.replace(f)
 
         n_narrow = int(narrow.sum())
         n_ioc = int(ioc.sum())
@@ -101,7 +101,7 @@ def main():
         print(f"    IoC:    {n_ioc:,} ({100*n_ioc/n:.4f}%)")
         print(f"    Time:   {time.time()-t0:.1f}s")
 
-        del events_df, subjects_df, objects_df, narrow, ioc, xproc
+        del events_df, narrow, ioc, xproc
         gc.collect()
 
     # Summary

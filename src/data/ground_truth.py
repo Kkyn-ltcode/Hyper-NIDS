@@ -130,6 +130,27 @@ def _match_entry_process(subjects_df: pd.DataFrame, entry: str) -> pd.Series:
     basenames = _get_process_basenames(subjects_df)
     return basenames == _get_basename(entry)
 
+NIL_UUID = "00000000-0000-0000-0000-000000000000"
+
+def _build_children_map(subjects_df: pd.DataFrame) -> dict:
+    """Build parent->children mapping, excluding nil UUIDs."""
+    children = {}
+    mask = subjects_df["parent_uuid"].notna() & (subjects_df["parent_uuid"] != NIL_UUID)
+    for _, row in subjects_df[mask][["uuid", "parent_uuid"]].iterrows():
+        children.setdefault(row["parent_uuid"], []).append(row["uuid"])
+    return children
+
+def _bfs_descendants(start_uuids: set, children_map: dict) -> set:
+    """BFS to find all descendants of start_uuids."""
+    visited = set(start_uuids)
+    queue = list(start_uuids)
+    while queue:
+        curr = queue.pop()
+        for child in children_map.get(curr, []):
+            if child not in visited:
+                visited.add(child)
+                queue.append(child)
+    return visited
 
 def build_attack_subject_uuids(
     subjects_df: pd.DataFrame,
@@ -153,14 +174,8 @@ def build_attack_subject_uuids(
         attack_uuids.update(entry_uuids)
 
         # BFS on parent_uuid to find descendants
-        for _ in range(20):
-            children = subjects_df[
-                subjects_df["parent_uuid"].isin(attack_uuids)
-                & ~subjects_df["uuid"].isin(attack_uuids)
-            ]["uuid"].values
-            if len(children) == 0:
-                break
-            attack_uuids.update(children)
+        children_map = _build_children_map(subjects_df)
+        attack_uuids = _bfs_descendants(attack_uuids, children_map)
 
     return attack_uuids
 
@@ -177,7 +192,8 @@ def build_attack_object_uuids(
         2. Exact IP address matching
     """
     attack_uuids = set()
-
+    objects_df = objects_df[objects_df["uuid"] != NIL_UUID]
+    
     # File objects
     if "filename" in objects_df.columns:
         fnames = objects_df["filename"].fillna("")
@@ -255,16 +271,10 @@ def build_child_only_subject_uuids(
         entry_uuids = set(subjects_df.loc[entry_mask, "uuid"].values)
 
         # BFS from Firefox to find descendants (but don't include Firefox)
-        frontier = set(entry_uuids)
-        for _ in range(20):
-            children = subjects_df[
-                subjects_df["parent_uuid"].isin(frontier)
-                & ~subjects_df["uuid"].isin(child_uuids | entry_uuids)
-            ]["uuid"].values
-            if len(children) == 0:
-                break
-            child_uuids.update(children)
-            frontier = set(children)
+        children_map = _build_children_map(subjects_df)
+        all_descendants = _bfs_descendants(entry_uuids, children_map)
+        # Exclude entry process itself
+        child_uuids.update(all_descendants - entry_uuids)
 
     return child_uuids
 

@@ -84,13 +84,13 @@ def main():
         n = len(df)
 
         # Map subject UUIDs to integer IDs (vectorized)
+        df = df.reset_index(drop=True)
         subj_ids = df["subject_uuid"].map(uuid_to_id)
-        # Drop events with unmapped subjects (shouldn't happen, but safe)
-        valid = subj_ids.notna()
+        valid = subj_ids.notna().values
         subj_ids = subj_ids[valid].astype(np.int64).values
         ts = df.loc[valid, "timestamp_nanos"].values.astype(np.int64)
         he_ids = np.arange(he_offset, he_offset + n,
-                           dtype=np.int64)[valid.values]
+                           dtype=np.int64)[valid]
 
         all_subj_ids.append(subj_ids)
         all_timestamps.append(ts)
@@ -151,21 +151,10 @@ def main():
     # Build offset array for ALL entities (not just those with events)
     # offset[i] = start index for entity i in he_ids
     # offset[num_entities] = total length
+    # np.bincount counts events per subject_id directly
+    seq_lens_sparse = np.bincount(subj_ids, minlength=num_entities).astype(np.int64)
     offset = np.zeros(num_entities + 1, dtype=np.int64)
-
-    # Fill in the offsets for subjects that have events
-    for g_idx in range(len(group_starts)):
-        s_id = group_subj_ids[g_idx]
-        start = group_starts[g_idx]
-        if g_idx + 1 < len(group_starts):
-            end = group_starts[g_idx + 1]
-        else:
-            end = total
-        seq_len = end - start
-        offset[s_id + 1] = seq_len
-
-    # Cumulative sum to get actual offsets
-    offset = np.cumsum(offset)
+    offset[1:] = np.cumsum(seq_lens_sparse)
 
     n_subjects_with_events = len(group_starts)
     print(f"  Subjects with events: {n_subjects_with_events:,}")
@@ -183,8 +172,8 @@ def main():
     np.savez_compressed(
         seq_path,
         he_ids=he_ids,
+        timestamps=timestamps,
         offset=offset,
-        # Also save the subject -> sequence mapping metadata
         num_entities=num_entities,
         total_events=total,
     )
@@ -243,14 +232,7 @@ def main():
 
     gt = load_ground_truth(args.dataset)
     subjects_df = pd.read_parquet(
-        DATA_ROOT / args.dataset / "shards" / "subjects_shard0.parquet")
-    # Load subjects from all shards for BFS
-    for f in sorted((DATA_ROOT / args.dataset / "shards").glob(
-            "subjects_shard*.parquet")):
-        if "shard0" not in f.name:
-            more = pd.read_parquet(f)
-            subjects_df = pd.concat([subjects_df, more], ignore_index=True)
-    subjects_df = subjects_df.drop_duplicates(subset=["uuid"])
+        DATA_ROOT / args.dataset / "subjects.parquet")
 
     attack_sub_uuids = build_attack_subject_uuids(subjects_df, gt)
     attack_sub_ids = [uuid_to_id[u] for u in attack_sub_uuids
