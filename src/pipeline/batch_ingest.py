@@ -184,7 +184,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Batch ingest and label all shards")
     parser.add_argument("--dataset", default="theia",
-                        choices=["theia", "trace"])
+                        choices=["theia", "trace", "trace-1"])
     parser.add_argument("--validate-only", action="store_true",
                         help="Only run validation on existing labeled shards")
     args = parser.parse_args()

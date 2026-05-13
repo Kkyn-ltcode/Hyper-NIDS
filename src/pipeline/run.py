@@ -29,6 +29,7 @@ import time
 
 STAGES = [
     "download",
+    "parse",
     "ingest",
     "relabel",
     "features",
@@ -41,6 +42,11 @@ STAGE_COMMANDS = {
     "download": lambda args: [
         sys.executable, "-m", "src.data.download_darpa_tc",
         "--extract", "--verify",
+        "--dataset", args.dataset,
+    ],
+    "parse": lambda args: [
+        sys.executable, "-m", "src.data.darpa_tc_parser",
+        "--shards", "all",
         "--dataset", args.dataset,
     ],
     "ingest": lambda args: [

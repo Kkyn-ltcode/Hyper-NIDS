@@ -79,12 +79,34 @@ _TRACE_GT = GroundTruth(
     attack_entry_process="firefox",
 )
 
+_TRACE_1_GT = GroundTruth(
+    dataset="trace",
+    attack_ips={
+        "145.199.103.57",     # TRACE webserver
+        "61.130.69.232",      # TRACE shellcode_server
+        "2.233.33.52",        # TRACE loaderDrakon
+        "180.156.107.146",    # TRACE drakon
+        "5.214.163.155",      # TRACE libdrakon
+        "45.26.25.240",       # TRACE netrecon
+        "162.66.239.75",      # TRACE micro
+        "17.146.0.252",       # TRACE netrecon 2
+        "62.83.155.175",      # Phishing
+        "208.75.117.3",       # www.nasa.ng
+        "208.75.117.2",       # www.foo1.com
+    },
+    malicious_file_substrings=[
+        "xtmp", "ztmp", "cache",
+    ],
+    malicious_process_basenames={"xtmp", "ztmp", "cache"},
+    attack_entry_process="firefox",
+)
 
 def load_ground_truth(dataset: str = "theia") -> GroundTruth:
     """Load ground truth IoCs for a given dataset."""
     configs = {
         "theia": _THEIA_GT,
         "trace": _TRACE_GT,
+        "trace-1": _TRACE_1_GT
     }
     if dataset not in configs:
         raise ValueError(f"Unknown dataset: {dataset}. "
@@ -193,7 +215,7 @@ def build_attack_object_uuids(
     """
     attack_uuids = set()
     objects_df = objects_df[objects_df["uuid"] != NIL_UUID]
-    
+
     # File objects
     if "filename" in objects_df.columns:
         fnames = objects_df["filename"].fillna("")

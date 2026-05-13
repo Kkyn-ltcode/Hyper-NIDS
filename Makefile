@@ -1,5 +1,5 @@
-.PHONY: pipeline-theia pipeline-trace \
-        ingest relabel features normalize graph sequences \
+.PHONY: pipeline-theia pipeline-trace pipeline-trace-1 \
+        ingest parse relabel features normalize graph sequences \
         train-thyn train-baseline control-experiment help
 
 PYTHON ?= python
@@ -21,9 +21,15 @@ pipeline-theia:  ## Run full pipeline for Theia
 pipeline-trace:  ## Run full pipeline for TRACE
 	$(PYTHON) -m src.pipeline.run --dataset trace --train-shards 0-4
 
+pipeline-trace-1:  ## Run full pipeline for TRACE
+	$(PYTHON) -m src.pipeline.run --dataset trace-1 --train-shards 0-4
+
 # ============================================================
 # Individual stages
 # ============================================================
+
+parse:  ## Parse JSON shards → Parquet
+	$(PYTHON) -m src.data.darpa_tc_parser --shards all --dataset $(DATASET)
 
 ingest:  ## Parse + label (DATASET=theia|trace)
 	$(PYTHON) -m src.pipeline.batch_ingest --dataset $(DATASET)
