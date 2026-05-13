@@ -32,6 +32,7 @@ import gc
 import json
 import sys
 import time
+import duckdb
 from collections import Counter
 from pathlib import Path
 
@@ -447,41 +448,65 @@ def main():
     print(f"\nMerging {len(event_parts)} event shards...")
 
     # Merge events
-    events_all = pd.concat(
-        [pd.read_parquet(p) for p in event_parts], ignore_index=True
-    )
-    events_all = events_all.sort_values("timestamp_nanos").reset_index(drop=True)
-    events_all["type"] = events_all["type"].astype("category")
-    events_all.to_parquet(processed_dir / "events.parquet", index=False)
-    n_ev = len(events_all)
-    mem_ev = events_all.memory_usage(deep=True).sum() / 1e6
-    ts_min = events_all["timestamp"].min()
-    ts_max = events_all["timestamp"].max()
-    ev_types = events_all["type"].value_counts().to_dict()
-    del events_all; gc.collect()
-    print(f"  events.parquet: {n_ev:,} rows ({mem_ev:.0f} MB)")
+    con = duckdb.connect()
 
-    # Merge subjects (dedup)
-    subj_parts = sorted(shard_dir.glob("subjects_shard*.parquet"))
-    print(f"Merging {len(subj_parts)} subject shards...")
-    subjects_all = pd.concat(
-        [pd.read_parquet(p) for p in subj_parts], ignore_index=True
-    ).drop_duplicates(subset=["uuid"], keep="first")
-    subjects_all.to_parquet(processed_dir / "subjects.parquet", index=False)
-    n_sub = len(subjects_all)
-    del subjects_all; gc.collect()
+    # Merge events — sort by timestamp, no RAM needed
+    print("\nMerging events (streaming via DuckDB)...")
+    event_pattern = str(shard_dir / "events_shard*.parquet")
+    con.execute(f"""
+        COPY (
+            SELECT * FROM read_parquet('{event_pattern}')
+            ORDER BY timestamp_nanos
+        ) TO '{processed_dir / "events.parquet"}'
+        (FORMAT PARQUET)
+    """)
+    stats = con.execute(f"""
+        SELECT
+            COUNT(*)                        AS n_ev,
+            MIN(timestamp)                  AS ts_min,
+            MAX(timestamp)                  AS ts_max
+        FROM read_parquet('{event_pattern}')
+    """).fetchone()
+    n_ev, ts_min, ts_max = stats
+    ev_types = {
+        r[0]: r[1] for r in con.execute(f"""
+            SELECT type, COUNT(*) FROM read_parquet('{event_pattern}')
+            GROUP BY type ORDER BY 2 DESC
+        """).fetchall()
+    }
+    print(f"  events.parquet: {n_ev:,} rows")
+
+    # Merge subjects — dedup by uuid
+    print("Merging subjects (streaming via DuckDB)...")
+    subj_pattern = str(shard_dir / "subjects_shard*.parquet")
+    con.execute(f"""
+        COPY (
+            SELECT DISTINCT ON (uuid) *
+            FROM read_parquet('{subj_pattern}')
+        ) TO '{processed_dir / "subjects.parquet"}'
+        (FORMAT PARQUET)
+    """)
+    n_sub = con.execute(f"""
+        SELECT COUNT(*) FROM read_parquet('{subj_pattern}')
+    """).fetchone()[0]
     print(f"  subjects.parquet: {n_sub:,} rows (deduplicated)")
 
-    # Merge objects (dedup)
-    obj_parts = sorted(shard_dir.glob("objects_shard*.parquet"))
-    print(f"Merging {len(obj_parts)} object shards...")
-    objects_all = pd.concat(
-        [pd.read_parquet(p) for p in obj_parts], ignore_index=True
-    ).drop_duplicates(subset=["uuid"], keep="first")
-    objects_all.to_parquet(processed_dir / "objects.parquet", index=False)
-    n_obj = len(objects_all)
-    del objects_all; gc.collect()
+    # Merge objects — dedup by uuid
+    print("Merging objects (streaming via DuckDB)...")
+    obj_pattern = str(shard_dir / "objects_shard*.parquet")
+    con.execute(f"""
+        COPY (
+            SELECT DISTINCT ON (uuid) *
+            FROM read_parquet('{obj_pattern}')
+        ) TO '{processed_dir / "objects.parquet"}'
+        (FORMAT PARQUET)
+    """)
+    n_obj = con.execute(f"""
+        SELECT COUNT(*) FROM read_parquet('{obj_pattern}')
+    """).fetchone()[0]
     print(f"  objects.parquet: {n_obj:,} rows (deduplicated)")
+
+    con.close()
 
     # ---- Summary ----
     elapsed = time.time() - start_time
