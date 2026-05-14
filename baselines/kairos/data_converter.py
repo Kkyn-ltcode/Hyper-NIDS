@@ -46,7 +46,10 @@ def path_to_hierarchy(p: str) -> list[str]:
 
     '/usr/bin/bash' → ['usr', 'usr/bin', 'usr/bin/bash']
     """
-    parts = p.strip().split("/")
+    p = str(p).strip()  # ensure string
+    if not p or p.lower() == "nan":
+        return ["unknown"]
+    parts = p.split("/")
     result = []
     for part in parts:
         if not part:
@@ -63,7 +66,10 @@ def ip_to_hierarchy(ip: str) -> list[str]:
 
     '192.168.1.1' → ['192', '192.168', '192.168.1', '192.168.1.1']
     """
-    parts = ip.strip().split(".")
+    ip = str(ip).strip()
+    if not ip or ip.lower() == "nan":
+        return ["unknown"]
+    parts = ip.split(".")
     result = []
     for part in parts:
         if result:
@@ -151,12 +157,15 @@ def convert_dataset(dataset: str):
         uid = row["uuid"]
         if uid not in uuid_to_id:
             uuid_to_id[uid] = next_id
-            label = ""
-            if "process_path" in row and pd.notna(row.get("process_path")):
-                label = row["process_path"]
-            elif "cmd_line" in row and pd.notna(row.get("cmd_line")):
-                label = row["cmd_line"]
-            node_labels[next_id] = ("subject", label or "unknown")
+            # Safe extraction: convert to string, replace NaN/"nan" with "unknown"
+            label = row.get("process_path", None)
+            if pd.isna(label) or str(label).strip() == "" or str(label).lower() == "nan":
+                label = row.get("cmd_line", None)
+            if pd.isna(label) or str(label).strip() == "" or str(label).lower() == "nan":
+                label = "unknown"
+            else:
+                label = str(label)
+            node_labels[next_id] = ("subject", label)
             next_id += 1
 
     # Objects: use filename, or IP:port
@@ -166,12 +175,24 @@ def convert_dataset(dataset: str):
             uuid_to_id[uid] = next_id
             otype = row.get("object_type", "unknown")
             if otype == "FILE" or otype == "MEMORY":
-                label = row.get("filename", "unknown") or "unknown"
+                label = row.get("filename", None)
+                if pd.isna(label) or str(label).strip() == "" or str(label).lower() == "nan":
+                    label = "unknown"
+                else:
+                    label = str(label)
                 node_labels[next_id] = ("file", label)
             elif otype == "NETFLOW":
-                addr = row.get("remote_address", "") or ""
-                port = row.get("remote_port", "") or ""
-                label = f"{addr}:{port}" if addr else "unknown"
+                addr = row.get("remote_address", None)
+                port = row.get("remote_port", None)
+                if pd.isna(addr) or str(addr).strip() == "":
+                    addr = ""
+                else:
+                    addr = str(addr)
+                if pd.isna(port) or str(port).strip() == "":
+                    port = ""
+                else:
+                    port = str(port)
+                label = f"{addr}:{port}" if addr or port else "unknown"
                 node_labels[next_id] = ("netflow", label)
             else:
                 node_labels[next_id] = ("file", "unknown")

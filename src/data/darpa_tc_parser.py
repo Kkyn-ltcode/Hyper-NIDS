@@ -27,6 +27,7 @@ Output:
         summary.json         # Parsing statistics
 """
 
+import shutil
 import argparse
 import gc
 import json
@@ -450,15 +451,20 @@ def main():
     # Merge events
     con = duckdb.connect()
 
+    con.execute("SET threads=2")
+    con.execute("SET memory_limit='12GB'")
+    con.execute("SET preserve_insertion_order=false")
+    con.execute(f"SET temp_directory='{processed_dir / 'duckdb_tmp'}'")
+    (processed_dir / "duckdb_tmp").mkdir(exist_ok=True)
+
     # Merge events — sort by timestamp, no RAM needed
     print("\nMerging events (streaming via DuckDB)...")
     event_pattern = str(shard_dir / "events_shard*.parquet")
     con.execute(f"""
         COPY (
-            SELECT * FROM read_parquet('{event_pattern}')
-            ORDER BY timestamp_nanos
+            SELECT * FROM read_parquet('{event_pattern}', hive_partitioning=false)
         ) TO '{processed_dir / "events.parquet"}'
-        (FORMAT PARQUET)
+        (FORMAT PARQUET, ROW_GROUP_SIZE 100000)
     """)
     stats = con.execute(f"""
         SELECT
@@ -506,6 +512,7 @@ def main():
     """).fetchone()[0]
     print(f"  objects.parquet: {n_obj:,} rows (deduplicated)")
 
+    shutil.rmtree(processed_dir / "duckdb_tmp", ignore_errors=True)
     con.close()
 
     # ---- Summary ----
