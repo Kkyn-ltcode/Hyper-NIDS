@@ -285,8 +285,8 @@ def convert_dataset(dataset: str):
             # Drop events with unmapped entities
             valid = src_ids.notna() & dst_ids.notna()
             df = df[valid].reset_index(drop=True)
-            src_ids = src_ids[valid].astype(int).values
-            dst_ids = dst_ids[valid].astype(int).values
+            src_ids = src_ids[valid].astype(int).values.copy()
+            dst_ids = dst_ids[valid].astype(int).values.copy()
 
             # Handle reversed edges
             for i, etype in enumerate(df["type"].values):
