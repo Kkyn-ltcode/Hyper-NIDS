@@ -1,6 +1,7 @@
 .PHONY: pipeline-theia pipeline-trace pipeline-trace-1 \
         ingest parse relabel features normalize graph sequences \
-        train-thyn train-baseline control-experiment help
+        train-thyn train-baseline control-experiment \
+        kairos-convert kairos-train kairos-eval help
 
 PYTHON ?= python
 DATASET ?= theia
@@ -71,3 +72,17 @@ control-experiment:  ## Run control experiment (temporal/entity/label shuffle)
 	$(PYTHON) -m src.pipeline.control_experiment \
 		--checkpoint checkpoints/baseline_a/best.pt \
 		--config configs/baseline_a.yaml
+
+# ============================================================
+# KAIROS Baseline
+# ============================================================
+
+kairos-convert:  ## Convert Parquet → KAIROS TemporalData
+	$(PYTHON) -m baselines.kairos.data_converter --dataset $(DATASET)
+
+kairos-train:  ## Train KAIROS baseline
+	$(PYTHON) -m baselines.kairos.train --dataset $(DATASET)
+
+kairos-eval:  ## Evaluate KAIROS baseline
+	$(PYTHON) -m baselines.kairos.evaluate --dataset $(DATASET) --split test
+
