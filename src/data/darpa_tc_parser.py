@@ -33,10 +33,10 @@ import gc
 import json
 import sys
 import time
-import duckdb
 from collections import Counter
 from pathlib import Path
-
+import pyarrow.parquet as pq
+import pyarrow as pa
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -498,22 +498,95 @@ def main():
     print(f"  subjects.parquet: {n_sub:,} rows (deduplicated)")
 
     # Merge objects — dedup by uuid
-    print("Merging objects (streaming via DuckDB)...")
-    obj_pattern = str(shard_dir / "objects_shard*.parquet")
-    con.execute(f"""
-        COPY (
-            SELECT DISTINCT ON (uuid) *
-            FROM read_parquet('{obj_pattern}')
-        ) TO '{processed_dir / "objects.parquet"}'
-        (FORMAT PARQUET)
-    """)
-    n_obj = con.execute(f"""
-        SELECT COUNT(*) FROM read_parquet('{obj_pattern}')
-    """).fetchone()[0]
-    print(f"  objects.parquet: {n_obj:,} rows (deduplicated)")
+    import pyarrow.parquet as pq
+    import pyarrow as pa
 
-    shutil.rmtree(processed_dir / "duckdb_tmp", ignore_errors=True)
-    con.close()
+    print("\nMerging events (streaming via PyArrow)...")
+    event_parts = sorted(shard_dir.glob("events_shard*.parquet"))
+    
+    # Read schema from first shard
+    schema = pq.read_schema(event_parts[0])
+    
+    writer = None
+    n_ev = 0
+    ts_min = None
+    ts_max = None
+    ev_types = Counter()
+
+    for part in event_parts:
+        pf = pq.ParquetFile(part)
+        for batch in pf.iter_batches(batch_size=100_000):
+            table = pa.Table.from_batches([batch])
+            if writer is None:
+                writer = pq.ParquetWriter(
+                    processed_dir / "events.parquet", schema=table.schema
+                )
+            writer.write_table(table)
+            n_ev += len(table)
+            # Track stats
+            ts_col = table.column("timestamp_nanos").to_pylist()
+            ts_col = [t for t in ts_col if t is not None]
+            if ts_col:
+                ts_min = min(ts_min, min(ts_col)) if ts_min else min(ts_col)
+                ts_max = max(ts_max, max(ts_col)) if ts_max else max(ts_col)
+            for t in table.column("type").to_pylist():
+                if t: ev_types[t] += 1
+
+    if writer:
+        writer.close()
+    print(f"  events.parquet: {n_ev:,} rows")
+
+    # Merge subjects
+    print("Merging subjects (streaming via PyArrow)...")
+    subj_parts = sorted(shard_dir.glob("subjects_shard*.parquet"))
+    seen_uuids = set()
+    writer = None
+    n_sub = 0
+    for part in subj_parts:
+        pf = pq.ParquetFile(part)
+        for batch in pf.iter_batches(batch_size=100_000):
+            table = pa.Table.from_batches([batch])
+            uuids = table.column("uuid").to_pylist()
+            mask = [u not in seen_uuids and u is not None for u in uuids]
+            seen_uuids.update(u for u, m in zip(uuids, mask) if m)
+            filtered = table.filter(pa.array(mask))
+            if len(filtered) == 0:
+                continue
+            if writer is None:
+                writer = pq.ParquetWriter(
+                    processed_dir / "subjects.parquet", schema=filtered.schema
+                )
+            writer.write_table(filtered)
+            n_sub += len(filtered)
+    if writer:
+        writer.close()
+    print(f"  subjects.parquet: {n_sub:,} rows (deduplicated)")
+
+    # Merge objects
+    print("Merging objects (streaming via PyArrow)...")
+    obj_parts = sorted(shard_dir.glob("objects_shard*.parquet"))
+    seen_uuids = set()
+    writer = None
+    n_obj = 0
+    for part in obj_parts:
+        pf = pq.ParquetFile(part)
+        for batch in pf.iter_batches(batch_size=100_000):
+            table = pa.Table.from_batches([batch])
+            uuids = table.column("uuid").to_pylist()
+            mask = [u not in seen_uuids and u is not None for u in uuids]
+            seen_uuids.update(u for u, m in zip(uuids, mask) if m)
+            filtered = table.filter(pa.array(mask))
+            if len(filtered) == 0:
+                continue
+            if writer is None:
+                writer = pq.ParquetWriter(
+                    processed_dir / "objects.parquet", schema=filtered.schema
+                )
+            writer.write_table(filtered)
+            n_obj += len(filtered)
+    if writer:
+        writer.close()
+    print(f"  objects.parquet: {n_obj:,} rows (deduplicated)")
 
     # ---- Summary ----
     elapsed = time.time() - start_time
