@@ -40,49 +40,53 @@ def tensor_find(t, x):
     idx = np.argwhere(t.cpu().numpy() == x)
     return idx[0][0] + 1
 
+def sequential_batches(data, batch_size):
+    num_events = data.num_events
+    for start in range(0, num_events, batch_size):
+        end = min(start + batch_size, num_events)
+        yield (
+            data.src[start:end],
+            data.dst[start:end],
+            data.t[start:end],
+            data.msg[start:end],
+        )
 
 @torch.no_grad()
 def compute_reconstruction_losses(data, memory, gnn, link_pred,
                                   neighbor_loader, assoc, device,
                                   node_emb_dim):
-    """Compute per-event reconstruction loss (cross-entropy on edge type).
-
-    Returns:
-        losses: (N,) array of per-event losses
-        timestamps: (N,) array of nanosecond timestamps
-    """
     memory.eval()
     gnn.eval()
     link_pred.eval()
-
     memory.reset_state()
     neighbor_loader.reset_state()
 
     criterion = nn.CrossEntropyLoss(reduction="none")
-
     all_losses = []
     all_timestamps = []
+    use_amp = (device.type == 'cuda')
 
-    for batch in data.seq_batches(batch_size=BATCH_SIZE):
-        src, pos_dst, t, msg = batch.src, batch.dst, batch.t, batch.msg
+    for src, pos_dst, t, msg in sequential_batches(data, BATCH_SIZE):
+        src = src.to(device)
+        pos_dst = pos_dst.to(device)
+        t = t.to(device)
+        msg = msg.to(device)
 
         n_id = torch.cat([src, pos_dst]).unique()
         n_id, edge_index, e_id = neighbor_loader(n_id)
         assoc[n_id] = torch.arange(n_id.size(0), device=device)
 
-        z, last_update = memory(n_id)
-        z = gnn(z, last_update, edge_index,
-                data.t[e_id], data.msg[e_id])
-        pos_out = link_pred(z[assoc[src]], z[assoc[pos_dst]])
+        # Mixed‑precision forward pass
+        with torch.cuda.amp.autocast(enabled=use_amp):
+            z, last_update = memory(n_id)
+            z = gnn(z, last_update, edge_index,
+                    data.t[e_id].to(device), data.msg[e_id].to(device))
+            pos_out = link_pred(z[assoc[src]], z[assoc[pos_dst]])
 
-        # Ground truth edge types
-        y_true = []
-        for m in msg:
-            label = tensor_find(m[node_emb_dim:-node_emb_dim], 1) - 1
-            y_true.append(label)
-        y_true = torch.tensor(y_true, dtype=torch.long, device=device)
+        # Compute loss in float32 for numerical consistency
+        y_true = torch.argmax(msg[:, node_emb_dim:-node_emb_dim], dim=1)
+        loss = criterion(pos_out.float(), y_true)
 
-        loss = criterion(pos_out, y_true)
         all_losses.append(loss.cpu().numpy())
         all_timestamps.append(t.cpu().numpy())
 
