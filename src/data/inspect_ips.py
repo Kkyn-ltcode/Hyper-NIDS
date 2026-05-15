@@ -120,32 +120,13 @@ def main():
     sorted_ips = sorted(ip_counts.items(), key=lambda x: x[1], reverse=True)
     
     print("\n" + "="*80)
-    print(f"TOP {args.top} IP ADDRESSES BY EVENT COUNT")
-    print("="*80)
-    
-    for ip, count in sorted_ips[:args.top]:
-        is_attack = ip in known_attack_ips
-        prefix = "[ATTACK]" if is_attack else "        "
-        print(f"{prefix} {ip:<15} : {count:>10,} events")
-        
-        # Print up to 3 processes that connected to this IP
-        subs = list(ip_to_subjects[ip])
-        for s in subs[:3]:
-            # truncate long commands
-            s_short = s if len(s) < 60 else s[:57] + "..."
-            print(f"             ↳ {s_short}")
-        if len(subs) > 3:
-            print(f"             ↳ ... and {len(subs)-3} more processes")
-
-    # Also list all known attack IPs found in the data, even if not in top N
-    print("\n" + "="*80)
     print("KNOWN ATTACK IPs FOUND IN DATA:")
     print("="*80)
     found_attack_ips = False
     for ip, count in sorted_ips:
         if ip in known_attack_ips:
             found_attack_ips = True
-            print(f"{ip:<15} : {count:>10,} events")
+            print(f"[ATTACK] {ip:<15} : {count:>10,} events")
             subs = list(ip_to_subjects[ip])
             for s in subs[:5]:
                 s_short = s if len(s) < 60 else s[:57] + "..."
