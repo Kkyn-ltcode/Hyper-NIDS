@@ -451,91 +451,107 @@ def main():
     import pyarrow.parquet as pq
     import pyarrow as pa
 
+    def get_unified_schema(parts: list[Path]) -> pa.Schema:
+        """Collect and unify schemas across all parquet shards."""
+        schemas = [pq.read_schema(p) for p in parts]
+        unified = schemas[0]
+        for s in schemas[1:]:
+            try:
+                unified = pa.unify_schemas([unified, s])
+            except Exception:
+                fields = []
+                for field in unified:
+                    other = s.field(field.name) if field.name in s.names else None
+                    if other and other.type != field.type:
+                        fields.append(pa.field(field.name, pa.string()))
+                    else:
+                        fields.append(field)
+                unified = pa.schema(fields)
+        return unified
+
+    def cast_to_schema(table: pa.Table, schema: pa.Schema) -> pa.Table:
+        """Cast table to unified schema, fallback to string on conflict."""
+        new_cols = []
+        for field in schema:
+            if field.name in table.schema.names:
+                col = table.column(field.name)
+                try:
+                    new_cols.append(col.cast(field.type))
+                except Exception:
+                    new_cols.append(col.cast(pa.string()))
+            else:
+                new_cols.append(pa.nulls(len(table), type=field.type))
+        return pa.table(
+            {f.name: c for f, c in zip(schema, new_cols)}
+        )
+
+    def merge_parquets_streaming(
+        parts: list[Path],
+        output_path: Path,
+        dedup_col: str = None,
+    ) -> int:
+        """Stream-merge parquet shards with schema unification."""
+        unified_schema = get_unified_schema(parts)
+        seen = set() if dedup_col else None
+        writer = None
+        total = 0
+
+        for part in parts:
+            pf = pq.ParquetFile(part)
+            for batch in pf.iter_batches(batch_size=100_000):
+                table = cast_to_schema(
+                    pa.Table.from_batches([batch]), unified_schema
+                )
+                if dedup_col and seen is not None:
+                    uuids = table.column(dedup_col).to_pylist()
+                    mask = [u not in seen and u is not None for u in uuids]
+                    seen.update(u for u, m in zip(uuids, mask) if m)
+                    table = table.filter(pa.array(mask))
+                if len(table) == 0:
+                    continue
+                if writer is None:
+                    writer = pq.ParquetWriter(
+                        output_path,
+                        schema=unified_schema,
+                        compression="snappy",
+                    )
+                writer.write_table(table)
+                total += len(table)
+
+        if writer:
+            writer.close()
+        return total
+
+    # --- Merge events ---
     print("\nMerging events (streaming via PyArrow)...")
     event_parts = sorted(shard_dir.glob("events_shard*.parquet"))
-    
-    # Read schema from first shard
-    schema = pq.read_schema(event_parts[0])
-    
-    writer = None
-    n_ev = 0
-    ts_min = None
-    ts_max = None
-    ev_types = Counter()
-
-    for part in event_parts:
-        pf = pq.ParquetFile(part)
-        for batch in pf.iter_batches(batch_size=100_000):
-            table = pa.Table.from_batches([batch])
-            if writer is None:
-                writer = pq.ParquetWriter(
-                    processed_dir / "events.parquet", schema=table.schema
-                )
-            writer.write_table(table)
-            n_ev += len(table)
-            # Track stats
-            ts_col = table.column("timestamp_nanos").to_pylist()
-            ts_col = [t for t in ts_col if t is not None]
-            if ts_col:
-                ts_min = min(ts_min, min(ts_col)) if ts_min else min(ts_col)
-                ts_max = max(ts_max, max(ts_col)) if ts_max else max(ts_col)
-            for t in table.column("type").to_pylist():
-                if t: ev_types[t] += 1
-
-    if writer:
-        writer.close()
+    n_ev = merge_parquets_streaming(event_parts, processed_dir / "events.parquet")
     print(f"  events.parquet: {n_ev:,} rows")
 
-    # Merge subjects
+    # Collect stats from merged file (lightweight 2-col read)
+    stats_df = pd.read_parquet(
+        processed_dir / "events.parquet",
+        columns=["timestamp_nanos", "type"],
+    )
+    ts_min = stats_df["timestamp_nanos"].min()
+    ts_max = stats_df["timestamp_nanos"].max()
+    ev_types = stats_df["type"].value_counts().to_dict()
+    del stats_df; gc.collect()
+
+    # --- Merge subjects ---
     print("Merging subjects (streaming via PyArrow)...")
     subj_parts = sorted(shard_dir.glob("subjects_shard*.parquet"))
-    seen_uuids = set()
-    writer = None
-    n_sub = 0
-    for part in subj_parts:
-        pf = pq.ParquetFile(part)
-        for batch in pf.iter_batches(batch_size=100_000):
-            table = pa.Table.from_batches([batch])
-            uuids = table.column("uuid").to_pylist()
-            mask = [u not in seen_uuids and u is not None for u in uuids]
-            seen_uuids.update(u for u, m in zip(uuids, mask) if m)
-            filtered = table.filter(pa.array(mask))
-            if len(filtered) == 0:
-                continue
-            if writer is None:
-                writer = pq.ParquetWriter(
-                    processed_dir / "subjects.parquet", schema=filtered.schema
-                )
-            writer.write_table(filtered)
-            n_sub += len(filtered)
-    if writer:
-        writer.close()
+    n_sub = merge_parquets_streaming(
+        subj_parts, processed_dir / "subjects.parquet", dedup_col="uuid"
+    )
     print(f"  subjects.parquet: {n_sub:,} rows (deduplicated)")
 
-    # Merge objects
+    # --- Merge objects ---
     print("Merging objects (streaming via PyArrow)...")
     obj_parts = sorted(shard_dir.glob("objects_shard*.parquet"))
-    seen_uuids = set()
-    writer = None
-    n_obj = 0
-    for part in obj_parts:
-        pf = pq.ParquetFile(part)
-        for batch in pf.iter_batches(batch_size=100_000):
-            table = pa.Table.from_batches([batch])
-            uuids = table.column("uuid").to_pylist()
-            mask = [u not in seen_uuids and u is not None for u in uuids]
-            seen_uuids.update(u for u, m in zip(uuids, mask) if m)
-            filtered = table.filter(pa.array(mask))
-            if len(filtered) == 0:
-                continue
-            if writer is None:
-                writer = pq.ParquetWriter(
-                    processed_dir / "objects.parquet", schema=filtered.schema
-                )
-            writer.write_table(filtered)
-            n_obj += len(filtered)
-    if writer:
-        writer.close()
+    n_obj = merge_parquets_streaming(
+        obj_parts, processed_dir / "objects.parquet", dedup_col="uuid"
+    )
     print(f"  objects.parquet: {n_obj:,} rows (deduplicated)")
 
     # ---- Summary ----
