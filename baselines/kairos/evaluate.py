@@ -76,16 +76,26 @@ def compute_reconstruction_losses(data, memory, gnn, link_pred,
         n_id, edge_index, e_id = neighbor_loader(n_id)
         assoc[n_id] = torch.arange(n_id.size(0), device=device)
 
-        # Mixed‑precision forward pass
-        with torch.cuda.amp.autocast(enabled=use_amp):
-            z, last_update = memory(n_id)
-            z = gnn(z, last_update, edge_index,
-                    data.t[e_id].to(device), data.msg[e_id].to(device))
-            pos_out = link_pred(z[assoc[src]], z[assoc[pos_dst]])
+        # # Mixed‑precision forward pass
+        # with torch.cuda.amp.autocast(enabled=use_amp):
+        #     z, last_update = memory(n_id)
+        #     z = gnn(z, last_update, edge_index,
+        #             data.t[e_id].to(device), data.msg[e_id].to(device))
+        #     pos_out = link_pred(z[assoc[src]], z[assoc[pos_dst]])
 
-        # Compute loss in float32 for numerical consistency
+        # # Compute loss in float32 for numerical consistency
+        # y_true = torch.argmax(msg[:, node_emb_dim:-node_emb_dim], dim=1)
+        # loss = criterion(pos_out.float(), y_true)
+
+                # No autocast – full precision
+        z, last_update = memory(n_id)
+        z = gnn(z, last_update, edge_index,
+                data.t[e_id].to(device), data.msg[e_id].to(device))
+        pos_out = link_pred(z[assoc[src]], z[assoc[pos_dst]])
+
+        # Ensure float32 for stable cross-entropy
         y_true = torch.argmax(msg[:, node_emb_dim:-node_emb_dim], dim=1)
-        loss = criterion(pos_out.float(), y_true)
+        loss = criterion(pos_out.float(), y_true)   # keep loss in float32
 
         all_losses.append(loss.cpu().numpy())
         all_timestamps.append(t.cpu().numpy())
