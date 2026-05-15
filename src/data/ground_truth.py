@@ -156,6 +156,8 @@ NIL_UUID = "00000000-0000-0000-0000-000000000000"
 
 def _build_children_map(subjects_df: pd.DataFrame) -> dict:
     """Build parent->children mapping, excluding nil UUIDs."""
+    if not {"uuid", "parent_uuid"}.issubset(subjects_df.columns):
+        return {}   # or raise a clear error
     children = {}
     mask = subjects_df["parent_uuid"].notna() & (subjects_df["parent_uuid"] != NIL_UUID)
     for _, row in subjects_df[mask][["uuid", "parent_uuid"]].iterrows():
