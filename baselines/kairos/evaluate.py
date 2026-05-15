@@ -34,7 +34,14 @@ from baselines.kairos.config import (
     build_rel2id,
 )
 from baselines.kairos.model import GraphAttentionEmbedding, LinkPredictor
+from sklearn.metrics import precision_recall_curve
 
+def find_best_threshold(scores, labels):
+    precision, recall, thresholds = precision_recall_curve(labels, scores)
+    # thresholds has len(precision) - 1; drop the last (precision=1, recall=0)
+    f1 = 2 * precision[:-1] * recall[:-1] / (precision[:-1] + recall[:-1] + 1e-12)
+    best_idx = np.argmax(f1)
+    return thresholds[best_idx], f1[best_idx]
 
 def tensor_find(t, x):
     idx = np.argwhere(t.cpu().numpy() == x)
@@ -276,6 +283,35 @@ def main():
         test_data, memory, gnn, link_pred,
         neighbor_loader, assoc, device, NODE_EMBEDDING_DIM,
     )
+    if args.split == 'val':
+        # Determine threshold
+        threshold, best_f1 = find_best_threshold(losses, labels)
+        print(f"Validation best F1: {best_f1:.4f} at threshold {threshold:.4f}")
+        torch.save({'threshold': threshold}, models_dir / 'threshold.pt')
+        # Also compute event-level metrics with threshold
+        event_results = event_level_evaluation(losses, labels)
+        # Add F1 to results manually
+        event_results['val_f1'] = best_f1
+    elif args.split == 'test':
+        # Load threshold
+        thresh_data = torch.load(models_dir / 'threshold.pt')
+        threshold = thresh_data['threshold']
+        preds = (losses > threshold).astype(int)
+        # Compute event-level F1 using threshold
+        mask = labels >= 0
+        p, r, f1, _ = precision_recall_fscore_support(
+            labels[mask], preds[mask], average='binary', zero_division=0)
+        print(f"\n  Event-Level F1 (threshold={threshold:.4f}):")
+        print(f"    Precision: {p:.4f}")
+        print(f"    Recall:    {r:.4f}")
+        print(f"    F1:        {f1:.4f}")
+        event_results = event_level_evaluation(losses, labels)
+        event_results['precision'] = p
+        event_results['recall'] = r
+        event_results['f1'] = f1
+        event_results['threshold'] = threshold
+    else:
+        event_results = event_level_evaluation(losses, labels)
     elapsed = time.time() - t0
     print(f"  Time: {elapsed:.1f}s")
     print(f"  Mean loss: {losses.mean():.4f}")
