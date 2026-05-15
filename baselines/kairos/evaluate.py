@@ -236,6 +236,16 @@ def main():
     max_node_num = model_config["max_node_num"]
     assoc = torch.empty(max_node_num, dtype=torch.long, device=device)
 
+    for name, param in memory.named_parameters():
+        if torch.isnan(param).any() or torch.isinf(param).any():
+            print(f"NaN/Inf in memory.{name}")
+    for name, param in gnn.named_parameters():
+        if torch.isnan(param).any() or torch.isinf(param).any():
+            print(f"NaN/Inf in gnn.{name}")
+    for name, param in link_pred.named_parameters():
+        if torch.isnan(param).any() or torch.isinf(param).any():
+            print(f"NaN/Inf in link_pred.{name}")
+
     # ========================================================
     # Load test data
     # ========================================================
