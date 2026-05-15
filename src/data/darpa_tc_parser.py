@@ -33,10 +33,10 @@ import gc
 import json
 import sys
 import time
+import duckdb
 from collections import Counter
 from pathlib import Path
-import pyarrow.parquet as pq
-import pyarrow as pa
+
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -448,56 +448,6 @@ def main():
     event_parts = sorted(shard_dir.glob("events_shard*.parquet"))
     print(f"\nMerging {len(event_parts)} event shards...")
 
-    # Merge events
-    con = duckdb.connect()
-
-    con.execute("SET threads=2")
-    con.execute("SET memory_limit='12GB'")
-    con.execute("SET preserve_insertion_order=false")
-    con.execute(f"SET temp_directory='{processed_dir / 'duckdb_tmp'}'")
-    (processed_dir / "duckdb_tmp").mkdir(exist_ok=True)
-
-    # Merge events — sort by timestamp, no RAM needed
-    print("\nMerging events (streaming via DuckDB)...")
-    event_pattern = str(shard_dir / "events_shard*.parquet")
-    con.execute(f"""
-        COPY (
-            SELECT * FROM read_parquet('{event_pattern}', hive_partitioning=false)
-        ) TO '{processed_dir / "events.parquet"}'
-        (FORMAT PARQUET, ROW_GROUP_SIZE 100000)
-    """)
-    stats = con.execute(f"""
-        SELECT
-            COUNT(*)                        AS n_ev,
-            MIN(timestamp)                  AS ts_min,
-            MAX(timestamp)                  AS ts_max
-        FROM read_parquet('{event_pattern}')
-    """).fetchone()
-    n_ev, ts_min, ts_max = stats
-    ev_types = {
-        r[0]: r[1] for r in con.execute(f"""
-            SELECT type, COUNT(*) FROM read_parquet('{event_pattern}')
-            GROUP BY type ORDER BY 2 DESC
-        """).fetchall()
-    }
-    print(f"  events.parquet: {n_ev:,} rows")
-
-    # Merge subjects — dedup by uuid
-    print("Merging subjects (streaming via DuckDB)...")
-    subj_pattern = str(shard_dir / "subjects_shard*.parquet")
-    con.execute(f"""
-        COPY (
-            SELECT DISTINCT ON (uuid) *
-            FROM read_parquet('{subj_pattern}')
-        ) TO '{processed_dir / "subjects.parquet"}'
-        (FORMAT PARQUET)
-    """)
-    n_sub = con.execute(f"""
-        SELECT COUNT(*) FROM read_parquet('{subj_pattern}')
-    """).fetchone()[0]
-    print(f"  subjects.parquet: {n_sub:,} rows (deduplicated)")
-
-    # Merge objects — dedup by uuid
     import pyarrow.parquet as pq
     import pyarrow as pa
 
