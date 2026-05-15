@@ -85,6 +85,14 @@ def process_shard(
     objects_df = pd.read_parquet(shard_dir / f"objects_shard{shard_idx}.parquet")
 
     n_events = len(events_df)
+    if n_events == 0:
+        print(f"    WARNING: Shard {shard_idx} has 0 events. Skipping...")
+        return {
+            "shard": shard_idx,
+            "n_events": 0,
+            "n_attack_broad": 0,
+            "skipped": True,
+        }
 
     # Label (broad = entire process tree)
     labels_broad  = label_events(events_df, subjects_df, objects_df, gt)

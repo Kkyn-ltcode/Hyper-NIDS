@@ -182,6 +182,9 @@ def build_attack_subject_uuids(
     Build set of attack-related subject UUIDs.
     Works with both Theia (process_path) and TRACE (cmd_line) schemas.
     """
+    if "uuid" not in subjects_df.columns or subjects_df.empty:
+        return set()
+
     attack_uuids = set()
 
     # Method 1: Exact basename match for malicious processes
@@ -213,6 +216,9 @@ def build_attack_object_uuids(
         1. Exact and substring file path matching
         2. Exact IP address matching
     """
+    if "uuid" not in objects_df.columns or objects_df.empty:
+        return set()
+
     attack_uuids = set()
     objects_df = objects_df[objects_df["uuid"] != NIL_UUID]
 
@@ -279,6 +285,9 @@ def build_child_only_subject_uuids(
 
     This tests cross-process campaign propagation detection.
     """
+    if "uuid" not in subjects_df.columns or subjects_df.empty:
+        return set()
+
     child_uuids = set()
 
     # Method 1: Exact basename match for malicious binaries
