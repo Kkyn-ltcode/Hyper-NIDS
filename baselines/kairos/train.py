@@ -4,6 +4,9 @@ KAIROS training script for HyperMamba-NIDS baseline comparison.
 Trains TGN with self-supervised edge-type prediction, following the
 original KAIROS paper (Zhu et al., USENIX Security 2023).
 
+Memory-safe: TGNMemory + LastNeighborLoader stay on CPU,
+only GNN/LinkPred forward pass runs on GPU.
+
 Usage:
     python -m baselines.kairos.train --dataset theia
     python -m baselines.kairos.train --dataset theia --epochs 50
@@ -32,16 +35,8 @@ from baselines.kairos.config import (
 from baselines.kairos.model import GraphAttentionEmbedding, LinkPredictor
 
 
-def tensor_find(t, x):
-    """Find index of value x in tensor t."""
-    idx = np.argwhere(t.cpu().numpy() == x)
-    return idx[0][0] + 1
-
 def sequential_batches(data, batch_size):
-    """
-    Generator that yields mini-batches from TemporalData in temporal order.
-    Replaces data.seq_batches(batch_size) for older PyG versions.
-    """
+    """Yield mini-batches from TemporalData in temporal order."""
     num_events = data.num_events
     for start in range(0, num_events, batch_size):
         end = min(start + batch_size, num_events)
@@ -51,9 +46,14 @@ def sequential_batches(data, batch_size):
             data.t[start:end],
             data.msg[start:end],
         )
-        
+
+
 def train_epoch(train_data, memory, gnn, link_pred, optimizer,
-                neighbor_loader, assoc, criterion, device, node_emb_dim):
+                neighbor_loader, assoc, criterion, compute_device,
+                node_emb_dim):
+    """Train one epoch. Memory on CPU, GNN/LinkPred on GPU."""
+    cpu = torch.device("cpu")
+
     memory.train()
     gnn.train()
     link_pred.train()
@@ -63,36 +63,51 @@ def train_epoch(train_data, memory, gnn, link_pred, optimizer,
     n_processed = 0
 
     for src, pos_dst, t, msg in sequential_batches(train_data, BATCH_SIZE):
-        src = src.to(device)
-        pos_dst = pos_dst.to(device)
-        t = t.to(device)
-        msg = msg.to(device)
+        # Keep on CPU for memory/neighbor_loader
+        src_cpu = src.to(cpu)
+        pos_dst_cpu = pos_dst.to(cpu)
+        t_cpu = t.to(cpu)
+        msg_cpu = msg.to(cpu)
 
         optimizer.zero_grad()
 
-        n_id = torch.cat([src, pos_dst]).unique()
+        # Neighbor lookup (CPU)
+        n_id = torch.cat([src_cpu, pos_dst_cpu]).unique()
         n_id, edge_index, e_id = neighbor_loader(n_id)
-        assoc[n_id] = torch.arange(n_id.size(0), device=device)
+        assoc[n_id] = torch.arange(n_id.size(0))
 
+        # Memory forward (CPU)
         z, last_update = memory(n_id)
-        z = gnn(z, last_update, edge_index,
-                train_data.t[e_id].to(device), train_data.msg[e_id].to(device))
-        pos_out = link_pred(z[assoc[src]], z[assoc[pos_dst]])
 
-        # Extract edge type labels (one-hot in msg)
-        y_true = torch.argmax(msg[:, node_emb_dim:-node_emb_dim], dim=1)
+        # GNN forward (GPU)
+        z_gpu = z.to(compute_device)
+        last_update_gpu = last_update.to(compute_device)
+        edge_index_gpu = edge_index.to(compute_device)
+        e_t = train_data.t[e_id].to(compute_device)
+        e_msg = train_data.msg[e_id].to(compute_device)
+
+        z_gpu = gnn(z_gpu, last_update_gpu, edge_index_gpu, e_t, e_msg)
+
+        # Link prediction (GPU)
+        src_idx = assoc[src_cpu].to(compute_device)
+        dst_idx = assoc[pos_dst_cpu].to(compute_device)
+        pos_out = link_pred(z_gpu[src_idx], z_gpu[dst_idx])
+
+        # Loss (GPU)
+        msg_gpu = msg_cpu.to(compute_device)
+        y_true = torch.argmax(msg_gpu[:, node_emb_dim:-node_emb_dim], dim=1)
 
         loss = criterion(pos_out, y_true)
         loss.backward()
         optimizer.step()
         memory.detach()
 
-        # Update memory & neighbor loader
-        memory.update_state(src, pos_dst, t, msg)
-        neighbor_loader.insert(src, pos_dst)
+        # Update memory & neighbor loader (CPU)
+        memory.update_state(src_cpu, pos_dst_cpu, t_cpu, msg_cpu)
+        neighbor_loader.insert(src_cpu, pos_dst_cpu)
 
-        total_loss += loss.item() * len(src)
-        n_processed += len(src)
+        total_loss += loss.item() * len(src_cpu)
+        n_processed += len(src_cpu)
 
     return total_loss / n_processed
 
@@ -124,21 +139,27 @@ def main():
     )
     logger = logging.getLogger("kairos_train")
 
-    # Device
+    # Compute device (for GNN/LinkPred only)
     if args.device == "auto":
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        compute_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     else:
-        device = torch.device(args.device)
-    print(f"Device: {device}")
+        compute_device = torch.device(args.device)
+    cpu = torch.device("cpu")
+    print(f"Compute device: {compute_device}")
 
     # ========================================================
-    # Load training data
+    # Load training data — keep on CPU
     # ========================================================
-    print("Loading training data...")
+    print("Loading training data (CPU)...")
     train_data = torch.load(
         graphs_dir / "train.TemporalData.pt",
         weights_only=False
-    ).to(device)
+    )
+    # Ensure CPU
+    train_data.src = train_data.src.to(cpu)
+    train_data.dst = train_data.dst.to(cpu)
+    train_data.t = train_data.t.to(cpu)
+    train_data.msg = train_data.msg.to(cpu)
     print(f"  Train edges: {train_data.num_events:,}")
 
     # Load metadata
@@ -147,12 +168,14 @@ def main():
     node_feat_size = meta["msg_dim"]
     print(f"  Max nodes: {max_node_num:,}")
     print(f"  Msg dim: {node_feat_size}")
+    print(f"  TGN memory size: ~{max_node_num * NODE_STATE_DIM * 4 / 1e9:.2f} GB (on CPU)")
 
     # ========================================================
     # Initialize models
     # ========================================================
     print("Initializing models...")
 
+    # Memory stays on CPU (too large for GPU with TRACE's 7.6M nodes)
     memory = TGNMemory(
         max_node_num,
         node_feat_size,
@@ -161,32 +184,39 @@ def main():
         message_module=IdentityMessage(
             node_feat_size, NODE_STATE_DIM, TIME_DIM),
         aggregator_module=LastAggregator(),
-    ).to(device)
+    ).to(cpu)
 
+    # GNN + LinkPred on compute device
     gnn = GraphAttentionEmbedding(
         in_channels=NODE_STATE_DIM,
         out_channels=EDGE_DIM,
         msg_dim=node_feat_size,
         time_enc=memory.time_enc,
-    ).to(device)
+    ).to(compute_device)
 
     link_pred = LinkPredictor(
         in_channels=EDGE_DIM,
         out_channels=n_edge_types,
-    ).to(device)
+    ).to(compute_device)
 
     optimizer = torch.optim.Adam(
-        set(memory.parameters()) |
-        set(gnn.parameters()) |
-        set(link_pred.parameters()),
+        list(memory.parameters()) +
+        list(gnn.parameters()) +
+        list(link_pred.parameters()),
         lr=LR, eps=EPS, weight_decay=WEIGHT_DECAY,
     )
 
+    # Neighbor loader on CPU
     neighbor_loader = LastNeighborLoader(
-        max_node_num, size=NEIGHBOR_SIZE, device=device)
+        max_node_num, size=NEIGHBOR_SIZE, device=cpu)
 
-    assoc = torch.empty(max_node_num, dtype=torch.long, device=device)
+    # assoc on CPU
+    assoc = torch.empty(max_node_num, dtype=torch.long)
     criterion = nn.CrossEntropyLoss()
+
+    if compute_device.type == "cuda":
+        free, total = torch.cuda.mem_get_info()
+        print(f"  GPU memory: {free/1e9:.1f} GB free / {total/1e9:.1f} GB total")
 
     # ========================================================
     # Train
@@ -198,7 +228,7 @@ def main():
         t0 = time.time()
         loss = train_epoch(
             train_data, memory, gnn, link_pred, optimizer,
-            neighbor_loader, assoc, criterion, device,
+            neighbor_loader, assoc, criterion, compute_device,
             NODE_EMBEDDING_DIM,
         )
         elapsed = time.time() - t0
@@ -210,7 +240,10 @@ def main():
     total_time = time.time() - t_total
     print(f"\nTraining complete. Total time: {total_time:.1f}s")
 
-    # Save model
+    # Save model — move everything to CPU for portable checkpoints
+    memory = memory.to(cpu)
+    gnn = gnn.to(cpu)
+    link_pred = link_pred.to(cpu)
     model = [memory, gnn, link_pred, neighbor_loader]
     torch.save(model, models_dir / "model.pt")
     print(f"Model saved to {models_dir / 'model.pt'}")
