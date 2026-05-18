@@ -74,7 +74,6 @@ def compute_reconstruction_losses(data, memory, gnn, link_pred,
     # Ensure memory internals are on CPU
     cpu = torch.device("cpu")
     memory = memory.to(cpu)
-    neighbor_loader = neighbor_loader  # already CPU-based
 
     # GNN + link_pred on compute device
     gnn = gnn.to(compute_device)
@@ -265,7 +264,8 @@ def main():
     print("Loading model to CPU...")
     model_parts = torch.load(
         models_dir / "model.pt", map_location="cpu", weights_only=False)
-    memory, gnn, link_pred, neighbor_loader = model_parts
+    memory, gnn, link_pred, _ = model_parts
+    neighbor_loader = LastNeighborLoader(max_node_num, size=NEIGHBOR_SIZE)
 
     model_config = torch.load(
         models_dir / "model_config.pt", weights_only=False)

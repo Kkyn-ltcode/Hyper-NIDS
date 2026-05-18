@@ -65,6 +65,25 @@ DATASET_CONFIGS = {
             "EVENT_RECVMSG",
         ],
     },
+    "trace-1": {
+        "data_dir": DATA_ROOT / "trace-1",
+        "train_shards": list(range(0, 142)),
+        "val_shards": list(range(142, 162)),
+        "test_shards": list(range(162, 204)),
+        "include_edge_type": [
+            "EVENT_WRITE",
+            "EVENT_READ",
+            "EVENT_OPEN",
+            "EVENT_EXECUTE",
+            "EVENT_SENDMSG",
+            "EVENT_RECVMSG",
+            "EVENT_RECVFROM",
+        ],
+        "edge_reversed": [
+            "EVENT_RECVFROM",
+            "EVENT_RECVMSG",
+        ],
+    },
 }
 
 # ============================================================
@@ -93,7 +112,7 @@ TIME_DIM = 100
 # Training hyperparameters
 # ============================================================
 
-BATCH_SIZE = 1024
+BATCH_SIZE = 512
 LR = 5e-5
 EPS = 1e-8
 WEIGHT_DECAY = 0.01

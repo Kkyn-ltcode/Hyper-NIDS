@@ -217,7 +217,7 @@ def convert_dataset(dataset: str):
     print(f"  Time: {time.time()-t0:.1f}s")
 
     # Save node features
-    torch.save(node2vec, out_dir / "node2higvec.pt")
+    # torch.save(node2vec, out_dir / "node2higvec.pt")
 
     # ========================================================
     # Step 3: Build edge type one-hot vectors
@@ -230,7 +230,7 @@ def convert_dataset(dataset: str):
     for etype in cfg["include_edge_type"]:
         idx = rel2id[etype] - 1  # 0-indexed
         rel2vec[etype] = rel_onehot[idx]
-    torch.save(rel2vec, out_dir / "rel2vec.pt")
+    # torch.save(rel2vec, out_dir / "rel2vec.pt")
     print(f"\n  Edge types: {n_edge_types}")
 
     # ========================================================
