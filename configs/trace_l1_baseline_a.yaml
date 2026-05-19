@@ -2,7 +2,7 @@ name: "baseline_a_trace"
 
 model:
   model_type: "baseline_a"  # pairwise conv — drops predicateObject2
-  encoder_type: "gru"
+  encoder_type: "mamba"
   d_type: 16
   d_model: 64
   d_hidden: 64
@@ -13,6 +13,7 @@ data:
   max_seq_len: 512
   stride: 512
   min_seq_len: 2
+  label_type: "l1" 
   train_shards: [0, 1, 2, 3, 4]
   val_shards: [5]
   test_shards: [6]

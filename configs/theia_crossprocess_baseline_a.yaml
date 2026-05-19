@@ -1,8 +1,8 @@
-name: "baseline_a_narrow"
+name: "baseline_a_crossprocess"
 
 model:
   model_type: "baseline_a"
-  encoder_type: "gru"
+  encoder_type: "mamba"
   d_type: 16
   d_model: 64
   d_hidden: 64
@@ -10,7 +10,7 @@ model:
   dropout: 0.1
 
 data:
-  label_type: "narrow"
+  label_type: "crossprocess"
   max_seq_len: 512
   stride: 512
   min_seq_len: 2

@@ -57,16 +57,16 @@ sequences:  ## Build subject sequences
 # ============================================================
 
 train-thyn:  ## Train THyN (4 GPU)
-	torchrun --nproc_per_node=$(GPUS) -m src.pipeline.train --config configs/thyn_v0.yaml
+	torchrun --nproc_per_node=$(GPUS) -m src.pipeline.train --config configs/theia_thyn_v0.yaml
 
 train-baseline:  ## Train Baseline A (4 GPU)
-	torchrun --nproc_per_node=$(GPUS) -m src.pipeline.train --config configs/baseline_a.yaml
+	torchrun --nproc_per_node=$(GPUS) -m src.pipeline.train --config configs/theia_baseline_a.yaml
 
 train-thyn-trace:  ## Train THyN on TRACE (4 GPU)
-	torchrun --nproc_per_node=$(GPUS) -m src.pipeline.train --config configs/thyn_trace.yaml --dataset trace
+	torchrun --nproc_per_node=$(GPUS) -m src.pipeline.train --config configs/trace_thyn.yaml --dataset trace
 
 train-baseline-trace:  ## Train Baseline A on TRACE (4 GPU)
-	torchrun --nproc_per_node=$(GPUS) -m src.pipeline.train --config configs/baseline_a_trace.yaml --dataset trace
+	torchrun --nproc_per_node=$(GPUS) -m src.pipeline.train --config configs/trace_baseline_a.yaml --dataset trace
 
 # ---- L1** Novel-Binary Experiment ----
 
@@ -74,10 +74,10 @@ l1-relabel:  ## Add L1** labels (neutralize Firefox in training)
 	$(PYTHON) -m src.pipeline.novel_binary_relabel --dataset $(DATASET)
 
 train-thyn-l1:  ## Train THyN on L1** labels
-	torchrun --nproc_per_node=$(GPUS) -m src.pipeline.train --config configs/thyn_l1.yaml
+	torchrun --nproc_per_node=$(GPUS) -m src.pipeline.train --config configs/theia_l1_thyn.yaml
 
 train-baseline-l1:  ## Train Baseline A on L1** labels
-	torchrun --nproc_per_node=$(GPUS) -m src.pipeline.train --config configs/baseline_a_l1.yaml
+	torchrun --nproc_per_node=$(GPUS) -m src.pipeline.train --config configs/theia_l1_baseline_a.yaml
 
 # ============================================================
 # Evaluation
@@ -86,10 +86,10 @@ train-baseline-l1:  ## Train Baseline A on L1** labels
 control-experiment:  ## Run control experiment (temporal/entity/label shuffle)
 	$(PYTHON) -m src.pipeline.control_experiment \
 		--checkpoint checkpoints/thyn_v0/best.pt \
-		--config configs/thyn_v0.yaml
+		--config configs/theia_thyn_v0.yaml
 	$(PYTHON) -m src.pipeline.control_experiment \
 		--checkpoint checkpoints/baseline_a/best.pt \
-		--config configs/baseline_a.yaml
+		--config configs/theia_baseline_a.yaml
 
 # ============================================================
 # KAIROS Baseline
@@ -101,6 +101,19 @@ kairos-convert:  ## Convert Parquet → KAIROS TemporalData
 kairos-train:  ## Train KAIROS baseline
 	$(PYTHON) -m baselines.kairos.train --dataset $(DATASET)
 
-kairos-eval:  ## Evaluate KAIROS baseline
+kairos-eval:  ## Evaluate KAIROS baseline (unsupervised)
+	$(PYTHON) -m baselines.kairos.evaluate --dataset $(DATASET) --split val
 	$(PYTHON) -m baselines.kairos.evaluate --dataset $(DATASET) --split test
 
+kairos-extract:  ## Extract KAIROS embeddings for supervised head
+	$(PYTHON) -m baselines.kairos.extract_embeddings --dataset $(DATASET)
+
+kairos-supervised:  ## Train & evaluate supervised KAIROS head
+	$(PYTHON) -m baselines.kairos.supervised_head --dataset $(DATASET)
+
+kairos-full:  ## Full KAIROS pipeline (convert → train → eval → supervised)
+	$(MAKE) kairos-convert DATASET=$(DATASET)
+	$(MAKE) kairos-train DATASET=$(DATASET)
+	$(MAKE) kairos-eval DATASET=$(DATASET)
+	$(MAKE) kairos-extract DATASET=$(DATASET)
+	$(MAKE) kairos-supervised DATASET=$(DATASET)

@@ -1,8 +1,8 @@
-name: "baseline_a_crossprocess"
+name: "thyn_narrow"
 
 model:
-  model_type: "baseline_a"
-  encoder_type: "gru"
+  model_type: "thyn"
+  encoder_type: "mamba"
   d_type: 16
   d_model: 64
   d_hidden: 64
@@ -10,7 +10,7 @@ model:
   dropout: 0.1
 
 data:
-  label_type: "crossprocess"
+  label_type: "narrow"      # ← the key change
   max_seq_len: 512
   stride: 512
   min_seq_len: 2
@@ -24,6 +24,6 @@ training:
   weight_decay: 0.0001
   epochs: 30
   patience: 7
-  pos_weight: "auto"
+  pos_weight: "auto"        # auto-computed from label ratio
   grad_clip: 1.0
   log_every: 100
