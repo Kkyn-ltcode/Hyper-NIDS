@@ -13,6 +13,7 @@ Usage:
 """
 
 import argparse
+import copy
 import logging
 import os
 import time
@@ -187,11 +188,12 @@ def main():
     ).to(cpu)
 
     # GNN + LinkPred on compute device
+    # IMPORTANT: deep-copy time_enc so .to(cuda) doesn't drag memory's copy
     gnn = GraphAttentionEmbedding(
         in_channels=NODE_STATE_DIM,
         out_channels=EDGE_DIM,
         msg_dim=node_feat_size,
-        time_enc=memory.time_enc,
+        time_enc=copy.deepcopy(memory.time_enc),
     ).to(compute_device)
 
     link_pred = LinkPredictor(

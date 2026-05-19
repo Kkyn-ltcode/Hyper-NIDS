@@ -11,6 +11,7 @@ Usage:
 """
 
 import argparse
+import copy
 import logging
 import os
 import time
@@ -74,6 +75,10 @@ def compute_reconstruction_losses(data, memory, gnn, link_pred,
     # Ensure memory internals are on CPU
     cpu = torch.device("cpu")
     memory = memory.to(cpu)
+
+    # Break shared time_enc reference: give GNN its own copy
+    # so .to(compute_device) doesn't drag memory's time_enc to GPU
+    gnn.time_enc = copy.deepcopy(gnn.time_enc)
 
     # GNN + link_pred on compute device
     gnn = gnn.to(compute_device)
@@ -264,8 +269,8 @@ def main():
     print("Loading model to CPU...")
     model_parts = torch.load(
         models_dir / "model.pt", map_location="cpu", weights_only=False)
-    memory, gnn, link_pred, _ = model_parts
-    neighbor_loader = LastNeighborLoader(max_node_num, size=NEIGHBOR_SIZE)
+    memory, gnn, link_pred, neighbor_loader = model_parts
+    # neighbor_loader = LastNeighborLoader(max_node_num, size=NEIGHBOR_SIZE)
 
     model_config = torch.load(
         models_dir / "model_config.pt", weights_only=False)
