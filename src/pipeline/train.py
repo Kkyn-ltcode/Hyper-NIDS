@@ -67,8 +67,23 @@ def log(msg):
 
 def masked_bce_loss(logits, y, mask, pos_weight_t):
     real = mask.bool()
-    return nn.functional.binary_cross_entropy_with_logits(
-        logits[real], y[real].float(), pos_weight=pos_weight_t)
+    logits_real = logits[real]
+    y_real = y[real].float()
+
+    if logits_real.numel() == 0:
+        return torch.tensor(0.0, device=logits.device, requires_grad=True)
+
+    # Clamp logits to prevent numerical overflow in BCE
+    logits_real = logits_real.clamp(-50, 50)
+
+    loss = nn.functional.binary_cross_entropy_with_logits(
+        logits_real, y_real, pos_weight=pos_weight_t)
+
+    # Safety: replace NaN/Inf loss with zero (skip this batch)
+    if torch.isnan(loss) or torch.isinf(loss):
+        return torch.tensor(0.0, device=logits.device, requires_grad=True)
+
+    return loss
 
 
 def compute_metrics(all_logits, all_labels):
@@ -103,6 +118,7 @@ def train_epoch(model, loader, optimizer, pw_t, grad_clip, device,
     total_events = 0
     t0 = time.time()
 
+    nan_batches = 0
     for i, batch in enumerate(loader):
         X_c = batch["X_cont"].to(device, non_blocking=True)
         et = batch["event_type"].to(device, non_blocking=True)
@@ -110,11 +126,26 @@ def train_epoch(model, loader, optimizer, pw_t, grad_clip, device,
         mask = batch["mask"].to(device, non_blocking=True)
         ent = batch["entity_ids"].to(device, non_blocking=True)
 
+        # Clamp extreme feature values to prevent NaN
+        X_c = X_c.clamp(-100, 100)
+
         logits = model(X_c, et, entity_ids=ent, mask=mask)
         loss = masked_bce_loss(logits, y, mask, pw_t)
 
         optimizer.zero_grad()
         loss.backward()
+
+        # Check for NaN gradients
+        has_nan_grad = False
+        for p in model.parameters():
+            if p.grad is not None and (torch.isnan(p.grad).any() or torch.isinf(p.grad).any()):
+                has_nan_grad = True
+                break
+        if has_nan_grad:
+            nan_batches += 1
+            optimizer.zero_grad()  # discard corrupted gradients
+            continue
+
         if grad_clip > 0:
             nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
@@ -135,6 +166,8 @@ def train_epoch(model, loader, optimizer, pw_t, grad_clip, device,
 
     elapsed = time.time() - t0
     throughput = total_events / elapsed if elapsed > 0 else 0
+    if nan_batches > 0:
+        log(f"    ⚠ {nan_batches} batches skipped (NaN gradients)")
     return total_loss / max(n_batches, 1), throughput
 
 
@@ -156,6 +189,9 @@ def evaluate(model, loader, pw_t, device, max_batches=None):
         y = batch["y"].to(device, non_blocking=True)
         mask = batch["mask"].to(device, non_blocking=True)
         ent = batch["entity_ids"].to(device, non_blocking=True)
+
+        # Clamp extreme feature values (same as training)
+        X_c = X_c.clamp(-100, 100)
 
         m = model.module if isinstance(model, DDP) else model
         logits = m(X_c, et, entity_ids=ent, mask=mask)
