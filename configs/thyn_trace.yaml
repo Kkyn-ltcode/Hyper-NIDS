@@ -1,0 +1,28 @@
+name: "thyn_trace"
+
+model:
+  model_type: "thyn"
+  encoder_type: "gru"      # "gru" (macOS) | "mamba" (CUDA)
+  d_type: 16               # event type embedding dim
+  d_model: 64              # input projection dim
+  d_hidden: 64             # encoder hidden dim
+  n_layers: 2
+  dropout: 0.1
+
+data:
+  max_seq_len: 512
+  stride: 512
+  min_seq_len: 2
+  train_shards: [0, 1, 2, 3, 4]
+  val_shards: [5]
+  test_shards: [6]
+
+training:
+  batch_size: 64
+  lr: 0.001
+  weight_decay: 0.0001
+  epochs: 20
+  patience: 5
+  pos_weight: 1.0          # TRACE is ~70% attack, no upweighting needed
+  grad_clip: 1.0
+  log_every: 100

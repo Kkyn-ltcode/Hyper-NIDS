@@ -69,6 +69,13 @@ class THyNDataset(Dataset):
         shard_ranges = []
         local_pos = 0
         for sid in shard_ids:
+            if sid not in shard_starts:
+                available = sorted(shard_starts.keys())
+                raise KeyError(
+                    f"Shard {sid} not found in shard_offsets.npz. "
+                    f"Available shards: {available}. "
+                    f"Check your config's train_shards/val_shards/test_shards."
+                )
             gs, ge = shard_starts[sid], shard_ends[sid]
             shard_ranges.append((gs, ge, local_pos - gs))
             local_pos += (ge - gs)

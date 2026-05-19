@@ -62,6 +62,12 @@ train-thyn:  ## Train THyN (4 GPU)
 train-baseline:  ## Train Baseline A (4 GPU)
 	torchrun --nproc_per_node=$(GPUS) -m src.pipeline.train --config configs/baseline_a.yaml
 
+train-thyn-trace:  ## Train THyN on TRACE (4 GPU)
+	torchrun --nproc_per_node=$(GPUS) -m src.pipeline.train --config configs/thyn_trace.yaml --dataset trace
+
+train-baseline-trace:  ## Train Baseline A on TRACE (4 GPU)
+	torchrun --nproc_per_node=$(GPUS) -m src.pipeline.train --config configs/baseline_a_trace.yaml --dataset trace
+
 # ---- L1** Novel-Binary Experiment ----
 
 l1-relabel:  ## Add L1** labels (neutralize Firefox in training)

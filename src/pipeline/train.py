@@ -217,6 +217,7 @@ def main():
     log(f"  Model type: {mcfg['model_type']}")
     log(f"  Encoder:    {mcfg['encoder_type']}")
     log(f"  Labels:     {dcfg.get('label_type', 'broad')}")
+    log(f"  Dataset:    {args.dataset}")
 
     # ── Data ──
     log(f"\n[1/4] Loading data...")
