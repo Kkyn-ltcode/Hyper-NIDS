@@ -25,7 +25,7 @@ from sklearn.metrics import (
     precision_recall_fscore_support, precision_recall_curve,
 )
 
-from baselines.kairos.config import DATASET_CONFIGS, ARTIFACT_DIR
+from baselines.kairos.config import DATASET_CONFIGS, ARTIFACT_DIR, GRAPHS_DIR
 
 
 def find_best_f1_threshold(probs, labels):
@@ -200,6 +200,9 @@ def main():
                         help="Include reconstruction loss as extra feature")
     parser.add_argument("--no-include-loss", action="store_false",
                         dest="include_loss")
+    parser.add_argument("--train-labels", default=None,
+                        help="Use alternate training labels (e.g., 'l1' for L1**). "
+                             "Val/test always use broad labels.")
     parser.add_argument("--device", default="auto")
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -214,10 +217,15 @@ def main():
     else:
         device = torch.device(args.device)
 
+    label_tag = f" (train labels: {args.train_labels})" if args.train_labels else ""
+    exp_name = f"supervised_kairos_{args.train_labels}" if args.train_labels else "supervised_kairos"
+
     print("=" * 60)
-    print(f"SUPERVISED KAIROS — {args.dataset.upper()}")
+    print(f"SUPERVISED KAIROS — {args.dataset.upper()}{label_tag}")
     print("=" * 60)
     print(f"  Device: {device}")
+    if args.train_labels:
+        print(f"  Train labels: {args.train_labels} (val/test: broad)")
 
     # ========================================================
     # Load embeddings
@@ -233,12 +241,30 @@ def main():
 
         data = np.load(path)
         emb = data["embeddings"].astype(np.float32)
-        lab = data["labels"]
+        lab = data["labels"]  # broad labels from embeddings
         loss = data["losses"].astype(np.float32)
 
         if args.include_loss:
             loss_clipped = np.clip(loss, 0, np.percentile(loss, 99.9))
             emb = np.hstack([emb, loss_clipped.reshape(-1, 1)])
+
+        # Override training labels if --train-labels specified
+        if split == "train" and args.train_labels:
+            alt_label_path = GRAPHS_DIR / args.dataset / f"train_labels_{args.train_labels}.npy"
+            if not alt_label_path.exists():
+                print(f"  ERROR: {alt_label_path} not found.")
+                print(f"  Run: python -m baselines.kairos.relabel_kairos "
+                      f"--dataset {args.dataset} --label-type {args.train_labels}")
+                return
+            lab_alt = np.load(alt_label_path)
+            if len(lab_alt) != len(lab):
+                print(f"  ERROR: label length mismatch: broad={len(lab):,}, "
+                      f"{args.train_labels}={len(lab_alt):,}")
+                return
+            n_changed = int((lab != lab_alt).sum())
+            print(f"  train: swapping to {args.train_labels} labels "
+                  f"({n_changed:,} events changed)")
+            lab = lab_alt
 
         n_atk = int((lab == 1).sum())
         print(f"  {split}: {len(lab):,} events, "
@@ -368,11 +394,12 @@ def main():
         if key in all_results:
             print(f"  {key}: {all_results[key]:.4f}")
 
-    results_path = models_dir / "supervised_results.pt"
+    suffix = f"_{args.train_labels}" if args.train_labels else ""
+    results_path = models_dir / f"supervised_results{suffix}.pt"
     torch.save(all_results, results_path)
     print(f"\nResults saved to {results_path}")
 
-    model_path = models_dir / "supervised_model.pt"
+    model_path = models_dir / f"supervised_model{suffix}.pt"
     torch.save({"model": model.cpu().state_dict(), "mean": mean, "std": std},
                model_path)
     print(f"Model saved to {model_path}")

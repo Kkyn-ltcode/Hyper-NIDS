@@ -108,8 +108,16 @@ kairos-eval:  ## Evaluate KAIROS baseline (unsupervised)
 kairos-extract:  ## Extract KAIROS embeddings for supervised head
 	$(PYTHON) -m baselines.kairos.extract_embeddings --dataset $(DATASET)
 
-kairos-supervised:  ## Train & evaluate supervised KAIROS head
+kairos-supervised:  ## Train & evaluate supervised KAIROS head (L0)
 	$(PYTHON) -m baselines.kairos.supervised_head --dataset $(DATASET)
+
+# ---- Supervised KAIROS L1** ----
+
+kairos-relabel-l1:  ## Re-extract L1** labels for KAIROS events
+	$(PYTHON) -m baselines.kairos.relabel_kairos --dataset $(DATASET) --label-type l1
+
+kairos-supervised-l1:  ## Train supervised KAIROS on L1** labels
+	$(PYTHON) -m baselines.kairos.supervised_head --dataset $(DATASET) --train-labels l1
 
 kairos-full:  ## Full KAIROS pipeline (convert → train → eval → supervised)
 	$(MAKE) kairos-convert DATASET=$(DATASET)
