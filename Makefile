@@ -1,6 +1,7 @@
 .PHONY: pipeline-theia pipeline-trace pipeline-trace-1 \
         ingest parse relabel features normalize graph sequences \
         train-thyn train-baseline control-experiment \
+        l1-relabel train-thyn-l1 train-baseline-l1 \
         kairos-convert kairos-train kairos-eval help
 
 PYTHON ?= python
@@ -60,6 +61,17 @@ train-thyn:  ## Train THyN (4 GPU)
 
 train-baseline:  ## Train Baseline A (4 GPU)
 	torchrun --nproc_per_node=$(GPUS) -m src.pipeline.train --config configs/baseline_a.yaml
+
+# ---- L1** Novel-Binary Experiment ----
+
+l1-relabel:  ## Add L1** labels (neutralize Firefox in training)
+	$(PYTHON) -m src.pipeline.novel_binary_relabel --dataset $(DATASET)
+
+train-thyn-l1:  ## Train THyN on L1** labels
+	torchrun --nproc_per_node=$(GPUS) -m src.pipeline.train --config configs/thyn_l1.yaml
+
+train-baseline-l1:  ## Train Baseline A on L1** labels
+	torchrun --nproc_per_node=$(GPUS) -m src.pipeline.train --config configs/baseline_a_l1.yaml
 
 # ============================================================
 # Evaluation
