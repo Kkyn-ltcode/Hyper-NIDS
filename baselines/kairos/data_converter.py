@@ -4,14 +4,12 @@ Convert HyperMamba-NIDS Parquet shards to KAIROS TemporalData format.
 This bypasses KAIROS's PostgreSQL pipeline by reading directly from
 our labeled Parquet files and producing PyG TemporalData objects.
 
-KAIROS TemporalData has:
-  - src: (E,) int64 — source node integer IDs
-  - dst: (E,) int64 — destination node integer IDs
-  - t:   (E,) int64 — nanosecond timestamps
-  - msg: (E, D) float — concatenation of [src_feat, edge_onehot, dst_feat]
+Memory-safe: uses vectorized operations and batched FeatureHasher
+for datasets with 100M+ nodes (e.g., full TRACE).
 
 Usage:
     python -m baselines.kairos.data_converter --dataset theia
+    python -m baselines.kairos.data_converter --dataset trace
 """
 
 import argparse
@@ -33,39 +31,26 @@ from baselines.kairos.config import (
 
 
 # ============================================================
-# Helpers (from KAIROS utils)
+# Helpers
 # ============================================================
 
-def string_to_hash(s: str) -> str:
-    """SHA-256 hash of a string (KAIROS convention)."""
-    return hashlib.sha256(s.encode("utf-8")).hexdigest()
-
-
 def path_to_hierarchy(p: str) -> list[str]:
-    """Convert file path to hierarchical representation.
-
-    '/usr/bin/bash' → ['usr', 'usr/bin', 'usr/bin/bash']
-    """
-    p = str(p).strip()  # ensure string
+    """'/usr/bin/bash' → ['usr', 'usr/bin', 'usr/bin/bash']"""
+    p = str(p).strip()
     if not p or p.lower() == "nan":
         return ["unknown"]
-    parts = p.split("/")
+    parts = [x for x in p.split("/") if x]
     result = []
     for part in parts:
-        if not part:
-            continue
         if result:
             result.append(result[-1] + "/" + part)
         else:
             result.append(part)
-    return result
+    return result or ["unknown"]
 
 
 def ip_to_hierarchy(ip: str) -> list[str]:
-    """Convert IP to hierarchical representation.
-
-    '192.168.1.1' → ['192', '192.168', '192.168.1', '192.168.1.1']
-    """
+    """'192.168.1.1' → ['192', '192.168', '192.168.1', '192.168.1.1']"""
     ip = str(ip).strip()
     if not ip or ip.lower() == "nan":
         return ["unknown"]
@@ -76,44 +61,134 @@ def ip_to_hierarchy(ip: str) -> list[str]:
             result.append(result[-1] + "." + part)
         else:
             result.append(part)
-    return result
+    return result or ["unknown"]
 
 
-def build_node_features(node_labels: dict[int, tuple[str, str]],
-                        n_features: int = NODE_EMBEDDING_DIM
-                        ) -> np.ndarray:
-    """Build node feature vectors using FeatureHasher.
+def build_node_features_batched(node_labels: dict, n_features: int = NODE_EMBEDDING_DIM,
+                                batch_size: int = 1_000_000) -> np.ndarray:
+    """Build node features in batches to avoid OOM on large graphs.
 
     Args:
         node_labels: {node_id: (node_type, label_string)}
-            node_type is one of: 'subject', 'file', 'netflow'
-            label_string is the path, IP:port, or cmd_line
+        n_features: feature hash dimension
+        batch_size: nodes per batch for FeatureHasher
 
     Returns:
-        node2vec: (num_nodes, n_features) float32 array
+        (max_node_id+1, n_features) float32 array
     """
     max_id = max(node_labels.keys()) + 1
+    print(f"    Allocating feature matrix: ({max_id:,}, {n_features}) "
+          f"= {max_id * n_features * 4 / 1e9:.2f} GB")
+
+    node2vec = np.zeros((max_id, n_features), dtype=np.float32)
     fh = FeatureHasher(n_features=n_features, input_type="string")
 
-    # Collect token lists for all nodes
-    token_lists = []
-    for nid in range(max_id):
-        if nid in node_labels:
-            ntype, label = node_labels[nid]
-            if ntype == "netflow":
-                hierarchy = ["netflow"] + ip_to_hierarchy(label.split(":")[0])
-            elif ntype == "file":
-                hierarchy = ["file"] + path_to_hierarchy(label)
-            else:  # subject
-                hierarchy = ["subject"] + path_to_hierarchy(label)
-        else:
-            hierarchy = ["unknown"]
-        token_lists.append(hierarchy)
+    n_batches = (max_id + batch_size - 1) // batch_size
+    for batch_idx in range(n_batches):
+        start = batch_idx * batch_size
+        end = min(start + batch_size, max_id)
 
-    # Transform all at once
-    # FeatureHasher expects an iterable of iterables of strings
-    node2vec = fh.transform(token_lists).toarray().astype(np.float32)
+        token_lists = []
+        for nid in range(start, end):
+            if nid in node_labels:
+                ntype, label = node_labels[nid]
+                if ntype == "netflow":
+                    hierarchy = ["netflow"] + ip_to_hierarchy(label.split(":")[0])
+                elif ntype == "file":
+                    hierarchy = ["file"] + path_to_hierarchy(label)
+                else:
+                    hierarchy = ["subject"] + path_to_hierarchy(label)
+            else:
+                hierarchy = ["unknown"]
+            token_lists.append(hierarchy)
+
+        batch_features = fh.transform(token_lists).toarray().astype(np.float32)
+        node2vec[start:end] = batch_features
+
+        if (batch_idx + 1) % 20 == 0 or batch_idx == 0 or batch_idx == n_batches - 1:
+            print(f"    Batch {batch_idx+1}/{n_batches} "
+                  f"(nodes {start:,}–{end:,})")
+
+        del token_lists, batch_features
+
     return node2vec
+
+
+def build_entity_vocab_vectorized(subjects_df, objects_df):
+    """Build UUID→ID mapping using vectorized pandas, not iterrows().
+
+    Returns:
+        uuid_to_id: dict mapping UUID string → integer ID
+        node_labels: dict mapping integer ID → (type, label_string)
+    """
+    uuid_to_id = {}
+    node_labels = {}
+    next_id = 0
+
+    # --- Subjects: vectorized ---
+    # Get unique subjects
+    subj_uuids = subjects_df["uuid"].values
+    # Pre-compute labels vectorized
+    if "process_path" in subjects_df.columns:
+        subj_labels = subjects_df["process_path"].fillna("")
+        # Fall back to cmd_line where process_path is empty
+        if "cmd_line" in subjects_df.columns:
+            empty_mask = (subj_labels == "") | (subj_labels.str.lower() == "nan")
+            subj_labels[empty_mask] = subjects_df.loc[empty_mask, "cmd_line"].fillna("")
+    elif "cmd_line" in subjects_df.columns:
+        subj_labels = subjects_df["cmd_line"].fillna("")
+    else:
+        subj_labels = pd.Series("unknown", index=subjects_df.index)
+
+    subj_labels = subj_labels.fillna("unknown").replace({"": "unknown", "nan": "unknown"})
+
+    for i in range(len(subjects_df)):
+        uid = subj_uuids[i]
+        if uid not in uuid_to_id:
+            uuid_to_id[uid] = next_id
+            node_labels[next_id] = ("subject", str(subj_labels.iloc[i]))
+            next_id += 1
+
+    n_subjects = next_id
+    print(f"    Subjects: {n_subjects:,}")
+
+    # --- Objects: vectorized ---
+    obj_uuids = objects_df["uuid"].values
+    obj_types = objects_df.get("object_type", pd.Series("unknown", index=objects_df.index)).fillna("unknown").values
+
+    # Pre-compute object labels
+    filenames = objects_df.get("filename", pd.Series("", index=objects_df.index)).fillna("").values
+    remote_addrs = objects_df.get("remote_address", pd.Series("", index=objects_df.index)).fillna("").values
+    remote_ports = objects_df.get("remote_port", pd.Series("", index=objects_df.index)).fillna("").values
+
+    for i in range(len(objects_df)):
+        uid = obj_uuids[i]
+        if uid not in uuid_to_id:
+            uuid_to_id[uid] = next_id
+            otype = str(obj_types[i])
+            if otype in ("FILE", "MEMORY"):
+                label = str(filenames[i]) if filenames[i] else "unknown"
+                if label.lower() == "nan" or not label.strip():
+                    label = "unknown"
+                node_labels[next_id] = ("file", label)
+            elif otype == "NETFLOW":
+                addr = str(remote_addrs[i]) if remote_addrs[i] else ""
+                port = str(remote_ports[i]) if remote_ports[i] else ""
+                if addr.lower() == "nan":
+                    addr = ""
+                if port.lower() == "nan":
+                    port = ""
+                label = f"{addr}:{port}" if addr or port else "unknown"
+                node_labels[next_id] = ("netflow", label)
+            else:
+                node_labels[next_id] = ("file", "unknown")
+            next_id += 1
+
+    n_objects = next_id - n_subjects
+    print(f"    Objects:  {n_objects:,}")
+    print(f"    Total:    {next_id:,}")
+
+    return uuid_to_id, node_labels
 
 
 # ============================================================
@@ -130,7 +205,6 @@ def convert_dataset(dataset: str):
     reversed_types = set(cfg["edge_reversed"])
     rel2id = build_rel2id(cfg["include_edge_type"])
 
-    # Create output directories
     out_dir = GRAPHS_DIR / dataset
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -139,7 +213,7 @@ def convert_dataset(dataset: str):
     print("=" * 60)
 
     # ========================================================
-    # Step 1: Build entity vocabulary
+    # Step 1: Build entity vocabulary (vectorized)
     # ========================================================
     print("\nStep 1: Build entity vocabulary...")
     t0 = time.time()
@@ -147,77 +221,25 @@ def convert_dataset(dataset: str):
     subjects_df = pd.read_parquet(data_dir / "subjects.parquet")
     objects_df = pd.read_parquet(data_dir / "objects.parquet")
 
-    # Build UUID → integer ID mapping
-    uuid_to_id = {}
-    node_labels = {}  # id → (type, label_string)
-    next_id = 0
-
-    # Subjects: use process_path or cmd_line
-    for _, row in subjects_df.iterrows():
-        uid = row["uuid"]
-        if uid not in uuid_to_id:
-            uuid_to_id[uid] = next_id
-            # Safe extraction: convert to string, replace NaN/"nan" with "unknown"
-            label = row.get("process_path", None)
-            if pd.isna(label) or str(label).strip() == "" or str(label).lower() == "nan":
-                label = row.get("cmd_line", None)
-            if pd.isna(label) or str(label).strip() == "" or str(label).lower() == "nan":
-                label = "unknown"
-            else:
-                label = str(label)
-            node_labels[next_id] = ("subject", label)
-            next_id += 1
-
-    # Objects: use filename, or IP:port
-    for _, row in objects_df.iterrows():
-        uid = row["uuid"]
-        if uid not in uuid_to_id:
-            uuid_to_id[uid] = next_id
-            otype = row.get("object_type", "unknown")
-            if otype == "FILE" or otype == "MEMORY":
-                label = row.get("filename", None)
-                if pd.isna(label) or str(label).strip() == "" or str(label).lower() == "nan":
-                    label = "unknown"
-                else:
-                    label = str(label)
-                node_labels[next_id] = ("file", label)
-            elif otype == "NETFLOW":
-                addr = row.get("remote_address", None)
-                port = row.get("remote_port", None)
-                if pd.isna(addr) or str(addr).strip() == "":
-                    addr = ""
-                else:
-                    addr = str(addr)
-                if pd.isna(port) or str(port).strip() == "":
-                    port = ""
-                else:
-                    port = str(port)
-                label = f"{addr}:{port}" if addr or port else "unknown"
-                node_labels[next_id] = ("netflow", label)
-            else:
-                node_labels[next_id] = ("file", "unknown")
-            next_id += 1
-
-    num_nodes = next_id
-    print(f"  Nodes: {num_nodes:,}")
-    print(f"    Subjects: {len(subjects_df):,}")
-    print(f"    Objects:  {len(objects_df):,}")
+    uuid_to_id, node_labels = build_entity_vocab_vectorized(subjects_df, objects_df)
+    num_nodes = len(uuid_to_id)
     print(f"  Time: {time.time()-t0:.1f}s")
 
     del subjects_df, objects_df
     gc.collect()
 
     # ========================================================
-    # Step 2: Build node features
+    # Step 2: Build node features (batched)
     # ========================================================
-    print("\nStep 2: Build node features (FeatureHasher)...")
+    print("\nStep 2: Build node features (batched FeatureHasher)...")
     t0 = time.time()
-    node2vec = build_node_features(node_labels, NODE_EMBEDDING_DIM)
+    node2vec = build_node_features_batched(node_labels, NODE_EMBEDDING_DIM)
     print(f"  Shape: {node2vec.shape}")
     print(f"  Time: {time.time()-t0:.1f}s")
 
-    # Save node features
-    # torch.save(node2vec, out_dir / "node2higvec.pt")
+    # Free node_labels — no longer needed
+    del node_labels
+    gc.collect()
 
     # ========================================================
     # Step 3: Build edge type one-hot vectors
@@ -228,9 +250,8 @@ def convert_dataset(dataset: str):
     ).float()
     rel2vec = {}
     for etype in cfg["include_edge_type"]:
-        idx = rel2id[etype] - 1  # 0-indexed
+        idx = rel2id[etype] - 1
         rel2vec[etype] = rel_onehot[idx]
-    # torch.save(rel2vec, out_dir / "rel2vec.pt")
     print(f"\n  Edge types: {n_edge_types}")
 
     # ========================================================
@@ -239,8 +260,6 @@ def convert_dataset(dataset: str):
     all_shards = sorted(labeled_dir.glob("labeled_shard*.parquet"))
     print(f"\nStep 4: Convert {len(all_shards)} shards to TemporalData...")
 
-    # Determine shard groups
-    all_shard_indices = cfg["train_shards"] + cfg["val_shards"] + cfg["test_shards"]
     shard_groups = {}
     for idx in cfg["train_shards"]:
         shard_groups[idx] = "train"
@@ -248,6 +267,10 @@ def convert_dataset(dataset: str):
         shard_groups[idx] = "val"
     for idx in cfg["test_shards"]:
         shard_groups[idx] = "test"
+
+    # Pre-compute edge type vectors as numpy for fast access
+    rel2vec_np = {k: v.numpy() for k, v in rel2vec.items()}
+    msg_dim = NODE_EMBEDDING_DIM * 2 + n_edge_types
 
     for split in ["train", "val", "test"]:
         split_indices = [i for i, g in shard_groups.items() if g == split]
@@ -278,49 +301,59 @@ def convert_dataset(dataset: str):
             df = df[mask].reset_index(drop=True)
             total_filtered += len(df)
 
-            # Map UUIDs to integer IDs
+            # Map UUIDs to integer IDs (vectorized)
             src_ids = df["subject_uuid"].map(uuid_to_id)
             dst_ids = df["predicate_object_uuid"].map(uuid_to_id)
 
-            # Drop events with unmapped entities
             valid = src_ids.notna() & dst_ids.notna()
             df = df[valid].reset_index(drop=True)
             src_ids = src_ids[valid].astype(int).values.copy()
             dst_ids = dst_ids[valid].astype(int).values.copy()
 
-            # Handle reversed edges
-            for i, etype in enumerate(df["type"].values):
-                if etype in reversed_types:
-                    src_ids[i], dst_ids[i] = dst_ids[i], src_ids[i]
+            # Handle reversed edges (vectorized)
+            types_arr = df["type"].values
+            for rev_type in reversed_types:
+                rev_mask = types_arr == rev_type
+                if rev_mask.any():
+                    src_ids[rev_mask], dst_ids[rev_mask] = \
+                        dst_ids[rev_mask].copy(), src_ids[rev_mask].copy()
 
-            # Build message vectors: [src_feat, edge_onehot, dst_feat]
+            # Build messages vectorized: [src_feat, edge_onehot, dst_feat]
             timestamps = df["timestamp_nanos"].values.astype(np.int64)
             labels = df["label_broad"].values.astype(np.int8)
 
-            msgs = []
-            for i in range(len(df)):
-                src_feat = torch.from_numpy(node2vec[src_ids[i]])
-                edge_feat = rel2vec[df["type"].iloc[i]]
-                dst_feat = torch.from_numpy(node2vec[dst_ids[i]])
-                msgs.append(torch.cat([src_feat, edge_feat, dst_feat]))
+            n = len(df)
+            msg_array = np.zeros((n, msg_dim), dtype=np.float32)
+
+            # Source features
+            msg_array[:, :NODE_EMBEDDING_DIM] = node2vec[src_ids]
+
+            # Edge type features
+            unique_types = np.unique(types_arr)
+            for etype in unique_types:
+                if etype in rel2vec_np:
+                    type_mask = types_arr == etype
+                    msg_array[type_mask, NODE_EMBEDDING_DIM:NODE_EMBEDDING_DIM+n_edge_types] = \
+                        rel2vec_np[etype]
+
+            # Destination features
+            msg_array[:, NODE_EMBEDDING_DIM+n_edge_types:] = node2vec[dst_ids]
 
             all_src.append(torch.tensor(src_ids, dtype=torch.long))
             all_dst.append(torch.tensor(dst_ids, dtype=torch.long))
             all_t.append(torch.tensor(timestamps, dtype=torch.long))
-            if msgs:
-                all_msg.append(torch.stack(msgs))
+            all_msg.append(torch.from_numpy(msg_array))
             all_labels.append(labels)
 
-            print(f"    Shard {shard_idx}: {len(df):,} events "
-                  f"(filtered from {(~mask).sum() + (~valid).sum():,})")
+            print(f"    Shard {shard_idx}: {n:,} events "
+                  f"(filtered {total_events - total_filtered:,})")
 
-            del df
+            del df, msg_array
             gc.collect()
 
         if not all_src:
             continue
 
-        # Combine
         dataset_td = TemporalData(
             src=torch.cat(all_src),
             dst=torch.cat(all_dst),
@@ -328,7 +361,6 @@ def convert_dataset(dataset: str):
             msg=torch.cat(all_msg),
         )
 
-        # Sort by timestamp
         sort_idx = dataset_td.t.argsort()
         dataset_td.src = dataset_td.src[sort_idx]
         dataset_td.dst = dataset_td.dst[sort_idx]
@@ -337,7 +369,6 @@ def convert_dataset(dataset: str):
 
         labels_concat = np.concatenate(all_labels)[sort_idx.numpy()]
 
-        # Save
         torch.save(dataset_td, out_dir / f"{split}.TemporalData.pt")
         np.save(out_dir / f"{split}_labels.npy", labels_concat)
 
@@ -348,16 +379,15 @@ def convert_dataset(dataset: str):
               f"({100*n_attack/len(labels_concat):.2f}%)")
         print(f"    msg shape: {dataset_td.msg.shape}")
 
-        del all_src, all_dst, all_t, all_msg, all_labels
+        del all_src, all_dst, all_t, all_msg, all_labels, dataset_td
         gc.collect()
 
-    # Save metadata
     meta = {
         "num_nodes": num_nodes,
         "uuid_to_id_size": len(uuid_to_id),
         "n_edge_types": n_edge_types,
         "include_edge_type": cfg["include_edge_type"],
-        "msg_dim": NODE_EMBEDDING_DIM * 2 + n_edge_types,
+        "msg_dim": msg_dim,
     }
     torch.save(meta, out_dir / "metadata.pt")
     print(f"\n  Metadata: {meta}")

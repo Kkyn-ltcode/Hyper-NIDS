@@ -1,23 +1,25 @@
 """
-Supervised KAIROS baseline: train a logistic regression classifier on
+Supervised KAIROS baseline: GPU-accelerated linear classifier on
 KAIROS GNN embeddings for fair comparison with THyN.
 
-Input:  Per-event embeddings from extract_embeddings.py
-Output: AUPRC, AUROC, F1 — comparable to THyN results
+Uses a single-layer PyTorch linear classifier (equivalent to logistic
+regression) trained with Adam on GPU. Much faster than sklearn on
+large datasets.
 
 Usage:
     python -m baselines.kairos.supervised_head --dataset theia
     python -m baselines.kairos.supervised_head --dataset trace
-    python -m baselines.kairos.supervised_head --dataset theia --max-train 5000000
 """
 
 import argparse
+import gc
 import time
 from pathlib import Path
 
 import numpy as np
-from sklearn.linear_model import LogisticRegressionCV
-from sklearn.preprocessing import StandardScaler
+import torch
+import torch.nn as nn
+from torch.utils.data import TensorDataset, DataLoader
 from sklearn.metrics import (
     average_precision_score, roc_auc_score,
     precision_recall_fscore_support, precision_recall_curve,
@@ -64,7 +66,6 @@ def evaluate_split(name, probs, labels, threshold=None):
     print(f"    AUPRC: {auprc:.4f}")
     print(f"    AUROC: {auroc:.4f}")
 
-    # F1 with provided or best threshold
     if threshold is None:
         threshold, best_f1 = find_best_f1_threshold(probs, labels)
         print(f"    Best F1: {best_f1:.4f} (threshold={threshold:.4f})")
@@ -82,9 +83,115 @@ def evaluate_split(name, probs, labels, threshold=None):
     return results
 
 
+class LinearClassifier(nn.Module):
+    """Single linear layer — equivalent to logistic regression."""
+    def __init__(self, in_dim):
+        super().__init__()
+        self.linear = nn.Linear(in_dim, 1)
+
+    def forward(self, x):
+        return self.linear(x).squeeze(-1)
+
+
+def train_linear_gpu(X_train, y_train, X_val, y_val, device,
+                     epochs=30, batch_size=8192, lr=1e-3, patience=5):
+    """Train a linear classifier on GPU with early stopping."""
+
+    in_dim = X_train.shape[1]
+    model = LinearClassifier(in_dim).to(device)
+
+    # Class weight for imbalanced data
+    n_pos = (y_train == 1).sum()
+    n_neg = (y_train == 0).sum()
+    pos_weight = torch.tensor([n_neg / max(n_pos, 1)], device=device).float()
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="max", factor=0.5, patience=2)
+
+    # Build dataloaders
+    train_ds = TensorDataset(
+        torch.from_numpy(X_train).float(),
+        torch.from_numpy(y_train).float())
+    train_loader = DataLoader(train_ds, batch_size=batch_size,
+                              shuffle=True, num_workers=4, pin_memory=True)
+
+    best_auprc = 0.0
+    best_state = None
+    wait = 0
+
+    for epoch in range(1, epochs + 1):
+        # Train
+        model.train()
+        total_loss = 0
+        for X_batch, y_batch in train_loader:
+            X_batch = X_batch.to(device, non_blocking=True)
+            y_batch = y_batch.to(device, non_blocking=True)
+
+            optimizer.zero_grad()
+            logits = model(X_batch)
+            loss = criterion(logits, y_batch)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item() * len(X_batch)
+
+        avg_loss = total_loss / len(X_train)
+
+        # Validate
+        model.eval()
+        with torch.no_grad():
+            val_probs = predict_gpu(model, X_val, device, batch_size=batch_size*2)
+        valid = y_val >= 0
+        try:
+            val_auprc = average_precision_score(y_val[valid], val_probs[valid])
+        except ValueError:
+            val_auprc = 0.0
+
+        scheduler.step(val_auprc)
+
+        if val_auprc > best_auprc:
+            best_auprc = val_auprc
+            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            wait = 0
+        else:
+            wait += 1
+
+        if epoch % 5 == 0 or epoch == 1 or wait == 0:
+            print(f"    Epoch {epoch:2d}: loss={avg_loss:.4f}, "
+                  f"val_auprc={val_auprc:.4f} "
+                  f"{'*' if wait == 0 else ''}")
+
+        if wait >= patience:
+            print(f"    Early stopping at epoch {epoch}")
+            break
+
+    # Restore best model
+    model.load_state_dict(best_state)
+    print(f"    Best val AUPRC: {best_auprc:.4f}")
+    return model
+
+
+def predict_gpu(model, X, device, batch_size=16384):
+    """Run inference on GPU in batches, return numpy probabilities."""
+    model.eval()
+    all_probs = []
+    X_tensor = torch.from_numpy(X).float()
+
+    for start in range(0, len(X), batch_size):
+        end = min(start + batch_size, len(X))
+        batch = X_tensor[start:end].to(device, non_blocking=True)
+        with torch.no_grad():
+            logits = model(batch)
+            probs = torch.sigmoid(logits).cpu().numpy()
+        all_probs.append(probs)
+
+    return np.concatenate(all_probs)
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Supervised KAIROS: logistic regression on GNN embeddings")
+        description="Supervised KAIROS: GPU linear classifier on GNN embeddings")
     parser.add_argument("--dataset", default="theia",
                         choices=list(DATASET_CONFIGS.keys()))
     parser.add_argument("--max-train", type=int, default=5_000_000,
@@ -93,14 +200,24 @@ def main():
                         help="Include reconstruction loss as extra feature")
     parser.add_argument("--no-include-loss", action="store_false",
                         dest="include_loss")
+    parser.add_argument("--device", default="auto")
+    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--batch-size", type=int, default=8192)
     args = parser.parse_args()
 
     emb_dir = ARTIFACT_DIR / "embeddings" / args.dataset
     models_dir = ARTIFACT_DIR / "models" / args.dataset
 
+    if args.device == "auto":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(args.device)
+
     print("=" * 60)
     print(f"SUPERVISED KAIROS — {args.dataset.upper()}")
     print("=" * 60)
+    print(f"  Device: {device}")
 
     # ========================================================
     # Load embeddings
@@ -115,13 +232,11 @@ def main():
             continue
 
         data = np.load(path)
-        emb = data["embeddings"]   # (N, EDGE_DIM*2)
-        lab = data["labels"]       # (N,)
-        loss = data["losses"]      # (N,)
+        emb = data["embeddings"].astype(np.float32)
+        lab = data["labels"]
+        loss = data["losses"].astype(np.float32)
 
-        # Optionally append reconstruction loss as feature
         if args.include_loss:
-            # Clip extreme losses for stability
             loss_clipped = np.clip(loss, 0, np.percentile(loss, 99.9))
             emb = np.hstack([emb, loss_clipped.reshape(-1, 1)])
 
@@ -134,29 +249,25 @@ def main():
         del data
 
     if "train" not in splits:
-        print("ERROR: No training embeddings found. Run extract_embeddings first.")
+        print("ERROR: No training embeddings found.")
         return
 
     # ========================================================
-    # Downsample training data
+    # Prepare training data
     # ========================================================
     print(f"\n[2/4] Preparing training data (max {args.max_train:,})...")
 
     X_train = splits["train"]["X"]
     y_train = splits["train"]["y"]
 
-    # Filter padding
     valid = y_train >= 0
     X_train = X_train[valid]
     y_train = y_train[valid]
 
     if len(X_train) > args.max_train:
-        # Stratified downsample
         rng = np.random.RandomState(42)
         n_pos = int(y_train.sum())
         n_neg = len(y_train) - n_pos
-
-        # Take equal proportion from each class
         n_sample = args.max_train
         pos_ratio = n_pos / len(y_train)
         n_pos_sample = min(int(n_sample * pos_ratio), n_pos)
@@ -174,71 +285,69 @@ def main():
     else:
         print(f"  Using all: {len(y_train):,} events")
 
-    # ========================================================
-    # Standardize features
-    # ========================================================
-    print("\n[3/4] Training logistic regression...")
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
+    # Standardize
+    mean = X_train.mean(axis=0)
+    std = X_train.std(axis=0) + 1e-8
+    X_train = (X_train - mean) / std
 
-    # Handle NaN/Inf from scaling
-    X_train_scaled = np.nan_to_num(X_train_scaled, nan=0.0, posinf=0.0, neginf=0.0)
+    # Prepare val
+    X_val = splits.get("val", {}).get("X", None)
+    y_val = splits.get("val", {}).get("y", None)
+    if X_val is not None:
+        valid_v = y_val >= 0
+        X_val = (X_val[valid_v] - mean) / std
+        y_val = y_val[valid_v]
+    else:
+        # Use last 10% of training as pseudo-val
+        n_val = len(X_train) // 10
+        X_val = X_train[-n_val:]
+        y_val = y_train[-n_val:]
+        X_train = X_train[:-n_val]
+        y_train = y_train[:-n_val]
+        print(f"  No val set found — using last {n_val:,} train events")
+
+    X_train = np.nan_to_num(X_train, nan=0.0, posinf=0.0, neginf=0.0)
+    X_val = np.nan_to_num(X_val, nan=0.0, posinf=0.0, neginf=0.0)
 
     # ========================================================
-    # Train LogisticRegressionCV
+    # Train on GPU
     # ========================================================
+    print(f"\n[3/4] Training linear classifier on {device}...")
     t0 = time.time()
-    clf = LogisticRegressionCV(
-        Cs=10,                    # 10 values of C to try
-        cv=5,                     # 5-fold cross-validation
-        scoring="average_precision",  # optimize for AUPRC
-        solver="saga",            # fast for large datasets
-        max_iter=500,
-        n_jobs=-1,                # use all cores
-        random_state=42,
-        verbose=0,
-    )
-    clf.fit(X_train_scaled, y_train)
+    model = train_linear_gpu(
+        X_train, y_train, X_val, y_val, device,
+        epochs=args.epochs, batch_size=args.batch_size, lr=args.lr)
     train_time = time.time() - t0
-
-    print(f"  Training time: {train_time:.1f}s")
-    print(f"  Best C: {clf.C_[0]:.6f}")
-    print(f"  CV scores: {clf.scores_[1].mean(axis=0).max():.4f} (best mean AUPRC)")
+    print(f"  Total training time: {train_time:.1f}s")
 
     # ========================================================
-    # Evaluate on all splits
+    # Evaluate
     # ========================================================
     print(f"\n[4/4] Evaluating...")
     all_results = {"dataset": args.dataset}
     val_threshold = None
 
-    for split in ["train", "val", "test"]:
+    for split in ["val", "test"]:
         if split not in splits:
             continue
 
         X = splits[split]["X"]
         y = splits[split]["y"]
 
-        # Filter valid
         valid_mask = y >= 0
-        X_valid = X[valid_mask]
+        X_valid = (X[valid_mask] - mean) / std
+        X_valid = np.nan_to_num(X_valid, nan=0.0, posinf=0.0, neginf=0.0)
         y_valid = y[valid_mask]
 
-        X_scaled = scaler.transform(X_valid)
-        X_scaled = np.nan_to_num(X_scaled, nan=0.0, posinf=0.0, neginf=0.0)
-
-        probs = clf.predict_proba(X_scaled)[:, 1]
+        probs = predict_gpu(model, X_valid, device)
 
         if split == "val":
             results = evaluate_split(split.upper(), probs, y_valid)
-            # Save threshold for test
-            if f"val_threshold" in results:
+            if "val_threshold" in results:
                 val_threshold = results["val_threshold"]
         elif split == "test" and val_threshold is not None:
-            # Evaluate test with val-optimized threshold
             results = evaluate_split(split.upper(), probs, y_valid,
                                      threshold=val_threshold)
-            # Also compute best-threshold F1 for reference
             _, best_f1 = find_best_f1_threshold(probs, y_valid)
             results["test_best_f1"] = best_f1
             print(f"    Best possible F1: {best_f1:.4f}")
@@ -254,22 +363,19 @@ def main():
     print(f"SUPERVISED KAIROS RESULTS — {args.dataset.upper()}")
     print(f"{'='*60}")
 
-    for key in ["val_auprc", "val_auroc", "test_auprc", "test_auroc",
-                "test_f1", "test_best_f1"]:
+    for key in ["val_auprc", "val_auroc", "val_best_f1",
+                "test_auprc", "test_auroc", "test_f1", "test_best_f1"]:
         if key in all_results:
             print(f"  {key}: {all_results[key]:.4f}")
 
-    # Save results
-    import torch
     results_path = models_dir / "supervised_results.pt"
     torch.save(all_results, results_path)
     print(f"\nResults saved to {results_path}")
 
-    # Also save the classifier for reproducibility
-    import joblib
-    clf_path = models_dir / "supervised_clf.joblib"
-    joblib.dump({"clf": clf, "scaler": scaler}, clf_path)
-    print(f"Classifier saved to {clf_path}")
+    model_path = models_dir / "supervised_model.pt"
+    torch.save({"model": model.cpu().state_dict(), "mean": mean, "std": std},
+               model_path)
+    print(f"Model saved to {model_path}")
 
 
 if __name__ == "__main__":
