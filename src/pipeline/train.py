@@ -87,13 +87,20 @@ def masked_bce_loss(logits, y, mask, pos_weight_t):
 
 
 def compute_metrics(all_logits, all_labels):
-    probs = torch.sigmoid(torch.tensor(all_logits)).numpy()
+    logits_t = torch.tensor(all_logits).clamp(-50, 50)  # prevent saturated sigmoid
+    probs = torch.sigmoid(logits_t).numpy()
     labels = np.array(all_labels)
     # Filter out padding labels (-1)
     valid = labels >= 0
     probs = probs[valid]
     labels = labels[valid]
-    m = {}
+
+    # Replace any remaining NaN/Inf with 0.5 (neutral)
+    nan_count = int(np.isnan(probs).sum())
+    if nan_count > 0:
+        probs = np.nan_to_num(probs, nan=0.5)
+
+    m = {"nan_count": nan_count}
     try:
         m["auprc"] = float(average_precision_score(labels, probs))
     except ValueError:
@@ -127,7 +134,8 @@ def train_epoch(model, loader, optimizer, pw_t, grad_clip, device,
         ent = batch["entity_ids"].to(device, non_blocking=True)
 
         # Clamp extreme feature values to prevent NaN
-        X_c = X_c.clamp(-100, 100)
+        # TRACE features have outliers up to 2096 after normalization
+        X_c = X_c.clamp(-20, 20)
 
         logits = model(X_c, et, entity_ids=ent, mask=mask)
         loss = masked_bce_loss(logits, y, mask, pw_t)
@@ -191,7 +199,7 @@ def evaluate(model, loader, pw_t, device, max_batches=None):
         ent = batch["entity_ids"].to(device, non_blocking=True)
 
         # Clamp extreme feature values (same as training)
-        X_c = X_c.clamp(-100, 100)
+        X_c = X_c.clamp(-20, 20)
 
         m = model.module if isinstance(model, DDP) else model
         logits = m(X_c, et, entity_ids=ent, mask=mask)
@@ -340,9 +348,18 @@ def main():
     log(f"\n[3/4] Training ({epochs} epochs, "
         f"batch={bs}×{world_size}={bs*world_size})...")
 
-    best_auprc = 0.0
+    best_auprc = -1.0  # allow first epoch to always save
     best_epoch = 0
     no_improve = 0
+
+    # Save initial model as fallback so final eval never crashes
+    if is_main():
+        raw = model.module if isinstance(model, DDP) else model
+        torch.save({
+            "epoch": 0, "model_state": raw.state_dict(),
+            "optimizer_state": optimizer.state_dict(),
+            "val_metrics": {}, "config": cfg,
+        }, save_dir / "best.pt")
 
     for epoch in range(1, epochs + 1):
         log(f"\n  ── Epoch {epoch}/{epochs} ──")
@@ -357,17 +374,22 @@ def main():
             val_mb = 50 if args.quick else None
             vm = evaluate(model, val_loader, pw_t, device,
                           max_batches=val_mb)
-            scheduler.step(vm["auprc"])
+            auprc_for_sched = vm["auprc"] if not np.isnan(vm["auprc"]) else 0.0
+            scheduler.step(auprc_for_sched)
 
             gpu_mem = ""
             if torch.cuda.is_available():
                 gpu_mem = (f", GPU peak={torch.cuda.max_memory_allocated(device)/1e9:.1f}GB")
 
+            nan_warn = ""
+            if vm.get("nan_count", 0) > 0:
+                nan_warn = f" ⚠ {vm['nan_count']:,} NaN logits replaced"
+
             log(f"  Train: loss={train_loss:.4f}, "
                 f"{train_tp:.0f} events/s{gpu_mem}")
             log(f"  Val:   loss={vm['loss']:.4f}, "
                 f"AUPRC={vm['auprc']:.4f}, AUROC={vm['auroc']:.4f}, "
-                f"F1={vm['f1']:.4f}, {vm['throughput']:.0f} events/s")
+                f"F1={vm['f1']:.4f}, {vm['throughput']:.0f} events/s{nan_warn}")
             log(f"         atk={vm['n_attack']:,} ben={vm['n_benign']:,} "
                 f"pred_atk={vm['pred_attack']:,}")
 
