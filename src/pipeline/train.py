@@ -94,7 +94,7 @@ def masked_bce_loss(logits, y, mask, pos_weight_t):
     return loss
 
 
-def compute_metrics(all_logits, all_labels):
+def compute_metrics(all_logits, all_labels, fixed_threshold=0.5):
     logits_t = torch.tensor(all_logits).clamp(-50, 50)  # prevent saturated sigmoid
     probs = torch.sigmoid(logits_t).numpy()
     labels = np.array(all_labels)
@@ -108,7 +108,7 @@ def compute_metrics(all_logits, all_labels):
     if nan_count > 0:
         probs = np.nan_to_num(probs, nan=0.5)
 
-    m = {"nan_count": nan_count}
+    m = {"nan_count": nan_count, "fixed_threshold": fixed_threshold}
     try:
         m["auprc"] = float(average_precision_score(labels, probs))
     except ValueError:
@@ -117,7 +117,7 @@ def compute_metrics(all_logits, all_labels):
         m["auroc"] = float(roc_auc_score(labels, probs))
     except ValueError:
         m["auroc"] = 0.0
-    preds = (probs > 0.5).astype(int)
+    preds = (probs > fixed_threshold).astype(int)
     m["f1"] = float(f1_score(labels, preds, zero_division=0))
 
     # Best-threshold F1
@@ -206,7 +206,7 @@ def train_epoch(model, loader, optimizer, pw_t, grad_clip, device,
 
 
 @torch.no_grad()
-def evaluate(model, loader, pw_t, device, max_batches=None):
+def evaluate(model, loader, pw_t, device, max_batches=None, fixed_threshold=0.5):
     model.eval()
     total_loss = 0.0
     n_batches = 0
@@ -240,7 +240,7 @@ def evaluate(model, loader, pw_t, device, max_batches=None):
         total_events += int(real.sum().item())
 
     elapsed = time.time() - t0
-    metrics = compute_metrics(all_logits, all_labels)
+    metrics = compute_metrics(all_logits, all_labels, fixed_threshold=fixed_threshold)
     metrics["loss"] = total_loss / max(n_batches, 1)
     metrics["throughput"] = total_events / elapsed if elapsed > 0 else 0
     return metrics
@@ -429,7 +429,7 @@ def main():
                 f"{train_tp:.0f} events/s{gpu_mem}")
             log(f"  Val:   loss={vm['loss']:.4f}, "
                 f"AUPRC={vm['auprc']:.4f}, AUROC={vm['auroc']:.4f}, "
-                f"F1@0.5={vm['f1']:.4f}, BestF1={vm['best_f1']:.4f}@{vm['best_f1_threshold']:.3f}, "
+                f"F1@{vm['fixed_threshold']:.3f}={vm['f1']:.4f}, BestF1={vm['best_f1']:.4f}@{vm['best_f1_threshold']:.3f}, "
                 f"{vm['throughput']:.0f} events/s{nan_warn}")
             log(f"         atk={vm['n_attack']:,} ben={vm['n_benign']:,} "
                 f"pred_atk={vm['pred_attack']:,}")
@@ -485,7 +485,7 @@ def main():
         log(f"  Test:  {len(test_ds):,} windows, "
             f"{len(test_ds.X_cont):,} events")
     
-    tm = evaluate(raw, test_loader, pw_t, device)
+    tm = evaluate(raw, test_loader, pw_t, device, fixed_threshold=vm["best_f1_threshold"])
 
     if is_main():
         log(f"\n{'='*60}")
@@ -495,13 +495,13 @@ def main():
         log(f"  --- Val ---")
         log(f"  AUPRC:      {vm['auprc']:.4f}")
         log(f"  AUROC:      {vm['auroc']:.4f}")
-        log(f"  F1@0.5:     {vm['f1']:.4f}")
+        log(f"  F1@{vm['fixed_threshold']:.3f}:     {vm['f1']:.4f}")
         log(f"  Best F1:    {vm['best_f1']:.4f} (threshold={vm['best_f1_threshold']:.4f})")
         log(f"  --- Test ---")
         log(f"  AUPRC:      {tm['auprc']:.4f}")
         log(f"  AUROC:      {tm['auroc']:.4f}")
-        log(f"  F1@0.5:     {tm['f1']:.4f}")
-        log(f"  Best F1:    {tm['best_f1']:.4f} (threshold={tm['best_f1_threshold']:.4f})")
+        log(f"  F1@{tm['fixed_threshold']:.3f}:     {tm['f1']:.4f} (transferred from val)")
+        log(f"  Oracle F1:  {tm['best_f1']:.4f} (tuned directly on test)")
         log(f"  Throughput: {tm['throughput']:.0f} events/s")
 
         torch.save({"best_epoch": best_epoch,
