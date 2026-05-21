@@ -24,6 +24,6 @@ training:
   weight_decay: 0.0001
   epochs: 20
   patience: 5
-  pos_weight: 20.0
+  pos_weight: "auto"
   grad_clip: 1.0
   log_every: 100

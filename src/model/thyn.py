@@ -56,14 +56,14 @@ class HypergraphConv(nn.Module):
         if len(valid_ent) == 0:
             return he_emb
 
-        unique_ents = torch.unique(valid_ent)
+        # torch.unique returns sorted values — use searchsorted for
+        # O(n_batch_entities) mapping instead of O(max_entity_id)
+        unique_ents = torch.unique(valid_ent)  # sorted
         n_ents = len(unique_ents)
 
-        # Build batch-local entity ID mapping
-        ent_to_local = torch.full(
-            (unique_ents.max().item() + 1,), -1,
-            dtype=torch.long, device=he_emb.device)
-        ent_to_local[unique_ents] = torch.arange(n_ents, device=he_emb.device)
+        def _to_local(ids):
+            """Map global entity IDs → batch-local indices via searchsorted."""
+            return torch.searchsorted(unique_ents, ids)
 
         # Step 1: Entity ← mean(incident HE embeddings)
         ent_emb = torch.zeros(n_ents, D, device=he_emb.device)
@@ -74,7 +74,7 @@ class HypergraphConv(nn.Module):
             valid = (col_ids >= 0) & mask_flat
             if not valid.any():
                 continue
-            local = ent_to_local[col_ids[valid]]
+            local = _to_local(col_ids[valid])
             ent_emb.scatter_add_(0, local.unsqueeze(1).expand(-1, D),
                                  he_flat[valid])
             ent_count.scatter_add_(0, local.unsqueeze(1),
@@ -83,15 +83,21 @@ class HypergraphConv(nn.Module):
 
         ent_emb = ent_emb / ent_count.clamp(min=1)
 
-        # Step 2: HE ← sum(entity embeddings)
+        # Step 2: HE ← mean(entity embeddings for its entities)
         he_update = torch.zeros_like(he_flat)
+        he_ent_count = torch.zeros(B * L, 1, device=he_emb.device)
+
         for col in range(self.n_entities):
             col_ids = ent_flat[:, col]
             valid = (col_ids >= 0) & mask_flat
             if not valid.any():
                 continue
-            local = ent_to_local[col_ids[valid]]
+            local = _to_local(col_ids[valid])
             he_update[valid] += ent_emb[local]
+            he_ent_count[valid] += 1
+
+        # Normalize by number of contributing entities per HE
+        he_update = he_update / he_ent_count.clamp(min=1)
 
         he_update = he_update.reshape(B, L, D)
         return self.norm(he_emb.reshape(B, L, D) + self.linear(he_update))
