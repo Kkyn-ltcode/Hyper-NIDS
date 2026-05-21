@@ -90,7 +90,16 @@ def masked_bce_loss(logits, y, mask, pos_weight_t):
     return loss
 
 
-def compute_metrics(all_logits, all_labels):
+def compute_metrics(all_logits, all_labels, fixed_threshold=None):
+    """Compute classification metrics.
+
+    Args:
+        all_logits: raw model logits
+        all_labels: ground truth labels (may contain -1 for padding)
+        fixed_threshold: if provided, use this threshold for F1/precision/recall
+                         instead of searching for the best one. Used to apply
+                         the val-optimal threshold to the test set.
+    """
     logits_t = torch.tensor(all_logits).clamp(-50, 50)  # prevent saturated sigmoid
     probs = torch.sigmoid(logits_t).numpy()
     labels = np.array(all_labels)
@@ -113,10 +122,8 @@ def compute_metrics(all_logits, all_labels):
         m["auroc"] = float(roc_auc_score(labels, probs))
     except ValueError:
         m["auroc"] = 0.0
-    preds = (probs > 0.5).astype(int)
-    m["f1"] = float(f1_score(labels, preds, zero_division=0))
 
-    # Best-threshold F1
+    # Best-threshold F1 (always computed for reference)
     try:
         precision, recall, thresholds = precision_recall_curve(labels, probs)
         f1_all = 2 * precision[:-1] * recall[:-1] / (precision[:-1] + recall[:-1] + 1e-12)
@@ -126,6 +133,14 @@ def compute_metrics(all_logits, all_labels):
     except ValueError:
         m["best_f1"] = 0.0
         m["best_f1_threshold"] = 0.5
+
+    # Threshold-based metrics
+    thr = fixed_threshold if fixed_threshold is not None else m["best_f1_threshold"]
+    preds = (probs >= thr).astype(int)
+    m["threshold"] = float(thr)
+    m["f1"] = float(f1_score(labels, preds, zero_division=0))
+    m["precision"] = float((preds[labels == 1].sum()) / max(preds.sum(), 1))
+    m["recall"] = float((preds[labels == 1].sum()) / max((labels == 1).sum(), 1))
 
     m["n_attack"] = int(labels.sum())
     m["n_benign"] = int((labels == 0).sum())
@@ -205,7 +220,8 @@ def train_epoch(model, loader, optimizer, pw_t, grad_clip, device,
 
 
 @torch.no_grad()
-def evaluate(model, loader, pw_t, device, max_batches=None):
+def evaluate(model, loader, pw_t, device, max_batches=None,
+             fixed_threshold=None):
     model.eval()
     total_loss = 0.0
     n_batches = 0
@@ -239,7 +255,8 @@ def evaluate(model, loader, pw_t, device, max_batches=None):
         total_events += int(real.sum().item())
 
     elapsed = time.time() - t0
-    metrics = compute_metrics(all_logits, all_labels)
+    metrics = compute_metrics(all_logits, all_labels,
+                              fixed_threshold=fixed_threshold)
     metrics["loss"] = total_loss / max(n_batches, 1)
     metrics["throughput"] = total_events / elapsed if elapsed > 0 else 0
     return metrics
@@ -486,27 +503,38 @@ def main():
         ckpt = torch.load(save_dir / "best.pt", map_location=device)
         raw.load_state_dict(ckpt["model_state"])
 
-        # Evaluate on BOTH val and test
+        # Step 1: Evaluate val to find optimal threshold
         vm = evaluate(raw, val_loader, pw_t, device)
-        tm = evaluate(raw, test_loader, pw_t, device)
+        val_threshold = vm["best_f1_threshold"]
+
+        # Step 2: Evaluate test with the val-derived threshold (no leakage)
+        tm = evaluate(raw, test_loader, pw_t, device,
+                      fixed_threshold=val_threshold)
 
         log(f"\n{'='*60}")
         log(f"RESULTS — {cfg.get('name', 'THyN v0')}")
         log(f"{'='*60}")
         log(f"  Best epoch: {best_epoch}")
+        log(f"  Threshold:  {val_threshold:.4f} (selected on val)")
         log(f"  --- Val ---")
         log(f"  AUPRC:      {vm['auprc']:.4f}")
         log(f"  AUROC:      {vm['auroc']:.4f}")
-        log(f"  F1@0.5:     {vm['f1']:.4f}")
-        log(f"  Best F1:    {vm['best_f1']:.4f} (threshold={vm['best_f1_threshold']:.4f})")
-        log(f"  --- Test ---")
+        log(f"  F1:         {vm['f1']:.4f}")
+        log(f"  Precision:  {vm['precision']:.4f}")
+        log(f"  Recall:     {vm['recall']:.4f}")
+        log(f"  --- Test (threshold from val) ---")
         log(f"  AUPRC:      {tm['auprc']:.4f}")
         log(f"  AUROC:      {tm['auroc']:.4f}")
-        log(f"  F1@0.5:     {tm['f1']:.4f}")
-        log(f"  Best F1:    {tm['best_f1']:.4f} (threshold={tm['best_f1_threshold']:.4f})")
+        log(f"  F1:         {tm['f1']:.4f}")
+        log(f"  Precision:  {tm['precision']:.4f}")
+        log(f"  Recall:     {tm['recall']:.4f}")
         log(f"  Throughput: {tm['throughput']:.0f} events/s")
 
+        # Also log what test's own best threshold would give (for reference only)
+        log(f"  (Test oracle F1: {tm['best_f1']:.4f} @ threshold={tm['best_f1_threshold']:.4f})")
+
         torch.save({"best_epoch": best_epoch,
+                     "val_threshold": val_threshold,
                      "val_metrics": vm, "test_metrics": tm,
                      "config": cfg, "n_params": n_params},
                     save_dir / "results.pt")
