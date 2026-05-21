@@ -143,6 +143,8 @@ def train_epoch(model, loader, optimizer, pw_t, grad_clip, device,
     total_loss = 0.0
     n_batches = 0
     total_events = 0
+    recent_loss = 0.0
+    recent_batches = 0
     t0 = time.time()
 
     nan_batches = 0
@@ -179,7 +181,9 @@ def train_epoch(model, loader, optimizer, pw_t, grad_clip, device,
         optimizer.step()
 
         total_loss += loss.item()
+        recent_loss += loss.item()
         n_batches += 1
+        recent_batches += 1
         total_events += int(mask.sum().item())
 
         if log_every and (i + 1) % log_every == 0:
@@ -189,8 +193,10 @@ def train_epoch(model, loader, optimizer, pw_t, grad_clip, device,
             if torch.cuda.is_available():
                 mem_gb = torch.cuda.max_memory_allocated(device) / 1e9
                 gpu_mem = f", GPU={mem_gb:.1f}GB"
-            log(f"    batch {i+1}: loss={total_loss/n_batches:.4f}, "
+            log(f"    batch {i+1}: loss={recent_loss/recent_batches:.4f}, "
                 f"{throughput:.0f} events/s{gpu_mem}")
+            recent_loss = 0.0
+            recent_batches = 0
 
     elapsed = time.time() - t0
     throughput = total_events / elapsed if elapsed > 0 else 0
@@ -397,13 +403,20 @@ def main():
             model, train_loader, optimizer, pw_t, grad_clip,
             device, log_every=log_every)
 
-        if is_main():
-            val_mb = 50 if args.quick else None
-            vm = evaluate(model, val_loader, pw_t, device,
-                          max_batches=val_mb)
-            auprc_for_sched = vm["auprc"] if not np.isnan(vm["auprc"]) else 0.0
-            scheduler.step(auprc_for_sched)
+        if is_distributed():
+            dist.barrier()
 
+        # All ranks run evaluation on their own val_loader
+        # This keeps all ranks active — no idle timeout
+        val_mb = 50 if args.quick else None
+        vm = evaluate(model, val_loader, pw_t, device,
+                      max_batches=val_mb)
+        
+        # Scheduler must step on all ranks to keep learning rates synced
+        auprc_for_sched = vm["auprc"] if not np.isnan(vm["auprc"]) else 0.0
+        scheduler.step(auprc_for_sched)
+
+        if is_main():
             gpu_mem = ""
             if torch.cuda.is_available():
                 gpu_mem = (f", GPU peak={torch.cuda.max_memory_allocated(device)/1e9:.1f}GB")
@@ -416,7 +429,8 @@ def main():
                 f"{train_tp:.0f} events/s{gpu_mem}")
             log(f"  Val:   loss={vm['loss']:.4f}, "
                 f"AUPRC={vm['auprc']:.4f}, AUROC={vm['auroc']:.4f}, "
-                f"F1={vm['f1']:.4f}, {vm['throughput']:.0f} events/s{nan_warn}")
+                f"F1@0.5={vm['f1']:.4f}, BestF1={vm['best_f1']:.4f}@{vm['best_f1_threshold']:.3f}, "
+                f"{vm['throughput']:.0f} events/s{nan_warn}")
             log(f"         atk={vm['n_attack']:,} ben={vm['n_benign']:,} "
                 f"pred_atk={vm['pred_attack']:,}")
 
@@ -435,7 +449,6 @@ def main():
                 no_improve += 1
                 if no_improve >= patience:
                     log(f"  Early stop (best epoch {best_epoch})")
-                    break
 
         if is_distributed():
             stop = torch.tensor([no_improve >= patience],
@@ -445,29 +458,36 @@ def main():
                 break
 
     # ── Final ──
+    # All ranks load best checkpoint
+    raw = model.module if isinstance(model, DDP) else model
+    ckpt = torch.load(save_dir / "best.pt", map_location=device)
+    raw.load_state_dict(ckpt["model_state"])
+
     if is_main():
         log(f"\n[4/4] Final evaluation...")
-        raw = model.module if isinstance(model, DDP) else model
-        ckpt = torch.load(save_dir / "best.pt", map_location=device)
-        raw.load_state_dict(ckpt["model_state"])
 
-        # Evaluate on val
-        vm = evaluate(raw, val_loader, pw_t, device)
+    # Evaluate on val
+    vm = evaluate(raw, val_loader, pw_t, device)
 
-        # Load test data only now (deferred to save memory during training)
+    # Load test data only now (deferred to save memory during training)
+    if is_main():
         log(f"  Loading test data...")
-        test_ds = THyNDataset(
-            dcfg["test_shards"], data_root,
-            max_seq_len=dcfg["max_seq_len"],
-            label_type=label_type,
-        )
-        test_loader = DataLoader(
-            test_ds, batch_size=bs, shuffle=False,
-            num_workers=2, pin_memory=True)
+    test_ds = THyNDataset(
+        dcfg["test_shards"], data_root,
+        max_seq_len=dcfg["max_seq_len"],
+        label_type=label_type,
+        verbose=is_main(),
+    )
+    test_loader = DataLoader(
+        test_ds, batch_size=bs, shuffle=False,
+        num_workers=2, pin_memory=True)
+    if is_main():
         log(f"  Test:  {len(test_ds):,} windows, "
             f"{len(test_ds.X_cont):,} events")
-        tm = evaluate(raw, test_loader, pw_t, device)
+    
+    tm = evaluate(raw, test_loader, pw_t, device)
 
+    if is_main():
         log(f"\n{'='*60}")
         log(f"RESULTS — {cfg.get('name', 'THyN v0')}")
         log(f"{'='*60}")
@@ -488,6 +508,9 @@ def main():
                      "val_metrics": vm, "test_metrics": tm,
                      "config": cfg, "n_params": n_params},
                     save_dir / "results.pt")
+
+    if is_distributed():
+        dist.barrier()
 
     cleanup_distributed()
 
