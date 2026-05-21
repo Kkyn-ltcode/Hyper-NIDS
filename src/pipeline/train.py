@@ -289,16 +289,19 @@ def main():
         max_seq_len=dcfg["max_seq_len"],
         stride=dcfg.get("stride", dcfg["max_seq_len"]),
         label_type=label_type,
+        verbose=is_main(),
     )
     val_ds = THyNDataset(
         dcfg["val_shards"], data_root,
         max_seq_len=dcfg["max_seq_len"],
         label_type=label_type,
+        verbose=is_main(),
     )
     test_ds = THyNDataset(
         dcfg["test_shards"], data_root,
         max_seq_len=dcfg["max_seq_len"],
         label_type=label_type,
+        verbose=is_main(),
     )
 
     train_sampler = (DistributedSampler(train_ds, shuffle=True)

@@ -46,6 +46,7 @@ class THyNDataset(Dataset):
         stride: int | None = None,
         min_seq_len: int = 2,
         label_type: str = "broad",  # "broad", "narrow", "ioc", "crossprocess"
+        verbose: bool = True,
     ):
         data_root = Path(data_root)
         features_dir = data_root / "features_norm"
@@ -97,13 +98,13 @@ class THyNDataset(Dataset):
         self.num_event_types = len(etype_cols) + 1  # +1 for unknown/padding
         self.n_cont_features = len(cont_cols)
 
-        print(f"  Feature split: {len(etype_cols)} event types, "
+        if verbose: print(f"  Feature split: {len(etype_cols)} event types, "
               f"{len(cont_cols)} continuous")
 
         # --- Load features + labels ---
         self.label_type = label_type
         label_col = f"label_{label_type}"
-        print(f"  Loading features for shards {shard_ids} "
+        if verbose: print(f"  Loading features for shards {shard_ids} "
               f"(labels={label_type})...")
 
         Xs, ys = [], []
@@ -137,7 +138,7 @@ class THyNDataset(Dataset):
         X_all = np.concatenate(Xs)
         self.y = np.concatenate(ys).astype(np.int64)
         n_atk = int((self.y == 1).sum())
-        print(f"    Label distribution: {n_atk:,} attack / "
+        if verbose: print(f"    Label distribution: {n_atk:,} attack / "
               f"{len(self.y) - n_atk:,} benign "
               f"({100*n_atk/len(self.y):.3f}%)")
         del Xs, ys; gc.collect()
@@ -156,12 +157,12 @@ class THyNDataset(Dataset):
 
         # Also keep raw feature count for backward compat
         self.n_features = self.n_cont_features
-        print(f"    Continuous: {self.X_cont.shape}, "
+        if verbose: print(f"    Continuous: {self.X_cont.shape}, "
               f"Event types: {self.num_event_types}, "
               f"Labels: {self.y.shape}")
 
         # --- Load entity IDs ---
-        print(f"  Loading entity IDs...")
+        if verbose: print(f"  Loading entity IDs...")
         ent_parts = []
         for sid in shard_ids:
             df = pd.read_parquet(
@@ -176,10 +177,10 @@ class THyNDataset(Dataset):
             del df; gc.collect()
         self.entity_ids = np.concatenate(ent_parts)
         del ent_parts; gc.collect()
-        print(f"    Entity IDs: {self.entity_ids.shape}")
+        if verbose: print(f"    Entity IDs: {self.entity_ids.shape}")
 
         # --- Build per-subject filtered sequences + windows ---
-        print(f"  Building subject windows (max_seq_len={max_seq_len})...")
+        if verbose: print(f"  Building subject windows (max_seq_len={max_seq_len})...")
         seq_data = np.load(graph_dir / "subject_sequences.npz")
         all_he = seq_data["he_ids"]
         seq_offset = seq_data["offset"]
@@ -223,9 +224,9 @@ class THyNDataset(Dataset):
         gc.collect()
 
         n_subjects = (np.diff(self.filtered_offset) > 0).sum()
-        print(f"    Subjects with events: {n_subjects:,}")
-        print(f"    Windows: {len(self.windows):,}")
-        print(f"    Total events in split: {len(self.X_cont):,}")
+        if verbose: print(f"    Subjects with events: {n_subjects:,}")
+        if verbose: print(f"    Windows: {len(self.windows):,}")
+        if verbose: print(f"    Total events in split: {len(self.X_cont):,}")
 
     def _global_to_local_vec(self, he_ids: np.ndarray) -> np.ndarray:
         result = np.full_like(he_ids, -1)
