@@ -222,6 +222,8 @@ class THyN(nn.Module):
             h = self.mamba_proj(x)
             for layer in self.encoder:
                 h = layer(h)
+                # Clamp hidden states to prevent NaN divergence over 512 steps
+                h = h.clamp(-50, 50)
             return h
 
     def forward(self, X_cont, event_type, entity_ids=None, mask=None):

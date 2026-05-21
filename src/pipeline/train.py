@@ -357,20 +357,8 @@ def main():
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="max", factor=0.5, patience=2)
 
-    # Auto-compute pos_weight from training data
-    MAX_POS_WEIGHT = 50.0  # cap to prevent gradient explosion on extreme imbalance
-    pw_val = tcfg.get("pos_weight", "auto")
-    if pw_val == "auto":
-        n_pos = int((train_ds.y == 1).sum())
-        n_neg = int((train_ds.y == 0).sum())
-        pw_raw = n_neg / max(n_pos, 1)
-        pw_val = min(pw_raw, MAX_POS_WEIGHT)
-        if pw_raw > MAX_POS_WEIGHT:
-            log(f"  Auto pos_weight: {pw_raw:.1f} → capped to {pw_val:.1f} "
-                f"(neg={n_neg:,} / pos={n_pos:,})")
-        else:
-            log(f"  Auto pos_weight: {pw_val:.1f} "
-                f"(neg={n_neg:,} / pos={n_pos:,})")
+    pw_val = tcfg.get("pos_weight", 1.0)
+    log(f"  Config pos_weight: {pw_val:.1f}")
     pw_t = torch.tensor([pw_val], device=device)
     grad_clip = tcfg["grad_clip"]
     epochs = 1 if args.quick else tcfg["epochs"]
