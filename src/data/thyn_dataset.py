@@ -80,8 +80,8 @@ class THyNDataset(Dataset):
             shard_ranges.append((gs, ge, local_pos - gs))
             local_pos += (ge - gs)
         self._shard_ranges = shard_ranges
-        self._valid_min = shard_starts[shard_ids[0]]
-        self._valid_max = shard_ends[shard_ids[-1]]
+        self._valid_min = min(shard_starts[s] for s in shard_ids)
+        self._valid_max = max(shard_ends[s] for s in shard_ids)
 
         # --- Identify feature columns ---
         feat_names_path = data_root / "features" / "feature_names.txt"

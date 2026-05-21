@@ -11,7 +11,7 @@ model:
 
 data:
   max_seq_len: 512
-  stride: 512
+  stride: 256
   min_seq_len: 2
   label_type: "l1" 
   train_shards: [0, 1, 2, 3, 4]
@@ -24,6 +24,6 @@ training:
   weight_decay: 0.0001
   epochs: 20
   patience: 5
-  pos_weight: 1.0          # TRACE is ~70% attack, no upweighting needed
+  pos_weight: "auto"
   grad_clip: 1.0
   log_every: 100

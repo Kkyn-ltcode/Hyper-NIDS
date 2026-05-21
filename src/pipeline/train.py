@@ -19,7 +19,11 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
-from sklearn.metrics import average_precision_score, roc_auc_score, f1_score
+import math
+from sklearn.metrics import (
+    average_precision_score, roc_auc_score, f1_score,
+    precision_recall_curve,
+)
 import yaml
 
 from src.data.thyn_dataset import THyNDataset
@@ -111,6 +115,18 @@ def compute_metrics(all_logits, all_labels):
         m["auroc"] = 0.0
     preds = (probs > 0.5).astype(int)
     m["f1"] = float(f1_score(labels, preds, zero_division=0))
+
+    # Best-threshold F1
+    try:
+        precision, recall, thresholds = precision_recall_curve(labels, probs)
+        f1_all = 2 * precision[:-1] * recall[:-1] / (precision[:-1] + recall[:-1] + 1e-12)
+        best_idx = np.argmax(f1_all)
+        m["best_f1"] = float(f1_all[best_idx])
+        m["best_f1_threshold"] = float(thresholds[best_idx])
+    except ValueError:
+        m["best_f1"] = 0.0
+        m["best_f1_threshold"] = 0.5
+
     m["n_attack"] = int(labels.sum())
     m["n_benign"] = int((labels == 0).sum())
     m["pred_attack"] = int(preds.sum())
@@ -279,6 +295,11 @@ def main():
         max_seq_len=dcfg["max_seq_len"],
         label_type=label_type,
     )
+    test_ds = THyNDataset(
+        dcfg["test_shards"], data_root,
+        max_seq_len=dcfg["max_seq_len"],
+        label_type=label_type,
+    )
 
     train_sampler = (DistributedSampler(train_ds, shuffle=True)
                      if is_distributed() else None)
@@ -293,11 +314,16 @@ def main():
     val_loader = DataLoader(
         val_ds, batch_size=bs, shuffle=False, sampler=val_sampler,
         num_workers=2, pin_memory=True)
+    test_loader = DataLoader(
+        test_ds, batch_size=bs, shuffle=False,
+        num_workers=2, pin_memory=True)
 
     log(f"  Train: {len(train_ds):,} windows, "
         f"{len(train_ds.X_cont):,} events")
     log(f"  Val:   {len(val_ds):,} windows, "
         f"{len(val_ds.X_cont):,} events")
+    log(f"  Test:  {len(test_ds):,} windows, "
+        f"{len(test_ds.X_cont):,} events")
     log(f"  Cont features: {train_ds.n_cont_features}, "
         f"Event types: {train_ds.num_event_types}")
 
@@ -322,8 +348,8 @@ def main():
     n_params = sum(p.numel() for p in model.parameters())
     log(f"  Parameters: {n_params:,}")
 
-    # Scale LR with world size
-    effective_lr = tcfg["lr"] * world_size
+    # Scale LR with sqrt(world_size) — appropriate for Adam/AdamW
+    effective_lr = tcfg["lr"] * math.sqrt(world_size)
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=effective_lr,
         weight_decay=tcfg["weight_decay"])
@@ -423,18 +449,29 @@ def main():
         raw = model.module if isinstance(model, DDP) else model
         ckpt = torch.load(save_dir / "best.pt", map_location=device)
         raw.load_state_dict(ckpt["model_state"])
-        vm = evaluate(model, val_loader, pw_t, device)
+
+        # Evaluate on BOTH val and test
+        vm = evaluate(raw, val_loader, pw_t, device)
+        tm = evaluate(raw, test_loader, pw_t, device)
 
         log(f"\n{'='*60}")
         log(f"RESULTS — {cfg.get('name', 'THyN v0')}")
         log(f"{'='*60}")
         log(f"  Best epoch: {best_epoch}")
+        log(f"  --- Val ---")
         log(f"  AUPRC:      {vm['auprc']:.4f}")
         log(f"  AUROC:      {vm['auroc']:.4f}")
-        log(f"  F1:         {vm['f1']:.4f}")
-        log(f"  Throughput: {vm['throughput']:.0f} events/s")
+        log(f"  F1@0.5:     {vm['f1']:.4f}")
+        log(f"  Best F1:    {vm['best_f1']:.4f} (threshold={vm['best_f1_threshold']:.4f})")
+        log(f"  --- Test ---")
+        log(f"  AUPRC:      {tm['auprc']:.4f}")
+        log(f"  AUROC:      {tm['auroc']:.4f}")
+        log(f"  F1@0.5:     {tm['f1']:.4f}")
+        log(f"  Best F1:    {tm['best_f1']:.4f} (threshold={tm['best_f1_threshold']:.4f})")
+        log(f"  Throughput: {tm['throughput']:.0f} events/s")
 
-        torch.save({"best_epoch": best_epoch, "val_metrics": vm,
+        torch.save({"best_epoch": best_epoch,
+                     "val_metrics": vm, "test_metrics": tm,
                      "config": cfg, "n_params": n_params},
                     save_dir / "results.pt")
 

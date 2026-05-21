@@ -56,14 +56,14 @@ class HypergraphConv(nn.Module):
         if len(valid_ent) == 0:
             return he_emb
 
-        unique_ents = torch.unique(valid_ent)
+        # O(n_batch_entities) mapping via searchsorted — avoids O(max_entity_id) allocation
+        unique_ents, _ = torch.sort(torch.unique(valid_ent))
         n_ents = len(unique_ents)
 
-        # Build batch-local entity ID mapping
-        ent_to_local = torch.full(
-            (unique_ents.max().item() + 1,), -1,
-            dtype=torch.long, device=he_emb.device)
-        ent_to_local[unique_ents] = torch.arange(n_ents, device=he_emb.device)
+        def _to_local(ids):
+            """Map global entity IDs to batch-local indices via binary search."""
+            idx = torch.searchsorted(unique_ents, ids)
+            return idx
 
         # Step 1: Entity ← mean(incident HE embeddings)
         ent_emb = torch.zeros(n_ents, D, device=he_emb.device)
@@ -74,7 +74,7 @@ class HypergraphConv(nn.Module):
             valid = (col_ids >= 0) & mask_flat
             if not valid.any():
                 continue
-            local = ent_to_local[col_ids[valid]]
+            local = _to_local(col_ids[valid])
             ent_emb.scatter_add_(0, local.unsqueeze(1).expand(-1, D),
                                  he_flat[valid])
             ent_count.scatter_add_(0, local.unsqueeze(1),
@@ -83,16 +83,19 @@ class HypergraphConv(nn.Module):
 
         ent_emb = ent_emb / ent_count.clamp(min=1)
 
-        # Step 2: HE ← sum(entity embeddings)
+        # Step 2: HE ← mean(entity embeddings for each hyperedge)
         he_update = torch.zeros_like(he_flat)
+        he_ent_count = torch.zeros(B * L, 1, device=he_emb.device)
         for col in range(self.n_entities):
             col_ids = ent_flat[:, col]
             valid = (col_ids >= 0) & mask_flat
             if not valid.any():
                 continue
-            local = ent_to_local[col_ids[valid]]
+            local = _to_local(col_ids[valid])
             he_update[valid] += ent_emb[local]
+            he_ent_count[valid] += 1
 
+        he_update = he_update / he_ent_count.clamp(min=1)
         he_update = he_update.reshape(B, L, D)
         return self.norm(he_emb.reshape(B, L, D) + self.linear(he_update))
 
@@ -181,8 +184,7 @@ class THyN(nn.Module):
             try:
                 from mamba_ssm import Mamba
                 self.encoder = nn.ModuleList([
-                    Mamba(d_model=d_hidden if i > 0 else d_model,
-                          d_state=16, d_conv=4, expand=2)
+                    Mamba(d_model=d_hidden, d_state=16, d_conv=4, expand=2)
                     for i in range(n_layers)
                 ])
                 # Project d_model → d_hidden if they differ
