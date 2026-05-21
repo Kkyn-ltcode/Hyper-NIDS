@@ -300,12 +300,6 @@ def main():
         label_type=label_type,
         verbose=is_main(),
     )
-    val_ds = THyNDataset(
-        dcfg["val_shards"], data_root,
-        max_seq_len=dcfg["max_seq_len"],
-        label_type=label_type,
-        verbose=is_main(),
-    )
 
     train_sampler = (DistributedSampler(train_ds, shuffle=True)
                      if is_distributed() else None)
@@ -314,15 +308,22 @@ def main():
     train_loader = DataLoader(
         train_ds, batch_size=bs,
         shuffle=(train_sampler is None), sampler=train_sampler,
-        num_workers=4, pin_memory=True, persistent_workers=True)
-    # Val: no DistributedSampler — rank 0 evaluates full val set
-    val_loader = DataLoader(
-        val_ds, batch_size=bs, shuffle=False,
-        num_workers=2, pin_memory=True)
+        num_workers=4, pin_memory=True)
 
-    # Test: only loaded on rank 0 to save memory on other ranks
+    # Val/Test: only loaded on rank 0 (other ranks never evaluate)
+    val_loader = None
     test_loader = None
     if is_main():
+        val_ds = THyNDataset(
+            dcfg["val_shards"], data_root,
+            max_seq_len=dcfg["max_seq_len"],
+            label_type=label_type,
+            verbose=True,
+        )
+        val_loader = DataLoader(
+            val_ds, batch_size=bs, shuffle=False,
+            num_workers=2, pin_memory=True)
+
         test_ds = THyNDataset(
             dcfg["test_shards"], data_root,
             max_seq_len=dcfg["max_seq_len"],
@@ -335,9 +336,9 @@ def main():
 
     log(f"  Train: {len(train_ds):,} windows, "
         f"{len(train_ds.X_cont):,} events")
-    log(f"  Val:   {len(val_ds):,} windows, "
-        f"{len(val_ds.X_cont):,} events")
-    if is_main() and test_loader is not None:
+    if is_main():
+        log(f"  Val:   {len(val_ds):,} windows, "
+            f"{len(val_ds.X_cont):,} events")
         log(f"  Test:  {len(test_ds):,} windows, "
             f"{len(test_ds.X_cont):,} events")
     log(f"  Cont features: {train_ds.n_cont_features}, "
@@ -416,12 +417,15 @@ def main():
         if is_distributed():
             dist.barrier()
 
+        # --- Validation (rank 0 only) ---
+        val_auprc = 0.0
+        should_stop = False
+
         if is_main():
             val_mb = 50 if args.quick else None
             vm = evaluate(model, val_loader, pw_t, device,
                           max_batches=val_mb)
-            auprc_for_sched = vm["auprc"] if not np.isnan(vm["auprc"]) else 0.0
-            scheduler.step(auprc_for_sched)
+            val_auprc = vm["auprc"] if not np.isnan(vm["auprc"]) else 0.0
 
             gpu_mem = ""
             if torch.cuda.is_available():
@@ -452,15 +456,27 @@ def main():
                 log(f"  ✓ New best! AUPRC={best_auprc:.4f}")
             else:
                 no_improve += 1
-                if no_improve >= patience:
-                    log(f"  Early stop (best epoch {best_epoch})")
-                    break
 
+            should_stop = no_improve >= patience
+            if should_stop:
+                log(f"  Early stop (best epoch {best_epoch})")
+
+        # --- Sync scheduler + early stop across all ranks ---
         if is_distributed():
-            stop = torch.tensor([no_improve >= patience],
-                                dtype=torch.bool, device=device)
-            dist.broadcast(stop, src=0)
-            if stop.item():
+            # Broadcast val AUPRC so all ranks step the scheduler identically
+            auprc_t = torch.tensor([val_auprc], device=device)
+            dist.broadcast(auprc_t, src=0)
+            scheduler.step(auprc_t.item())
+
+            # Broadcast early stop decision
+            stop_t = torch.tensor([should_stop], dtype=torch.bool, device=device)
+            dist.broadcast(stop_t, src=0)
+            if stop_t.item():
+                break
+        else:
+            # Single GPU: step scheduler and check early stop locally
+            scheduler.step(val_auprc)
+            if should_stop:
                 break
 
     # ── Final ──

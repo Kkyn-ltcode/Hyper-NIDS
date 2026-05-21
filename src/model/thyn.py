@@ -233,7 +233,7 @@ class THyN(nn.Module):
             for layer, norm, drop in zip(
                     self.encoder, self.mamba_norms, self.mamba_drops):
                 h = h + drop(layer(norm(h)))  # pre-norm residual
-            return h
+            return h.clamp(-50, 50)  # prevent extreme activations
 
     def forward(self, X_cont, event_type, entity_ids=None, mask=None):
         """
