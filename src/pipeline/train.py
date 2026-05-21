@@ -10,6 +10,7 @@ Usage:
 import argparse
 import os
 import time
+from datetime import timedelta
 from pathlib import Path
 
 import numpy as np
@@ -52,7 +53,10 @@ def is_main():
 
 def setup_distributed():
     if "RANK" in os.environ:
-        dist.init_process_group(backend="nccl")
+        dist.init_process_group(
+            backend="nccl",
+            timeout=timedelta(minutes=30),
+        )
         local_rank = int(os.environ["LOCAL_RANK"])
         torch.cuda.set_device(local_rank)
         return torch.device(f"cuda:{local_rank}")
@@ -289,25 +293,26 @@ def main():
         max_seq_len=dcfg["max_seq_len"],
         stride=dcfg.get("stride", dcfg["max_seq_len"]),
         label_type=label_type,
+        verbose=is_main(),
     )
     val_ds = THyNDataset(
         dcfg["val_shards"], data_root,
         max_seq_len=dcfg["max_seq_len"],
         label_type=label_type,
+        verbose=is_main(),
     )
 
     train_sampler = (DistributedSampler(train_ds, shuffle=True)
                      if is_distributed() else None)
-    val_sampler = (DistributedSampler(val_ds, shuffle=False)
-                   if is_distributed() else None)
 
     bs = tcfg["batch_size"]
     train_loader = DataLoader(
         train_ds, batch_size=bs,
         shuffle=(train_sampler is None), sampler=train_sampler,
         num_workers=4, pin_memory=True, persistent_workers=True)
+    # Val uses NO DistributedSampler — rank 0 evaluates on ALL val data
     val_loader = DataLoader(
-        val_ds, batch_size=bs, shuffle=False, sampler=val_sampler,
+        val_ds, batch_size=bs, shuffle=False,
         num_workers=2, pin_memory=True)
 
     log(f"  Train: {len(train_ds):,} windows, "
