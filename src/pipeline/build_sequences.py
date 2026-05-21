@@ -31,7 +31,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Build per-subject temporal sequences")
     parser.add_argument("--dataset", default="theia",
-                        choices=["theia", "trace"])
+                        choices=["theia", "trace", "trace-1"])
     args = parser.parse_args()
 
     labeled_dir = DATA_ROOT / args.dataset / "labeled"

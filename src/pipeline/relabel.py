@@ -34,7 +34,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Add narrow/IoC labels to labeled shards")
     parser.add_argument("--dataset", default="theia",
-                        choices=["theia", "trace"])
+                        choices=["theia", "trace", "trace-1"])
     args = parser.parse_args()
 
     labeled_dir = DATA_ROOT / args.dataset / "labeled"

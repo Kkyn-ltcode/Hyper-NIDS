@@ -120,7 +120,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Normalize features using training-set statistics")
     parser.add_argument("--dataset", default="theia",
-                        choices=["theia", "trace"])
+                        choices=["theia", "trace", "trace-1"])
     parser.add_argument("--train-shards", default="0-6",
                         help="Shard range for training (e.g., '0-6')")
     args = parser.parse_args()

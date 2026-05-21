@@ -35,7 +35,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Batch feature extraction across all shards")
     parser.add_argument("--dataset", default="theia",
-                        choices=["theia", "trace"])
+                        choices=["theia", "trace", "trace-1"])
     parser.add_argument("--validate", action="store_true",
                         help="Validate feature distributions after extraction")
     args = parser.parse_args()
