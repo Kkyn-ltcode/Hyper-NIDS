@@ -295,11 +295,6 @@ def main():
         max_seq_len=dcfg["max_seq_len"],
         label_type=label_type,
     )
-    test_ds = THyNDataset(
-        dcfg["test_shards"], data_root,
-        max_seq_len=dcfg["max_seq_len"],
-        label_type=label_type,
-    )
 
     train_sampler = (DistributedSampler(train_ds, shuffle=True)
                      if is_distributed() else None)
@@ -314,16 +309,11 @@ def main():
     val_loader = DataLoader(
         val_ds, batch_size=bs, shuffle=False, sampler=val_sampler,
         num_workers=2, pin_memory=True)
-    test_loader = DataLoader(
-        test_ds, batch_size=bs, shuffle=False,
-        num_workers=2, pin_memory=True)
 
     log(f"  Train: {len(train_ds):,} windows, "
         f"{len(train_ds.X_cont):,} events")
     log(f"  Val:   {len(val_ds):,} windows, "
         f"{len(val_ds.X_cont):,} events")
-    log(f"  Test:  {len(test_ds):,} windows, "
-        f"{len(test_ds.X_cont):,} events")
     log(f"  Cont features: {train_ds.n_cont_features}, "
         f"Event types: {train_ds.num_event_types}")
 
@@ -357,13 +347,19 @@ def main():
         optimizer, mode="max", factor=0.5, patience=2)
 
     # Auto-compute pos_weight from training data
+    MAX_POS_WEIGHT = 50.0  # cap to prevent gradient explosion on extreme imbalance
     pw_val = tcfg.get("pos_weight", "auto")
     if pw_val == "auto":
         n_pos = int((train_ds.y == 1).sum())
         n_neg = int((train_ds.y == 0).sum())
-        pw_val = n_neg / max(n_pos, 1)
-        log(f"  Auto pos_weight: {pw_val:.1f} "
-            f"(neg={n_neg:,} / pos={n_pos:,})")
+        pw_raw = n_neg / max(n_pos, 1)
+        pw_val = min(pw_raw, MAX_POS_WEIGHT)
+        if pw_raw > MAX_POS_WEIGHT:
+            log(f"  Auto pos_weight: {pw_raw:.1f} → capped to {pw_val:.1f} "
+                f"(neg={n_neg:,} / pos={n_pos:,})")
+        else:
+            log(f"  Auto pos_weight: {pw_val:.1f} "
+                f"(neg={n_neg:,} / pos={n_pos:,})")
     pw_t = torch.tensor([pw_val], device=device)
     grad_clip = tcfg["grad_clip"]
     epochs = 1 if args.quick else tcfg["epochs"]
@@ -450,8 +446,21 @@ def main():
         ckpt = torch.load(save_dir / "best.pt", map_location=device)
         raw.load_state_dict(ckpt["model_state"])
 
-        # Evaluate on BOTH val and test
+        # Evaluate on val
         vm = evaluate(raw, val_loader, pw_t, device)
+
+        # Load test data only now (deferred to save memory during training)
+        log(f"  Loading test data...")
+        test_ds = THyNDataset(
+            dcfg["test_shards"], data_root,
+            max_seq_len=dcfg["max_seq_len"],
+            label_type=label_type,
+        )
+        test_loader = DataLoader(
+            test_ds, batch_size=bs, shuffle=False,
+            num_workers=2, pin_memory=True)
+        log(f"  Test:  {len(test_ds):,} windows, "
+            f"{len(test_ds.X_cont):,} events")
         tm = evaluate(raw, test_loader, pw_t, device)
 
         log(f"\n{'='*60}")
