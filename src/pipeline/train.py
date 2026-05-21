@@ -141,6 +141,10 @@ def train_epoch(model, loader, optimizer, pw_t, grad_clip, device,
     total_events = 0
     t0 = time.time()
 
+    # Windowed loss for recent-trend reporting
+    window_loss = 0.0
+    window_batches = 0
+
     nan_batches = 0
     for i, batch in enumerate(loader):
         X_c = batch["X_cont"].to(device, non_blocking=True)
@@ -176,6 +180,8 @@ def train_epoch(model, loader, optimizer, pw_t, grad_clip, device,
 
         total_loss += loss.item()
         n_batches += 1
+        window_loss += loss.item()
+        window_batches += 1
         total_events += int(mask.sum().item())
 
         if log_every and (i + 1) % log_every == 0:
@@ -185,8 +191,11 @@ def train_epoch(model, loader, optimizer, pw_t, grad_clip, device,
             if torch.cuda.is_available():
                 mem_gb = torch.cuda.max_memory_allocated(device) / 1e9
                 gpu_mem = f", GPU={mem_gb:.1f}GB"
-            log(f"    batch {i+1}: loss={total_loss/n_batches:.4f}, "
+            recent = window_loss / max(window_batches, 1)
+            log(f"    batch {i+1}: loss={recent:.4f} (recent), "
                 f"{throughput:.0f} events/s{gpu_mem}")
+            window_loss = 0.0
+            window_batches = 0
 
     elapsed = time.time() - t0
     throughput = total_events / elapsed if elapsed > 0 else 0
@@ -297,36 +306,40 @@ def main():
         label_type=label_type,
         verbose=is_main(),
     )
-    test_ds = THyNDataset(
-        dcfg["test_shards"], data_root,
-        max_seq_len=dcfg["max_seq_len"],
-        label_type=label_type,
-        verbose=is_main(),
-    )
 
     train_sampler = (DistributedSampler(train_ds, shuffle=True)
                      if is_distributed() else None)
-    val_sampler = (DistributedSampler(val_ds, shuffle=False)
-                   if is_distributed() else None)
 
     bs = tcfg["batch_size"]
     train_loader = DataLoader(
         train_ds, batch_size=bs,
         shuffle=(train_sampler is None), sampler=train_sampler,
         num_workers=4, pin_memory=True, persistent_workers=True)
+    # Val: no DistributedSampler — rank 0 evaluates full val set
     val_loader = DataLoader(
-        val_ds, batch_size=bs, shuffle=False, sampler=val_sampler,
+        val_ds, batch_size=bs, shuffle=False,
         num_workers=2, pin_memory=True)
-    test_loader = DataLoader(
-        test_ds, batch_size=bs, shuffle=False,
-        num_workers=2, pin_memory=True)
+
+    # Test: only loaded on rank 0 to save memory on other ranks
+    test_loader = None
+    if is_main():
+        test_ds = THyNDataset(
+            dcfg["test_shards"], data_root,
+            max_seq_len=dcfg["max_seq_len"],
+            label_type=label_type,
+            verbose=True,
+        )
+        test_loader = DataLoader(
+            test_ds, batch_size=bs, shuffle=False,
+            num_workers=2, pin_memory=True)
 
     log(f"  Train: {len(train_ds):,} windows, "
         f"{len(train_ds.X_cont):,} events")
     log(f"  Val:   {len(val_ds):,} windows, "
         f"{len(val_ds.X_cont):,} events")
-    log(f"  Test:  {len(test_ds):,} windows, "
-        f"{len(test_ds.X_cont):,} events")
+    if is_main() and test_loader is not None:
+        log(f"  Test:  {len(test_ds):,} windows, "
+            f"{len(test_ds.X_cont):,} events")
     log(f"  Cont features: {train_ds.n_cont_features}, "
         f"Event types: {train_ds.num_event_types}")
 
@@ -398,6 +411,10 @@ def main():
         train_loss, train_tp = train_epoch(
             model, train_loader, optimizer, pw_t, grad_clip,
             device, log_every=log_every)
+
+        # Synchronize all ranks before rank 0 runs validation
+        if is_distributed():
+            dist.barrier()
 
         if is_main():
             val_mb = 50 if args.quick else None

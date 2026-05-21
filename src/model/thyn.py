@@ -190,6 +190,13 @@ class THyN(nn.Module):
                     Mamba(d_model=d_hidden, d_state=16, d_conv=4, expand=2)
                     for i in range(n_layers)
                 ])
+                # Pre-norm + dropout for each Mamba layer (residual applied in forward)
+                self.mamba_norms = nn.ModuleList([
+                    nn.LayerNorm(d_hidden) for _ in range(n_layers)
+                ])
+                self.mamba_drops = nn.ModuleList([
+                    nn.Dropout(dropout) for _ in range(n_layers)
+                ])
                 # Project d_model → d_hidden if they differ
                 self.mamba_proj = (nn.Linear(d_model, d_hidden)
                                   if d_model != d_hidden else nn.Identity())
@@ -223,8 +230,9 @@ class THyN(nn.Module):
             return out
         elif self.encoder_type == "mamba":
             h = self.mamba_proj(x)
-            for layer in self.encoder:
-                h = layer(h)
+            for layer, norm, drop in zip(
+                    self.encoder, self.mamba_norms, self.mamba_drops):
+                h = h + drop(layer(norm(h)))  # pre-norm residual
             return h
 
     def forward(self, X_cont, event_type, entity_ids=None, mask=None):
