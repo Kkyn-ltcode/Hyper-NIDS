@@ -56,7 +56,7 @@ def main():
     objects_path = DATA_ROOT / args.dataset / "objects.parquet"
     if objects_path.exists():
         objects_df = pd.read_parquet(
-            objects_path, columns=["uuid", "object_type", "filename"])
+            objects_path, columns=["uuid", "object_type"])
         print(f"  Loaded {len(objects_df):,} objects from objects.parquet")
     else:
         objects_df = None

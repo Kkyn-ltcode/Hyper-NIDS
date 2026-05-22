@@ -309,7 +309,7 @@ def extract_features(
     if objects_df is not None:
         # Build uuid -> object_type mapping (vectorized)
         obj_type_map = pd.Series(
-            objects_df["object_type"].astype(str).values,
+            objects_df["object_type"].values,
             index=objects_df["uuid"].values,
         )
         obj_types = obj_uuid_col.map(obj_type_map).fillna("UNKNOWN")
@@ -319,19 +319,7 @@ def extract_features(
         del obj_type_map, obj_types
 
     # 13. Path depth (number of '/' segments)
-    # Try predicate_object_path first; if all null, fall back to
-    # object filename from objects_df (Theia stores paths there)
-    path_col = events_df["predicate_object_path"].fillna("")
-    if (path_col == "").all() and objects_df is not None and "filename" in objects_df.columns:
-        # Map object UUID -> filename from objects.parquet
-        fname_map = pd.Series(
-            objects_df["filename"].astype(str).fillna("").values,
-            index=objects_df["uuid"].values,
-        )
-        path_col = obj_uuid_col.map(fname_map).fillna("")
-        del fname_map
-
-    path_col = path_col.astype(str)
+    path_col = events_df["predicate_object_path"].fillna("").astype(str)
     path_depth = path_col.str.count("/").values.astype(np.float32)
 
     # 14-16. Path content indicators

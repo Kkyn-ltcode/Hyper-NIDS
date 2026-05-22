@@ -20,17 +20,10 @@ data:
 
 training:
   batch_size: 64
-  lr: 0.0005               # lower LR for stability on sparse labels
+  lr: 0.001
   weight_decay: 0.0001
   epochs: 20
   patience: 5
   pos_weight: "auto"
   grad_clip: 1.0
   log_every: 100
-  # New training improvements
-  loss: "bce"            # reverted to bce to ablate focal loss
-  focal_gamma: 2.0         
-  focal_alpha: 0.25        
-  warmup_epochs: 0         # reverted to 0
-  accumulation_steps: 1    # reverted to 1 (effective batch = 64)
-  temperature_scaling: false 

@@ -129,13 +129,8 @@ def main():
     norm_dir = DATA_ROOT / args.dataset / "features_norm"
     norm_dir.mkdir(parents=True, exist_ok=True)
 
-    # Default dataset-specific train shard ranges if not overridden
-    train_shards_str = args.train_shards
-    if train_shards_str == "0-6" and args.dataset in ["trace", "trace-1"]:
-        train_shards_str = "0-4"
-
     # Parse shard ranges
-    start, end = map(int, train_shards_str.split("-"))
+    start, end = map(int, args.train_shards.split("-"))
     all_files = sorted(features_dir.glob("thyne_shard*.npz"))
     all_indices = [int(f.stem.replace("thyne_shard", "")) for f in all_files]
     train_indices = [i for i in all_indices if start <= i <= end]
