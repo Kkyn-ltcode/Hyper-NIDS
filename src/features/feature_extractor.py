@@ -33,6 +33,8 @@ class GlobalStats:
     subject_first_ts: dict = field(default_factory=dict)
     # Object UUID -> first seen timestamp (nanos) across all shards
     object_first_ts: dict = field(default_factory=dict)
+    # Object UUID -> total event count across all shards
+    object_event_counts: dict = field(default_factory=dict)
 
 
 def compute_global_stats(labeled_dir) -> GlobalStats:
@@ -147,11 +149,12 @@ def extract_features(
     events_df: pd.DataFrame,
     global_stats: GlobalStats | None = None,
     subject_last_ts_carry: dict | None = None,
+    objects_df: pd.DataFrame | None = None,
 ) -> tuple[np.ndarray, list[str]]:
     """
     Extract per-hyperedge feature matrix from events DataFrame.
 
-    Features (26 total):
+    Features (35 total):
         - Event type one-hot (~18 types)
         - hour: hour of day
         - he_size: number of non-null entity references (2 or 3)
@@ -161,12 +164,23 @@ def extract_features(
         - subject_is_new: 1 if subject first seen within last hour
         - object_is_new: 1 if object first seen within last hour
         - has_path: 1 if predicate_object_path is non-null
+        - obj_is_file: 1 if predicate_object is FILE type
+        - obj_is_netflow: 1 if predicate_object is NETFLOW type
+        - obj_is_memory: 1 if predicate_object is MEMORY type
+        - path_depth: number of '/' segments in predicate_object_path
+        - path_has_tmp: 1 if path contains /tmp or /var/tmp
+        - path_has_home: 1 if path contains /home/
+        - path_has_log: 1 if path contains /var/log or /log/
+        - obj_event_count: log(count+1) of events referencing this object
+        - is_new_pair: 1 if (subject, object) pair not seen earlier in shard
 
     Args:
         events_df: DataFrame sorted by timestamp_nanos.
         global_stats: Pre-computed corpus stats. If None, computes per-shard.
         subject_last_ts_carry: Dict mapping subject_uuid -> last timestamp
             from a previous shard, used to seed time_gap computation.
+        objects_df: DataFrame with object metadata (uuid, object_type, etc.).
+            If None, object type features default to 0.
 
     Returns:
         X: np.ndarray of shape (n_events, n_features), dtype float32
@@ -282,7 +296,74 @@ def extract_features(
         "predicate_object_path"
     ].notna().astype(np.float32).values
 
-    # Combine
+    # ------------------------------------------------------------------
+    # Object-aware features (10-18)
+    # ------------------------------------------------------------------
+    obj_uuid_col = events_df["predicate_object_uuid"]
+
+    # 10-12. Object type indicators (file / netflow / memory)
+    obj_is_file = np.zeros(n, dtype=np.float32)
+    obj_is_netflow = np.zeros(n, dtype=np.float32)
+    obj_is_memory = np.zeros(n, dtype=np.float32)
+
+    if objects_df is not None:
+        # Build uuid -> object_type mapping (vectorized)
+        obj_type_map = pd.Series(
+            objects_df["object_type"].values,
+            index=objects_df["uuid"].values,
+        )
+        obj_types = obj_uuid_col.map(obj_type_map).fillna("UNKNOWN")
+        obj_is_file = (obj_types == "FILE").values.astype(np.float32)
+        obj_is_netflow = (obj_types == "NETFLOW").values.astype(np.float32)
+        obj_is_memory = (obj_types == "MEMORY").values.astype(np.float32)
+        del obj_type_map, obj_types
+
+    # 13. Path depth (number of '/' segments)
+    # Try predicate_object_path first; if all null, fall back to
+    # object filename from objects_df (Theia stores paths there)
+    path_col = events_df["predicate_object_path"].fillna("")
+    if (path_col == "").all() and objects_df is not None and "filename" in objects_df.columns:
+        # Map object UUID -> filename from objects.parquet
+        fname_map = pd.Series(
+            objects_df["filename"].fillna("").values,
+            index=objects_df["uuid"].values,
+        )
+        path_col = obj_uuid_col.map(fname_map).fillna("")
+        del fname_map
+
+    path_col = path_col.astype(str)
+    path_depth = path_col.str.count("/").values.astype(np.float32)
+
+    # 14-16. Path content indicators
+    path_has_tmp = (
+        path_col.str.contains("/tmp", na=False)
+    ).values.astype(np.float32)
+    path_has_home = (
+        path_col.str.contains("/home/", na=False)
+    ).values.astype(np.float32)
+    path_has_log = (
+        path_col.str.contains("/var/log|/log/", regex=True, na=False)
+    ).values.astype(np.float32)
+
+    del path_col
+
+    # 17. Object event count: log(count + 1) per predicate_object_uuid
+    obj_counts = obj_uuid_col.map(
+        obj_uuid_col.value_counts()
+    ).fillna(0).values.astype(np.float32)
+    obj_event_count = np.log1p(obj_counts)
+    del obj_counts
+
+    # 18. Is new (subject, object) pair in this shard
+    pair_series = events_df["subject_uuid"].astype(str) + "||" + obj_uuid_col.astype(str)
+    is_new_pair = (~pair_series.duplicated(keep="first")).values.astype(np.float32)
+    del pair_series
+
+    gc.collect()
+
+    # ------------------------------------------------------------------
+    # Combine all features
+    # ------------------------------------------------------------------
     X_parts = [
         event_type_dummies.values.astype(np.float32),
         hour.reshape(-1, 1),
@@ -293,13 +374,25 @@ def extract_features(
         subject_is_new.reshape(-1, 1),
         object_is_new.reshape(-1, 1),
         has_path.reshape(-1, 1),
+        obj_is_file.reshape(-1, 1),
+        obj_is_netflow.reshape(-1, 1),
+        obj_is_memory.reshape(-1, 1),
+        path_depth.reshape(-1, 1),
+        path_has_tmp.reshape(-1, 1),
+        path_has_home.reshape(-1, 1),
+        path_has_log.reshape(-1, 1),
+        obj_event_count.reshape(-1, 1),
+        is_new_pair.reshape(-1, 1),
     ]
 
     feature_names = (
         list(event_type_dummies.columns) +
         ["hour", "he_size", "type_rarity", "event_size",
          "time_gap_same_subject", "subject_is_new", "object_is_new",
-         "has_path"]
+         "has_path",
+         "obj_is_file", "obj_is_netflow", "obj_is_memory",
+         "path_depth", "path_has_tmp", "path_has_home", "path_has_log",
+         "obj_event_count", "is_new_pair"]
     )
 
     X = np.hstack(X_parts).astype(np.float32)
@@ -308,3 +401,4 @@ def extract_features(
     gc.collect()
 
     return X, feature_names, last_ts_out
+

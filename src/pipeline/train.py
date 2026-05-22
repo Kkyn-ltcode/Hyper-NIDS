@@ -5,6 +5,15 @@ Usage:
     Single GPU:  python -m src.pipeline.train --config configs/thyn_v0.yaml
     Multi-GPU:   torchrun --nproc_per_node=4 -m src.pipeline.train --config configs/thyn_v0.yaml
     Smoke test:  python -m src.pipeline.train --config configs/thyn_v0.yaml --quick
+
+Training config options:
+    training:
+      loss: 'focal'              # 'bce' or 'focal' (default: 'bce')
+      focal_gamma: 2.0           # focusing parameter for focal loss
+      focal_alpha: 0.25          # alpha balance for focal loss (optional)
+      warmup_epochs: 2           # linear LR warmup epochs (default: 0)
+      accumulation_steps: 4      # gradient accumulation steps (default: 1)
+      temperature_scaling: true  # post-training temperature calibration
 """
 
 import argparse
@@ -90,6 +99,75 @@ def masked_bce_loss(logits, y, mask, pos_weight_t):
     return loss
 
 
+def focal_bce_loss(logits, y, mask, pos_weight_t, gamma=2.0, alpha=None):
+    """Focal loss with optional pos_weight and alpha balancing.
+
+    FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
+
+    Uses numerically stable formulation via log-sum-exp.
+
+    Args:
+        logits: raw model output (before sigmoid)
+        y: ground truth labels
+        mask: padding mask
+        pos_weight_t: positive class weight tensor (used only if alpha is None)
+        gamma: focusing parameter (higher = more focus on hard examples)
+        alpha: balance factor for positive class [0,1]. If None, use pos_weight.
+    """
+    real = mask.bool()
+    logits_real = logits[real]
+    y_real = y[real].float()
+
+    if logits_real.numel() == 0:
+        return torch.tensor(0.0, device=logits.device, requires_grad=True)
+
+    # Clamp logits for numerical safety
+    logits_real = logits_real.clamp(-50, 50)
+
+    # --- Numerically stable BCE per element ---
+    # log(sigma(x)) = -softplus(-x) = x - softplus(x)
+    # log(1 - sigma(x)) = -softplus(x) = -x - softplus(-x)
+    # Using: softplus(x) = max(x,0) + log(1 + exp(-|x|))
+    p = torch.sigmoid(logits_real)
+
+    # p_t = p for y=1, (1-p) for y=0
+    p_t = p * y_real + (1.0 - p) * (1.0 - y_real)
+    # Clamp p_t away from 0 to avoid log(0)
+    p_t = p_t.clamp(min=1e-8)
+
+    # Focal modulating factor
+    focal_weight = (1.0 - p_t) ** gamma
+
+    # Stable log(p_t): use log-sigmoid identities
+    # log(sigma(x)) = x - softplus(x)   [for y=1]
+    # log(1-sigma(x)) = -softplus(x)    [for y=0]
+    log_p_t = (
+        y_real * nn.functional.logsigmoid(logits_real)
+        + (1.0 - y_real) * nn.functional.logsigmoid(-logits_real)
+    )
+
+    # Class balancing
+    if alpha is not None:
+        # alpha for positives, (1-alpha) for negatives
+        alpha_t = alpha * y_real + (1.0 - alpha) * (1.0 - y_real)
+    else:
+        # Use pos_weight: weight positives by pos_weight, negatives by 1.0
+        pw = pos_weight_t.item() if pos_weight_t.numel() == 1 else pos_weight_t
+        alpha_t = y_real * pw + (1.0 - y_real) * 1.0
+        # Normalize so that expected weight = 1 (optional, keeps loss scale similar)
+        # alpha_t is not normalized here to stay consistent with BCE pos_weight semantics
+
+    # Focal loss = -alpha_t * (1 - p_t)^gamma * log(p_t)
+    loss = -alpha_t * focal_weight * log_p_t
+    loss = loss.mean()
+
+    # Safety: replace NaN/Inf
+    if torch.isnan(loss) or torch.isinf(loss):
+        return torch.tensor(0.0, device=logits.device, requires_grad=True)
+
+    return loss
+
+
 def compute_metrics(all_logits, all_labels, fixed_threshold=None):
     """Compute classification metrics.
 
@@ -149,7 +227,21 @@ def compute_metrics(all_logits, all_labels, fixed_threshold=None):
 
 
 def train_epoch(model, loader, optimizer, pw_t, grad_clip, device,
-                log_every=100):
+                log_every=100, loss_fn=None, accumulation_steps=1,
+                scheduler_step_fn=None):
+    """Run one training epoch.
+
+    Args:
+        loss_fn: callable(logits, y, mask, pw_t) -> scalar loss.
+                 Defaults to masked_bce_loss if None.
+        accumulation_steps: number of micro-batches to accumulate before
+                            calling optimizer.step().
+        scheduler_step_fn: optional callable() invoked after each optimizer
+                           step (for per-step schedulers like warmup).
+    """
+    if loss_fn is None:
+        loss_fn = masked_bce_loss
+
     model.train()
     total_loss = 0.0
     n_batches = 0
@@ -161,6 +253,8 @@ def train_epoch(model, loader, optimizer, pw_t, grad_clip, device,
     window_batches = 0
 
     nan_batches = 0
+    optimizer.zero_grad()  # zero once at the start
+
     for i, batch in enumerate(loader):
         X_c = batch["X_cont"].to(device, non_blocking=True)
         et = batch["event_type"].to(device, non_blocking=True)
@@ -173,10 +267,12 @@ def train_epoch(model, loader, optimizer, pw_t, grad_clip, device,
         X_c = X_c.clamp(-20, 20)
 
         logits = model(X_c, et, entity_ids=ent, mask=mask)
-        loss = masked_bce_loss(logits, y, mask, pw_t)
+        loss = loss_fn(logits, y, mask, pw_t)
 
-        optimizer.zero_grad()
-        loss.backward()
+        # Scale loss by accumulation steps so the effective loss is the mean
+        # over the accumulated micro-batches
+        scaled_loss = loss / accumulation_steps
+        scaled_loss.backward()
 
         # Check for NaN gradients
         has_nan_grad = False
@@ -189,15 +285,23 @@ def train_epoch(model, loader, optimizer, pw_t, grad_clip, device,
             optimizer.zero_grad()  # discard corrupted gradients
             continue
 
-        if grad_clip > 0:
-            nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-        optimizer.step()
-
+        # Track loss (unscaled for reporting)
         total_loss += loss.item()
         n_batches += 1
         window_loss += loss.item()
         window_batches += 1
         total_events += int(mask.sum().item())
+
+        # Step optimizer every accumulation_steps batches, or on the last batch
+        is_accumulation_step = (i + 1) % accumulation_steps == 0
+        is_last_batch = (i + 1) == len(loader)
+        if is_accumulation_step or is_last_batch:
+            if grad_clip > 0:
+                nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+            optimizer.step()
+            optimizer.zero_grad()
+            if scheduler_step_fn is not None:
+                scheduler_step_fn()
 
         if log_every and (i + 1) % log_every == 0:
             elapsed = time.time() - t0
@@ -221,7 +325,9 @@ def train_epoch(model, loader, optimizer, pw_t, grad_clip, device,
 
 @torch.no_grad()
 def evaluate(model, loader, pw_t, device, max_batches=None,
-             fixed_threshold=None):
+             fixed_threshold=None, loss_fn=None, temperature=1.0):
+    if loss_fn is None:
+        loss_fn = masked_bce_loss
     model.eval()
     total_loss = 0.0
     n_batches = 0
@@ -244,13 +350,15 @@ def evaluate(model, loader, pw_t, device, max_batches=None,
 
         m = model.module if isinstance(model, DDP) else model
         logits = m(X_c, et, entity_ids=ent, mask=mask)
-        loss = masked_bce_loss(logits, y, mask, pw_t)
+        loss = loss_fn(logits, y, mask, pw_t)
 
         total_loss += loss.item()
         n_batches += 1
 
         real = mask.bool()
-        all_logits.extend(logits[real].cpu().tolist())
+        # Apply temperature scaling to logits before collecting
+        scaled_logits = logits[real] / temperature
+        all_logits.extend(scaled_logits.cpu().tolist())
         all_labels.extend(y[real].cpu().tolist())
         total_events += int(real.sum().item())
 
@@ -295,6 +403,14 @@ def main():
     dcfg = cfg["data"]
     tcfg = cfg["training"]
 
+    # ── Training improvement configs (with backward-compat defaults) ──
+    loss_type = tcfg.get("loss", "bce")  # 'bce' or 'focal'
+    focal_gamma = tcfg.get("focal_gamma", 2.0)
+    focal_alpha = tcfg.get("focal_alpha", None)
+    warmup_epochs = tcfg.get("warmup_epochs", 0)
+    accumulation_steps = tcfg.get("accumulation_steps", 1)
+    use_temp_scaling = tcfg.get("temperature_scaling", False)
+
     log("=" * 60)
     log(f"TRAIN: {cfg.get('name', 'THyN v0').upper()}")
     log("=" * 60)
@@ -303,6 +419,11 @@ def main():
     log(f"  Model type: {mcfg['model_type']}")
     log(f"  Encoder:    {mcfg['encoder_type']}")
     log(f"  Labels:     {dcfg.get('label_type', 'broad')}")
+    log(f"  Loss:       {loss_type}" + (
+        f" (gamma={focal_gamma}, alpha={focal_alpha})" if loss_type == "focal" else ""))
+    log(f"  Warmup:     {warmup_epochs} epochs")
+    log(f"  Accum:      {accumulation_steps} steps (effective batch = {tcfg['batch_size'] * accumulation_steps * get_world_size()})")
+    log(f"  Temp scale: {use_temp_scaling}")
     log(f"  Dataset:    {args.dataset}")
 
     # ── Data ──
@@ -387,8 +508,25 @@ def main():
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=effective_lr,
         weight_decay=tcfg["weight_decay"])
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+
+    # ── LR Schedulers: optional warmup + ReduceLROnPlateau ──
+    epochs = 1 if args.quick else tcfg["epochs"]
+    steps_per_epoch = math.ceil(
+        len(train_ds) / (tcfg["batch_size"] * get_world_size()))
+    # Account for accumulation: scheduler steps per actual optimizer step
+    optimizer_steps_per_epoch = math.ceil(steps_per_epoch / accumulation_steps)
+
+    plateau_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="max", factor=0.5, patience=2)
+
+    warmup_scheduler = None
+    if warmup_epochs > 0:
+        total_warmup_steps = warmup_epochs * optimizer_steps_per_epoch
+        warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=1e-3, end_factor=1.0,
+            total_iters=total_warmup_steps)
+        log(f"  Warmup LR: {total_warmup_steps} optimizer steps "
+            f"({warmup_epochs} epochs × {optimizer_steps_per_epoch} steps/ep)")
 
     # Auto-compute pos_weight from training data
     pw_val = tcfg.get("pos_weight", "auto")
@@ -400,13 +538,22 @@ def main():
             f"(neg={n_neg:,} / pos={n_pos:,})")
     pw_t = torch.tensor([pw_val], device=device)
     grad_clip = tcfg["grad_clip"]
-    epochs = 1 if args.quick else tcfg["epochs"]
     patience = tcfg["patience"]
+
+    # ── Build loss function ──
+    if loss_type == "focal":
+        def loss_fn(logits, y, mask, pw):
+            return focal_bce_loss(logits, y, mask, pw,
+                                  gamma=focal_gamma, alpha=focal_alpha)
+    else:
+        loss_fn = masked_bce_loss
     log_every = tcfg["log_every"]
 
     # ── Train ──
+    effective_bs = bs * world_size * accumulation_steps
     log(f"\n[3/4] Training ({epochs} epochs, "
-        f"batch={bs}×{world_size}={bs*world_size})...")
+        f"batch={bs}×{world_size}×accum{accumulation_steps}="
+        f"{effective_bs})...")
 
     best_auprc = -1.0  # allow first epoch to always save
     best_epoch = 0
@@ -421,14 +568,25 @@ def main():
             "val_metrics": {}, "config": cfg,
         }, save_dir / "best.pt")
 
+    # Track warmup step counter across epochs
+    warmup_step_counter = [0]  # mutable list for closure access
+
     for epoch in range(1, epochs + 1):
         log(f"\n  ── Epoch {epoch}/{epochs} ──")
         if train_sampler:
             train_sampler.set_epoch(epoch)
 
+        # Build per-step scheduler callback for warmup
+        def _scheduler_step_fn():
+            if warmup_scheduler is not None:
+                warmup_scheduler.step()
+                warmup_step_counter[0] += 1
+
         train_loss, train_tp = train_epoch(
             model, train_loader, optimizer, pw_t, grad_clip,
-            device, log_every=log_every)
+            device, log_every=log_every, loss_fn=loss_fn,
+            accumulation_steps=accumulation_steps,
+            scheduler_step_fn=_scheduler_step_fn if warmup_scheduler else None)
 
         # Synchronize all ranks before rank 0 runs validation
         if is_distributed():
@@ -441,7 +599,7 @@ def main():
         if is_main():
             val_mb = 50 if args.quick else None
             vm = evaluate(model, val_loader, pw_t, device,
-                          max_batches=val_mb)
+                          max_batches=val_mb, loss_fn=loss_fn)
             val_auprc = vm["auprc"] if not np.isnan(vm["auprc"]) else 0.0
 
             gpu_mem = ""
@@ -483,7 +641,7 @@ def main():
             # Broadcast val AUPRC so all ranks step the scheduler identically
             auprc_t = torch.tensor([val_auprc], device=device)
             dist.broadcast(auprc_t, src=0)
-            scheduler.step(auprc_t.item())
+            plateau_scheduler.step(auprc_t.item())
 
             # Broadcast early stop decision
             stop_t = torch.tensor([should_stop], dtype=torch.bool, device=device)
@@ -492,7 +650,7 @@ def main():
                 break
         else:
             # Single GPU: step scheduler and check early stop locally
-            scheduler.step(val_auprc)
+            plateau_scheduler.step(val_auprc)
             if should_stop:
                 break
 
@@ -503,18 +661,29 @@ def main():
         ckpt = torch.load(save_dir / "best.pt", map_location=device)
         raw.load_state_dict(ckpt["model_state"])
 
+        # ── Optional temperature scaling on val set ──
+        learned_temperature = 1.0
+        if use_temp_scaling:
+            log("  Learning temperature on val set...")
+            learned_temperature = _learn_temperature(raw, val_loader, device)
+            log(f"  Learned temperature: {learned_temperature:.4f}")
+
         # Step 1: Evaluate val to find optimal threshold
-        vm = evaluate(raw, val_loader, pw_t, device)
+        vm = evaluate(raw, val_loader, pw_t, device,
+                      loss_fn=loss_fn, temperature=learned_temperature)
         val_threshold = vm["best_f1_threshold"]
 
         # Step 2: Evaluate test with the val-derived threshold (no leakage)
         tm = evaluate(raw, test_loader, pw_t, device,
-                      fixed_threshold=val_threshold)
+                      fixed_threshold=val_threshold, loss_fn=loss_fn,
+                      temperature=learned_temperature)
 
         log(f"\n{'='*60}")
         log(f"RESULTS — {cfg.get('name', 'THyN v0')}")
         log(f"{'='*60}")
         log(f"  Best epoch: {best_epoch}")
+        if use_temp_scaling:
+            log(f"  Temperature: {learned_temperature:.4f}")
         log(f"  Threshold:  {val_threshold:.4f} (selected on val)")
         log(f"  --- Val ---")
         log(f"  AUPRC:      {vm['auprc']:.4f}")
@@ -535,11 +704,63 @@ def main():
 
         torch.save({"best_epoch": best_epoch,
                      "val_threshold": val_threshold,
+                     "temperature": learned_temperature,
                      "val_metrics": vm, "test_metrics": tm,
                      "config": cfg, "n_params": n_params},
                     save_dir / "results.pt")
 
     cleanup_distributed()
+
+
+@torch.no_grad()
+def _collect_val_logits_labels(model, loader, device):
+    """Collect all (logit, label) pairs from the val set for temp scaling."""
+    model.eval()
+    all_logits = []
+    all_labels = []
+    for batch in loader:
+        X_c = batch["X_cont"].to(device, non_blocking=True)
+        et = batch["event_type"].to(device, non_blocking=True)
+        y = batch["y"].to(device, non_blocking=True)
+        mask = batch["mask"].to(device, non_blocking=True)
+        ent = batch["entity_ids"].to(device, non_blocking=True)
+        X_c = X_c.clamp(-20, 20)
+
+        logits = model(X_c, et, entity_ids=ent, mask=mask)
+        real = mask.bool()
+        all_logits.append(logits[real].cpu())
+        all_labels.append(y[real].cpu())
+    return torch.cat(all_logits), torch.cat(all_labels)
+
+
+def _learn_temperature(model, val_loader, device, lr=0.01, max_iter=100):
+    """Learn a single temperature scalar on the validation set.
+
+    Minimizes NLL: -mean[ y*log(sigma(logit/T)) + (1-y)*log(1-sigma(logit/T)) ]
+
+    Returns:
+        Learned temperature T (float, >= 0.1).
+    """
+    logits, labels = _collect_val_logits_labels(model, val_loader, device)
+    logits = logits.to(device).clamp(-50, 50)
+    labels = labels.to(device).float()
+
+    # Initialize log(T) = 0  =>  T = 1.0
+    log_temperature = nn.Parameter(torch.zeros(1, device=device))
+    temp_optimizer = torch.optim.LBFGS([log_temperature], lr=lr, max_iter=max_iter)
+
+    def _eval():
+        temp_optimizer.zero_grad()
+        T = log_temperature.exp().clamp(min=0.1)  # T >= 0.1 for stability
+        scaled = logits / T
+        nll = nn.functional.binary_cross_entropy_with_logits(
+            scaled, labels, reduction="mean")
+        nll.backward()
+        return nll
+
+    temp_optimizer.step(_eval)
+    learned_T = log_temperature.exp().clamp(min=0.1).item()
+    return learned_T
 
 
 if __name__ == "__main__":

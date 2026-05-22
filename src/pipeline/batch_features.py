@@ -51,6 +51,17 @@ def main():
         return
 
     n_shards = len(shard_files)
+
+    # Load object metadata for object-aware features
+    objects_path = DATA_ROOT / args.dataset / "objects.parquet"
+    if objects_path.exists():
+        objects_df = pd.read_parquet(
+            objects_path, columns=["uuid", "object_type", "filename"])
+        print(f"  Loaded {len(objects_df):,} objects from objects.parquet")
+    else:
+        objects_df = None
+        print("  ⚠ objects.parquet not found; object type features will be zero")
+
     print("=" * 60)
     print(f"BATCH FEATURE EXTRACTION: {args.dataset.upper()}")
     print("=" * 60)
@@ -150,6 +161,7 @@ def main():
             df,
             global_stats=global_stats,
             subject_last_ts_carry=subject_carry if subject_carry else None,
+            objects_df=objects_df,
         )
         X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 

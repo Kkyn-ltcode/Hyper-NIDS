@@ -20,10 +20,17 @@ data:
 
 training:
   batch_size: 64
-  lr: 0.001
+  lr: 0.0005               # lower LR for stability on sparse labels
   weight_decay: 0.0001
   epochs: 20
   patience: 5
   pos_weight: "auto"
   grad_clip: 1.0
   log_every: 100
+  # New training improvements
+  loss: "focal"            # focal loss for extreme imbalance
+  focal_gamma: 2.0         # focusing parameter
+  focal_alpha: 0.25        # class balance factor
+  warmup_epochs: 2         # linear LR warmup
+  accumulation_steps: 4    # effective batch = 64*4 = 256
+  temperature_scaling: true # post-training calibration
