@@ -145,8 +145,9 @@ def main():
     he_global_offset = 0
     shard_offsets = []
 
-    all_he_indices = []
-    all_ent_indices = []
+    all_indices = []
+    all_indptr = [np.array([0], dtype=np.int64)]
+    current_nnz = 0
     all_labels_broad = []
     all_labels_narrow = []
     all_labels_ioc = []
@@ -211,11 +212,23 @@ def main():
                               he_global_offset + n,
                               int(valid_he.sum())))  # valid count for reference
 
-        # Build COO entries (skip sentinel -1)
-        for ent_col in [subj_ids, obj1_ids, obj2_ids]:
-            valid = ent_col >= 0
-            all_he_indices.append(he_ids[valid])
-            all_ent_indices.append(ent_col[valid])
+        # Build CSC components natively (events are columns)
+        # 1. Flatten valid entity IDs per event into a single array
+        ent_array = np.column_stack([subj_ids, obj1_ids, obj2_ids])
+        valid_mask = ent_array >= 0
+        
+        # Zero out degenerate entries completely so they take 0 space
+        valid_mask[~valid_he] = False
+        shard_sizes = valid_mask.sum(axis=1)
+        
+        # 2. Extract valid entity IDs (these become the CSC indices)
+        shard_indices = ent_array[valid_mask]
+        all_indices.append(shard_indices.astype(np.int32))
+        
+        # 3. Update CSC indptr
+        shard_indptr = current_nnz + np.cumsum(shard_sizes, dtype=np.int64)
+        all_indptr.append(shard_indptr)
+        current_nnz += len(shard_indices)
 
         he_global_offset += n
         total_events += n
@@ -240,17 +253,17 @@ def main():
         del df, subj_ids, obj1_ids, obj2_ids, he_ids
         gc.collect()
 
-    # Concatenate
-    he_indices = np.concatenate(all_he_indices)
-    ent_indices = np.concatenate(all_ent_indices)
-    del all_he_indices, all_ent_indices
+    # Concatenate CSC arrays
+    csc_indices = np.concatenate(all_indices)
+    csc_indptr = np.concatenate(all_indptr)
+    del all_indices, all_indptr
     gc.collect()
 
     num_hyperedges = total_events
     print(f"\n  Total hyperedges:  {num_hyperedges:,}")
     print(f"  Size-2:            {size_2_count:,} ({100*size_2_count/num_hyperedges:.1f}%)")
     print(f"  Size-3:            {size_3_count:,} ({100*size_3_count/num_hyperedges:.1f}%)")
-    print(f"  COO entries:       {len(he_indices):,}")
+    print(f"  Non-zero entries:  {len(csc_indices):,}")
     print(f"  Time: {time.time()-t0:.1f}s")
 
     # Save shard offsets
@@ -272,14 +285,17 @@ def main():
 
     t0 = time.time()
 
-    H_coo = sparse.coo_matrix(
-        (np.ones(len(he_indices), dtype=np.int8),
-         (ent_indices, he_indices)),
+    # We built the column pointers (indptr) and row indices (csc_indices)
+    # for a CSC matrix (where columns are hyperedges).
+    csc_data = np.ones(len(csc_indices), dtype=np.int8)
+    
+    H_csc = sparse.csc_matrix(
+        (csc_data, csc_indices, csc_indptr),
         shape=(num_entities, num_hyperedges),
     )
 
-    H_csr = H_coo.tocsr()
-    del H_coo
+    H_csr = H_csc.tocsr()
+    del H_csc, csc_indices, csc_indptr, csc_data
     gc.collect()
 
     incidence_path = graph_dir / "incidence.npz"
@@ -358,6 +374,7 @@ def main():
             print(f"    {type_names[t_val]:15s}: {cnt:>10,} entities, "
                   f"avg degree={avg_deg:.1f}, max={max_deg:,}")
 
+    nnz_count = H_csr.nnz
     del H_csr, node_degrees
     gc.collect()
 
@@ -371,7 +388,7 @@ def main():
     print(f"  Hyperedges:      {num_hyperedges:,}")
     print(f"    Size-2:        {size_2_count:,} ({100*size_2_count/num_hyperedges:.1f}%)")
     print(f"    Size-3:        {size_3_count:,} ({100*size_3_count/num_hyperedges:.1f}%)")
-    print(f"  COO entries:     {len(he_indices):,}")
+    print(f"  Non-zero entries:{nnz_count:,}")
     print(f"\n  Null UUID filtered: ✓")
     print(f"\n  Files saved to {graph_dir}/:")
     print(f"    entity_vocab.npz    ({vocab_path.stat().st_size/1e6:.1f} MB)")
