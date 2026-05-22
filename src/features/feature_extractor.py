@@ -41,7 +41,8 @@ def compute_global_stats(labeled_dir) -> GlobalStats:
 
     Only loads the columns needed (type, subject_uuid,
     predicate_object_uuid, predicate_object2_uuid, timestamp_nanos).
-    Processes one shard at a time to limit memory.
+    Processes one shard at a time to limit memory. Uses vectorized
+    pandas operations instead of Python loops for scalability.
 
     Args:
         labeled_dir: Path to directory containing labeled_shard*.parquet
@@ -60,11 +61,15 @@ def compute_global_stats(labeled_dir) -> GlobalStats:
     stats = GlobalStats()
     type_counter = Counter()
 
+    # Accumulate first-seen timestamps using Series (vectorized min)
+    subject_first_series = pd.Series(dtype=np.float64)
+    object_first_series = pd.Series(dtype=np.float64)
+
     print(f"  Computing global stats from {len(files)} shards...")
 
-    for f in files:
+    for i, f in enumerate(files):
         shard_name = f.stem
-        print(f"    Scanning {shard_name}...")
+        print(f"    Scanning {shard_name} ({i+1}/{len(files)})...")
 
         # Type counts
         df_type = pd.read_parquet(f, columns=["type"])
@@ -73,36 +78,37 @@ def compute_global_stats(labeled_dir) -> GlobalStats:
         stats.total_events += len(df_type)
         del df_type
 
-        # Subject first-seen timestamps
+        # Subject first-seen timestamps (vectorized)
         df_sub = pd.read_parquet(
             f, columns=["subject_uuid", "timestamp_nanos"])
-        sub_first = df_sub.groupby("subject_uuid")["timestamp_nanos"].min()
-        for uuid, ts in sub_first.items():
-            if uuid not in stats.subject_first_ts:
-                stats.subject_first_ts[uuid] = ts
-            else:
-                stats.subject_first_ts[uuid] = min(
-                    stats.subject_first_ts[uuid], ts)
-        del df_sub, sub_first
+        shard_sub_first = df_sub.groupby(
+            "subject_uuid")["timestamp_nanos"].min()
+        # Merge with running minimum
+        combined = pd.concat([subject_first_series, shard_sub_first])
+        subject_first_series = combined.groupby(combined.index).min()
+        del df_sub, shard_sub_first, combined
 
-        # Object first-seen timestamps (both obj and obj2)
+        # Object first-seen timestamps (both obj and obj2, vectorized)
         for col in ["predicate_object_uuid", "predicate_object2_uuid"]:
             df_obj = pd.read_parquet(f, columns=[col, "timestamp_nanos"])
             df_obj = df_obj.dropna(subset=[col])
             if len(df_obj) > 0:
-                obj_first = df_obj.groupby(col)["timestamp_nanos"].min()
-                for uuid, ts in obj_first.items():
-                    if uuid not in stats.object_first_ts:
-                        stats.object_first_ts[uuid] = ts
-                    else:
-                        stats.object_first_ts[uuid] = min(
-                            stats.object_first_ts[uuid], ts)
-                del obj_first
+                shard_obj_first = df_obj.groupby(
+                    col)["timestamp_nanos"].min()
+                combined = pd.concat([object_first_series, shard_obj_first])
+                object_first_series = combined.groupby(combined.index).min()
+                del shard_obj_first, combined
             del df_obj
 
         gc.collect()
 
     stats.type_counts = dict(type_counter)
+    stats.subject_first_ts = subject_first_series.to_dict()
+    stats.object_first_ts = object_first_series.to_dict()
+
+    del subject_first_series, object_first_series
+    gc.collect()
+
     print(f"  Done. {stats.total_events:,} events, "
           f"{len(stats.type_counts)} types, "
           f"{len(stats.subject_first_ts):,} subjects, "
@@ -200,68 +206,76 @@ def extract_features(
         events_df["size"], errors="coerce"
     ).fillna(0).values.astype(np.float32)
 
-    # 6. Time gap from previous event by same subject
+    # 6. Time gap from previous event by same subject (vectorized)
     ts_nanos = events_df["timestamp_nanos"].values.astype(np.float64)
     subject_uuids = events_df["subject_uuid"].values
 
-    # Seed with carry-over from previous shard
-    subject_last_ts = {}
-    if subject_last_ts_carry is not None:
-        subject_last_ts = dict(subject_last_ts_carry)
+    # Build a temporary DataFrame for groupby operations
+    _tmp = pd.DataFrame({
+        "subject_uuid": subject_uuids,
+        "ts": ts_nanos,
+    })
 
-    time_gap = np.full(n, np.nan, dtype=np.float64)
-    for i in range(n):
-        s = subject_uuids[i]
-        if pd.notna(s):
-            if s in subject_last_ts:
-                time_gap[i] = (ts_nanos[i] - subject_last_ts[s]) / 1e9
-            subject_last_ts[s] = ts_nanos[i]
+    # Compute time gap as diff within each subject group
+    _tmp["prev_ts"] = _tmp.groupby("subject_uuid")["ts"].shift(1)
+
+    # Seed first events with carry-over from previous shard
+    if subject_last_ts_carry:
+        first_event_mask = _tmp["prev_ts"].isna() & _tmp["subject_uuid"].notna()
+        if first_event_mask.any():
+            carry_ts = _tmp.loc[first_event_mask, "subject_uuid"].map(
+                subject_last_ts_carry)
+            _tmp.loc[first_event_mask, "prev_ts"] = carry_ts
+
+    time_gap = ((_tmp["ts"] - _tmp["prev_ts"]) / 1e9).values
 
     # Record last timestamp per subject (for next shard's carry)
-    last_ts_out = {s: subject_last_ts[s] for s in subject_last_ts}
+    last_ts_out = _tmp.groupby("subject_uuid")["ts"].last().to_dict()
+    del _tmp
 
-    # 7. Subject is "new" (first seen within last hour)
+    # 7. Subject is "new" (first seen within last hour) — vectorized
     subject_is_new = np.zeros(n, dtype=np.float32)
     if global_stats is not None:
         # Use corpus-wide first-seen
-        for i in range(n):
-            s = subject_uuids[i]
-            if pd.notna(s):
-                first = global_stats.subject_first_ts.get(s, 0)
-                if (ts_nanos[i] - first) < 3600e9:
-                    subject_is_new[i] = 1.0
+        sub_series = events_df["subject_uuid"]
+        sub_first_ts = sub_series.map(global_stats.subject_first_ts)
+        valid_sub = sub_first_ts.notna()
+        age = ts_nanos - sub_first_ts.values.astype(np.float64)
+        subject_is_new[valid_sub.values & (age < 3600e9)] = 1.0
+        del sub_first_ts, valid_sub, age
     else:
-        # Per-shard fallback
-        subject_first = {}
-        for i in range(n):
-            s = subject_uuids[i]
-            if pd.notna(s):
-                if s not in subject_first:
-                    subject_first[s] = ts_nanos[i]
-                    subject_is_new[i] = 1.0
-                elif (ts_nanos[i] - subject_first[s]) < 3600e9:
-                    subject_is_new[i] = 1.0
+        # Per-shard fallback: first occurrence per subject
+        sub_df = pd.DataFrame({
+            "subject_uuid": events_df["subject_uuid"].values,
+            "ts": ts_nanos,
+        })
+        sub_first = sub_df.groupby("subject_uuid")["ts"].transform("first")
+        age = sub_df["ts"] - sub_first
+        valid = sub_df["subject_uuid"].notna()
+        subject_is_new[valid.values & (age.values < 3600e9)] = 1.0
+        del sub_df, sub_first, age
 
-    # 8. Object is "new"
+    # 8. Object is "new" — vectorized
     obj_uuids = events_df["predicate_object_uuid"].values
     object_is_new = np.zeros(n, dtype=np.float32)
     if global_stats is not None:
-        for i in range(n):
-            o = obj_uuids[i]
-            if pd.notna(o):
-                first = global_stats.object_first_ts.get(o, 0)
-                if (ts_nanos[i] - first) < 3600e9:
-                    object_is_new[i] = 1.0
+        obj_series = events_df["predicate_object_uuid"]
+        obj_first_ts = obj_series.map(global_stats.object_first_ts)
+        valid_obj = obj_first_ts.notna()
+        age = ts_nanos - obj_first_ts.values.astype(np.float64)
+        object_is_new[valid_obj.values & (age < 3600e9)] = 1.0
+        del obj_first_ts, valid_obj, age
     else:
-        obj_first = {}
-        for i in range(n):
-            o = obj_uuids[i]
-            if pd.notna(o):
-                if o not in obj_first:
-                    obj_first[o] = ts_nanos[i]
-                    object_is_new[i] = 1.0
-                elif (ts_nanos[i] - obj_first[o]) < 3600e9:
-                    object_is_new[i] = 1.0
+        obj_df = pd.DataFrame({
+            "obj_uuid": obj_uuids,
+            "ts": ts_nanos,
+        })
+        obj_df = obj_df[obj_df["obj_uuid"].notna()]
+        obj_first = obj_df.groupby("obj_uuid")["ts"].transform("first")
+        age = obj_df["ts"] - obj_first
+        valid_idx = obj_df.index[age.values < 3600e9]
+        object_is_new[valid_idx] = 1.0
+        del obj_df, obj_first, age
 
     # 9. Has predicate_object_path
     has_path = events_df[

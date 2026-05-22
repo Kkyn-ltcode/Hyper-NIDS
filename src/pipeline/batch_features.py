@@ -112,10 +112,17 @@ def main():
 
         # Skip if already extracted
         if npz_path.exists() and not args.validate:
-            data = np.load(npz_path, allow_pickle=True)
-            n = len(data["y_broad"])
+            # Only load the minimal columns needed
+            import pyarrow.parquet as pq
+            n = pq.read_metadata(npz_path.with_name(shard_file.name)).num_rows
+            try:
+                data = np.load(npz_path, allow_pickle=True)
+                n = len(data["y_broad"])
+                del data
+            except Exception:
+                n = 0
             total_events += n
-            print(f"  Shard {shard_idx}: SKIPPED (exists, {n:,} events)")
+            print(f"  Shard {shard_idx}/{n_shards-1}: SKIPPED (exists, {n:,} events)")
 
             # Still need to update carry for subsequent shards
             df_carry = pd.read_parquet(
@@ -126,11 +133,11 @@ def main():
                 "subject_uuid"
             )["timestamp_nanos"].max().to_dict()
             subject_carry.update(last_ts)
-            del df_carry, last_ts, data
+            del df_carry, last_ts
             gc.collect()
             continue
 
-        print(f"\n  Shard {shard_idx}...")
+        print(f"\n  Shard {shard_idx}/{n_shards-1}...")
         t0 = time.time()
 
         # Load labeled shard

@@ -198,6 +198,14 @@ def main():
     # ============================================================
     print(f"\n[3/3] Normalizing all shards...")
 
+    # Pre-compute continuous feature mask for vectorized normalization
+    cont_mask = np.array([not b for b in is_binary])
+    cont_indices = np.where(cont_mask)[0]
+    cont_mean = mean[cont_indices]
+    cont_std = std[cont_indices]
+    # Avoid division by zero
+    cont_std[cont_std == 0] = 1.0
+
     for idx in all_indices:
         src_path = features_dir / f"thyne_shard{idx}.npz"
         dst_path = norm_dir / f"thyne_shard{idx}.npz"
@@ -205,10 +213,8 @@ def main():
         data = np.load(src_path, allow_pickle=True)
         X = data["X"].astype(np.float32)
 
-        # Z-score: (x - mean) / std, only for continuous features
-        for j in range(n_features):
-            if not is_binary[j] and std[j] > 0:
-                X[:, j] = (X[:, j] - mean[j]) / std[j]
+        # Vectorized z-score on all continuous features at once
+        X[:, cont_indices] = (X[:, cont_indices] - cont_mean) / cont_std
 
         split = "TRAIN" if idx in train_indices else "TEST"
         n = len(X)
@@ -219,7 +225,7 @@ def main():
         save_kwargs["X"] = X
         np.savez_compressed(dst_path, **save_kwargs)
 
-        print(f"  Shard {idx} [{split}]: {n:>10,} events, "
+        print(f"  Shard {idx}/{all_indices[-1]} [{split}]: {n:>10,} events, "
               f"{n_atk:>8,} attack, "
               f"→ {dst_path.name} "
               f"({dst_path.stat().st_size/1e6:.0f} MB)")
