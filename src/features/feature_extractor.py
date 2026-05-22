@@ -309,7 +309,7 @@ def extract_features(
     if objects_df is not None:
         # Build uuid -> object_type mapping (vectorized)
         obj_type_map = pd.Series(
-            objects_df["object_type"].values,
+            objects_df["object_type"].astype(str).values,
             index=objects_df["uuid"].values,
         )
         obj_types = obj_uuid_col.map(obj_type_map).fillna("UNKNOWN")
@@ -325,7 +325,7 @@ def extract_features(
     if (path_col == "").all() and objects_df is not None and "filename" in objects_df.columns:
         # Map object UUID -> filename from objects.parquet
         fname_map = pd.Series(
-            objects_df["filename"].fillna("").values,
+            objects_df["filename"].astype(str).fillna("").values,
             index=objects_df["uuid"].values,
         )
         path_col = obj_uuid_col.map(fname_map).fillna("")
