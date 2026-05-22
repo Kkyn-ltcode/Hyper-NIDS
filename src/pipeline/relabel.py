@@ -59,29 +59,73 @@ def main():
     print(f"  Global subjects: {len(subjects_df):,}")
     print(f"  Global objects:  {len(objects_df):,}")
 
-    for f in shard_files:
+    # Pre-compute attack UUID sets ONCE (not 3x per shard)
+    from src.data.ground_truth import (
+        build_attack_subject_uuids,
+        build_attack_object_uuids,
+        build_child_only_subject_uuids,
+    )
+    print(f"\n  Pre-computing attack UUID sets...")
+    t_pre = time.time()
+    attack_sub_uuids = build_attack_subject_uuids(subjects_df, gt)
+    attack_obj_uuids = build_attack_object_uuids(objects_df, gt)
+    child_sub_uuids = build_child_only_subject_uuids(subjects_df, gt)
+    print(f"    Attack subjects: {len(attack_sub_uuids):,}")
+    print(f"    Attack objects:  {len(attack_obj_uuids):,}")
+    print(f"    Child subjects:  {len(child_sub_uuids):,}")
+    print(f"    Time: {time.time()-t_pre:.1f}s")
+
+    for fi, f in enumerate(shard_files):
         shard_name = f.stem
         shard_idx = int(shard_name.replace("labeled_shard", ""))
-        print(f"\n  ── {shard_name} ──")
+        print(f"\n  ── {shard_name} ({fi+1}/{len(shard_files)}) ──")
+
+        # Check if shard already has all required label columns (resume support)
+        import pyarrow.parquet as pq
+        existing_cols = set(pq.read_schema(f).names)
+        required_cols = {"label_narrow", "label_ioc", "label_crossprocess"}
+        if required_cols.issubset(existing_cols):
+            # Quick read to report stats without reprocessing
+            df_check = pd.read_parquet(
+                f, columns=["label_broad", "label_narrow", "label_ioc",
+                             "label_crossprocess"])
+            n = len(df_check)
+            n_narrow = int(df_check["label_narrow"].sum())
+            n_ioc = int(df_check["label_ioc"].sum())
+            n_xproc = int(df_check["label_crossprocess"].sum())
+            total_narrow += n_narrow
+            total_ioc += n_ioc
+            total_xproc += n_xproc
+            total_events += n
+            print(f"    SKIPPED (already relabeled, {n:,} events)")
+            del df_check
+            gc.collect()
+            continue
+
         t0 = time.time()
 
         # Load labeled events
         events_df = pd.read_parquet(f)
         n = len(events_df)
 
-        # Compute narrow labels
-        narrow = label_narrow_events(events_df, subjects_df, objects_df, gt)
+        # --- Narrow labels (attack subject + IoC object) ---
+        is_attack_sub = events_df["subject_uuid"].isin(attack_sub_uuids)
+        touches_ioc_obj = events_df["predicate_object_uuid"].isin(attack_obj_uuids)
+        if "predicate_object2_uuid" in events_df.columns:
+            touches_ioc_obj = touches_ioc_obj | \
+                events_df["predicate_object2_uuid"].isin(attack_obj_uuids)
+        narrow = (is_attack_sub & touches_ioc_obj).astype(np.int8)
         events_df["label_narrow"] = narrow.values
 
-        # Compute IoC labels
-        ioc = label_ioc_events(events_df, subjects_df, objects_df, gt)
+        # --- IoC labels (any event touching IoC object) ---
+        ioc = touches_ioc_obj.astype(np.int8)
         events_df["label_ioc"] = ioc.values
 
-        # Compute cross-process labels
-        xproc = label_crossprocess_events(events_df, subjects_df, objects_df, gt)
+        # --- Cross-process labels (child processes only) ---
+        xproc = events_df["subject_uuid"].isin(child_sub_uuids).astype(np.int8)
         events_df["label_crossprocess"] = xproc.values
 
-        # Overwrite parquet
+        # Overwrite parquet (atomic write via tmp file)
         tmp_path = f.with_suffix(".tmp.parquet")
         events_df.to_parquet(tmp_path, index=False)
         tmp_path.replace(f)
