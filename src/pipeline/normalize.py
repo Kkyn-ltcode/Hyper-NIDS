@@ -116,13 +116,19 @@ def compute_train_stats(
     return mean.astype(np.float32), std.astype(np.float32)
 
 
+TRAIN_SHARDS = {
+    "theia": [0, 1, 2, 3, 4, 5, 6],
+    "trace": [0, 1, 2, 3, 4],
+    "trace-1": [0],
+}
+
 def main():
     parser = argparse.ArgumentParser(
         description="Normalize features using training-set statistics")
     parser.add_argument("--dataset", default="theia",
                         choices=["theia", "trace", "trace-1"])
-    parser.add_argument("--train-shards", default="0-6",
-                        help="Shard range for training (e.g., '0-6')")
+    parser.add_argument("--train-shards", default=None,
+                        help="Shard range for training (e.g., '0-6'). Default is dataset-specific.")
     args = parser.parse_args()
 
     features_dir = DATA_ROOT / args.dataset / "features"
@@ -130,10 +136,15 @@ def main():
     norm_dir.mkdir(parents=True, exist_ok=True)
 
     # Parse shard ranges
-    start, end = map(int, args.train_shards.split("-"))
     all_files = sorted(features_dir.glob("thyne_shard*.npz"))
     all_indices = [int(f.stem.replace("thyne_shard", "")) for f in all_files]
-    train_indices = [i for i in all_indices if start <= i <= end]
+
+    if args.train_shards is not None:
+        start, end = map(int, args.train_shards.split("-"))
+        train_indices = [i for i in all_indices if start <= i <= end]
+    else:
+        train_indices = TRAIN_SHARDS.get(args.dataset, all_indices)
+
     test_indices = [i for i in all_indices if i not in train_indices]
 
     print("=" * 60)
