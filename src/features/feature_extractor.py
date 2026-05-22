@@ -309,7 +309,7 @@ def extract_features(
     if objects_df is not None:
         # Build uuid -> object_type mapping (vectorized)
         obj_type_map = pd.Series(
-            objects_df["object_type"].values,
+            objects_df["object_type"].astype(str).values,
             index=objects_df["uuid"].values,
         )
         obj_types = obj_uuid_col.map(obj_type_map).fillna("UNKNOWN")

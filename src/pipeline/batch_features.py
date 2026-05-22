@@ -125,7 +125,7 @@ def main():
         if npz_path.exists() and not args.validate:
             # Only load the minimal columns needed
             import pyarrow.parquet as pq
-            n = pq.read_metadata(npz_path.with_name(shard_file.name)).num_rows
+            n = pq.read_metadata(shard_file).num_rows
             try:
                 data = np.load(npz_path, allow_pickle=True)
                 n = len(data["y_broad"])
