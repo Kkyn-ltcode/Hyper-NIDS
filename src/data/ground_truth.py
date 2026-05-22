@@ -126,17 +126,12 @@ def _get_basename(path_str: str) -> str:
 
 
 def _get_process_basenames(subjects_df: pd.DataFrame) -> pd.Series:
-    """Extract process basenames from whichever column is available."""
+    """Extract process basenames from whichever column is available (vectorized)."""
     if "process_path" in subjects_df.columns and subjects_df["process_path"].notna().any():
-        return subjects_df["process_path"].fillna("").apply(_get_basename)
+        return subjects_df["process_path"].fillna("").str.rstrip("/").str.split("/").str[-1].str.lower()
     elif "cmd_line" in subjects_df.columns:
         # TRACE: cmd_line is like "/usr/sbin/sshd -D -R", extract first token
-        def _cmd_basename(cmd):
-            if not cmd:
-                return ""
-            first_token = cmd.strip().split()[0] if cmd.strip() else ""
-            return _get_basename(first_token)
-        return subjects_df["cmd_line"].fillna("").apply(_cmd_basename)
+        return subjects_df["cmd_line"].fillna("").str.strip().str.split().str[0].fillna("").str.rstrip("/").str.split("/").str[-1].str.lower()
     return pd.Series("", index=subjects_df.index)
 
 
