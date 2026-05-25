@@ -1,4 +1,4 @@
-name: "baseline_a_trace"
+name: "trace_l1_baseline_a"
 
 model:
   model_type: "baseline_a"  # pairwise conv — drops predicateObject2

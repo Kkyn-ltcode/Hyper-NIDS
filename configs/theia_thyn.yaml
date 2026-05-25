@@ -1,4 +1,4 @@
-name: "thyn_v0"
+name: "theia_thyn"
 
 model:
   model_type: "thyn"       # "thyn" | "baseline_a" | "baseline_b"

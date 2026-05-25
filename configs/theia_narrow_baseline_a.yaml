@@ -1,4 +1,4 @@
-name: "baseline_a_narrow"
+name: "theia_narrow_baseline_a"
 
 model:
   model_type: "baseline_a"

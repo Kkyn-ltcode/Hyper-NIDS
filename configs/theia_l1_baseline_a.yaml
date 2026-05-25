@@ -1,4 +1,4 @@
-name: "baseline_a_l1"
+name: "theia_l1_baseline_a"
 
 model:
   model_type: "baseline_a"  # pairwise conv — drops predicateObject2

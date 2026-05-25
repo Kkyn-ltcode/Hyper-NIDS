@@ -1,4 +1,4 @@
-name: "baseline_a_crossprocess"
+name: "theia_crossprocess_baseline_a"
 
 model:
   model_type: "baseline_a"

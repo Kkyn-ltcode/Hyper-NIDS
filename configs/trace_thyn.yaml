@@ -1,4 +1,4 @@
-name: "thyn_trace"
+name: "trace_thyn"
 
 model:
   model_type: "thyn"
