@@ -20,14 +20,12 @@ data:
 
 training:
   batch_size: 64
-  lr: 0.001
+  lr: 0.0005
   weight_decay: 0.0001
   epochs: 30               # more epochs for harder task
-  patience: 8              # more patience — convergence will be slower
+  patience: 12              # more patience — convergence will be slower
   pos_weight: "auto"
   grad_clip: 1.0
   log_every: 100
-  loss: "focal"
-  focal_gamma: 2.0
-  focal_alpha: 0.25
+  accumulation_steps: 4
   warmup_epochs: 3
