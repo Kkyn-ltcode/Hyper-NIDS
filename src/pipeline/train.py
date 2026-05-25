@@ -84,7 +84,7 @@ def masked_bce_loss(logits, y, mask, pos_weight_t):
     y_real = y[real].float()
 
     if logits_real.numel() == 0:
-        return torch.tensor(0.0, device=logits.device, requires_grad=True)
+        return (logits.sum() * 0.0)
 
     # Clamp logits to prevent numerical overflow in BCE
     logits_real = logits_real.clamp(-50, 50)
@@ -94,7 +94,7 @@ def masked_bce_loss(logits, y, mask, pos_weight_t):
 
     # Safety: replace NaN/Inf loss with zero (skip this batch)
     if torch.isnan(loss) or torch.isinf(loss):
-        return torch.tensor(0.0, device=logits.device, requires_grad=True)
+        return (logits.sum() * 0.0)
 
     return loss
 
@@ -119,7 +119,7 @@ def focal_bce_loss(logits, y, mask, pos_weight_t, gamma=2.0, alpha=None):
     y_real = y[real].float()
 
     if logits_real.numel() == 0:
-        return torch.tensor(0.0, device=logits.device, requires_grad=True)
+        return (logits.sum() * 0.0)
 
     # Clamp logits for numerical safety
     logits_real = logits_real.clamp(-50, 50)
@@ -163,7 +163,7 @@ def focal_bce_loss(logits, y, mask, pos_weight_t, gamma=2.0, alpha=None):
 
     # Safety: replace NaN/Inf
     if torch.isnan(loss) or torch.isinf(loss):
-        return torch.tensor(0.0, device=logits.device, requires_grad=True)
+        return (logits.sum() * 0.0)
 
     return loss
 
@@ -448,14 +448,16 @@ def main():
         shuffle=(train_sampler is None), sampler=train_sampler,
         num_workers=4, pin_memory=True)
 
-    # Val/Test: only loaded on rank 0 (other ranks never evaluate)
     val_loader = None
     test_loader = None
     if is_main():
+        # L1* test definition: evaluate on original broad labels
+        eval_label_type = "broad" if label_type == "l1" else label_type
+
         val_ds = THyNDataset(
             dcfg["val_shards"], data_root,
             max_seq_len=dcfg["max_seq_len"],
-            label_type=label_type,
+            label_type=eval_label_type,
             verbose=True,
         )
         val_loader = DataLoader(
@@ -465,7 +467,7 @@ def main():
         test_ds = THyNDataset(
             dcfg["test_shards"], data_root,
             max_seq_len=dcfg["max_seq_len"],
-            label_type=label_type,
+            label_type=eval_label_type,
             verbose=True,
         )
         test_loader = DataLoader(
