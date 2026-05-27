@@ -71,9 +71,14 @@ def cleanup_distributed():
     if is_distributed():
         dist.destroy_process_group()
 
+LOG_FILE = None
+
 def log(msg):
     if is_main():
         print(msg)
+        if LOG_FILE is not None:
+            with open(LOG_FILE, "a") as f:
+                f.write(str(msg) + "\n")
 
 
 # ── Training logic ───────────────────────────────────────────
@@ -398,6 +403,10 @@ def main():
     save_dir = Path("checkpoints") / cfg.get("name", "thyn_v0")
     if is_main():
         save_dir.mkdir(parents=True, exist_ok=True)
+        global LOG_FILE
+        LOG_FILE = save_dir / "training.log"
+        if LOG_FILE.exists() and not args.quick:
+            LOG_FILE.unlink()
 
     mcfg = cfg["model"]
     dcfg = cfg["data"]
