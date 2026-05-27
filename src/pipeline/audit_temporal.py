@@ -98,7 +98,7 @@ def main():
     val_ds = THyNDataset(
         dcfg["val_shards"], data_root,
         max_seq_len=dcfg["max_seq_len"],
-        label_type=dcfg.get("label_type", "broad"),
+        label_type="broad",  # Evaluation always uses original broad labels
         verbose=False
     )
     val_loader = DataLoader(val_ds, batch_size=64, shuffle=False)
