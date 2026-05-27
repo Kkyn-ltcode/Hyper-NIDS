@@ -123,13 +123,14 @@ def check_l1_labels(dataset, data_root):
     check_info(f"Neutralized subjects: {len(neutralized_subjects):,}")
 
     # 1d. Verify neutralized subjects are ALL from the entry process
-    subj_df = pd.read_parquet(data_root / "subjects.parquet",
-                              columns=["uuid", "process_path"])
+    subj_df = pd.read_parquet(data_root / "subjects.parquet")
     neut_basenames = set()
     for uuid in neutralized_subjects:
         row = subj_df[subj_df["uuid"] == uuid]
         if not row.empty:
-            path = row.iloc[0]["process_path"]
+            path = row.iloc[0].get("process_path", "")
+            if not path and "cmd_line" in row.columns:
+                path = row.iloc[0]["cmd_line"].split()[0] if str(row.iloc[0]["cmd_line"]).strip() else ""
             bn = str(path).rstrip("/").rsplit("/", 1)[-1].lower() if path else "<NONE>"
             neut_basenames.add(bn)
 
@@ -145,11 +146,12 @@ def check_l1_labels(dataset, data_root):
 
     # 1e. Critical: Are any neutralized basenames present as ATTACK in test?
     test_atk_basenames = set()
-    subj_df = pd.read_parquet(data_root / "subjects.parquet",
-                              columns=["uuid", "process_path"])
+    subj_df = pd.read_parquet(data_root / "subjects.parquet")
     uuid_to_bn = {}
     for _, row in subj_df.iterrows():
-        path = row["process_path"]
+        path = row.get("process_path", "")
+        if not path and "cmd_line" in row.keys():
+            path = str(row["cmd_line"]).split()[0] if str(row["cmd_line"]).strip() else ""
         bn = str(path).rstrip("/").rsplit("/", 1)[-1].lower() if path else ""
         uuid_to_bn[row["uuid"]] = bn
     del subj_df; gc.collect()
