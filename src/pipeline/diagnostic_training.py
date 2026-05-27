@@ -14,8 +14,8 @@ def parse_log(log_path):
         
     current_epoch = -1
     for line in lines:
-        # Match [Epoch X]
-        ep_match = re.search(r'\[Epoch (\d+)\]', line)
+        # Match "Epoch X/" or "Epoch X "
+        ep_match = re.search(r'Epoch (\d+)[/\s]', line)
         if ep_match:
             current_epoch = int(ep_match.group(1))
             if current_epoch not in epochs:
