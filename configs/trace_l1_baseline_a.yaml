@@ -6,7 +6,7 @@ model:
   d_model: 64
   d_hidden: 64
   n_layers: 2
-  dropout: 0.1
+  dropout: 0.3
 data:
   max_seq_len: 512
   stride: 256
@@ -33,3 +33,5 @@ training:
   log_every: 100
   accumulation_steps: 8
   warmup_epochs: 5
+  use_ema: true
+  label_smoothing: 0.05
