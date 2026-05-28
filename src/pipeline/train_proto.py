@@ -14,7 +14,9 @@ Usage:
 
 import argparse
 import logging
+import shutil
 import time
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -185,7 +187,11 @@ def main():
     else:
         device = torch.device("cpu")
 
-    save_dir = Path("checkpoints") / f"proto_{args.dataset}_{args.label_type}"
+    # Create a timestamped run directory (will be renamed with results at end)
+    state_tag = "state" if not args.no_state else "nostate"
+    run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_base = Path("checkpoints") / "proto_runs"
+    save_dir = run_base / f"{args.dataset}_{args.label_type}_{state_tag}_{run_ts}"
     save_dir.mkdir(parents=True, exist_ok=True)
 
     logging.basicConfig(
@@ -310,6 +316,9 @@ def main():
     logging.info(f"  Checkpoint: {save_dir / 'best.pt'}")
     logging.info(f"{'='*60}")
 
+    # Save training history
+    torch.save(history, save_dir / "history.pt")
+
     try:
         import matplotlib.pyplot as plt
         
@@ -355,6 +364,27 @@ def main():
         logging.info(f"Loss plot saved to {plot_path}")
     except ImportError:
         logging.warning("matplotlib is not installed. Skipping loss plot generation.")
+
+    # Rename folder with results
+    best_f1 = max(history['val_f1']) if history['val_f1'] else 0.0
+    actual_epochs = len(history['train_loss'])
+    final_name = (
+        f"{args.dataset}_{args.label_type}_{state_tag}"
+        f"_auprc{best_auprc:.4f}_f1{best_f1:.4f}"
+        f"_chunk{args.chunk_size}_ep{actual_epochs}"
+    )
+    final_dir = run_base / final_name
+    if final_dir.exists():
+        # Append timestamp to avoid collision
+        final_dir = run_base / f"{final_name}_{run_ts}"
+    try:
+        save_dir.rename(final_dir)
+        logging.info(f"  Run saved to: {final_dir}")
+    except OSError:
+        # Fallback: if rename fails (cross-device), copy instead
+        shutil.copytree(save_dir, final_dir)
+        shutil.rmtree(save_dir)
+        logging.info(f"  Run saved to: {final_dir}")
 
 
 if __name__ == "__main__":
