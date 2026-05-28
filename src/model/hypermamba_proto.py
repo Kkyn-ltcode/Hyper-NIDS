@@ -90,14 +90,17 @@ class HyperMambaProto(nn.Module):
         zero_state = torch.zeros(self.d_model, device=X_cont.device)
 
         # Sequential state propagation
+        active_states = {}
+        
         for i in range(chunk_size):
-            ids = entity_ids[i]  # (3,)
-            valid_mask = ids >= 0
-            valid_ids = ids[valid_mask]
-
+            ids = entity_ids[i].tolist()  # (3,)
+            valid_ids = [idx for idx in ids if idx >= 0]
+            
             # 1. GATHER: fetch current states for participating entities
-            if valid_ids.numel() > 0:
-                states = self.bank[valid_ids]       # (num_valid, d_model)
+            if valid_ids:
+                # Fetch from active_states dict (which has gradients) or fallback to global bank (detached)
+                states_list = [active_states.get(idx, self.bank[idx]) for idx in valid_ids]
+                states = torch.stack(states_list)   # (num_valid, d_model)
                 agg_state = states.mean(dim=0)      # (d_model,)
             else:
                 states = None
@@ -110,7 +113,7 @@ class HyperMambaProto(nn.Module):
             logits[i] = self.classifier(x_event).squeeze(-1)
 
             # 4. PROPAGATE: gated state update for each participating entity
-            if valid_ids.numel() > 0:
+            if valid_ids:
                 update = self.update_mlp(x_event)          # (d_model,)
                 g = torch.sigmoid(self.gate(x_event))      # (d_model,)
 
@@ -120,7 +123,12 @@ class HyperMambaProto(nn.Module):
                     g.unsqueeze(0) * update.unsqueeze(0)
                 )  # (num_valid, d_model)
 
-                # Write back (in-place on detached bank — no autograd issue)
-                self.bank[valid_ids] = new_states
+                # Write to active_states dictionary (maintains computation graph, no 1.7GB memory copy!)
+                for j, idx in enumerate(valid_ids):
+                    active_states[idx] = new_states[j]
+
+        # End of chunk: Write detached states back to global bank
+        for idx, state in active_states.items():
+            self.bank[idx] = state.detach()
 
         return logits.unsqueeze(0)  # (1, chunk_size)
