@@ -167,6 +167,10 @@ def main():
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--max_pos_weight", type=float, default=30.0,
                         help="Cap pos_weight to prevent gradient explosion")
+    parser.add_argument("--no_state", action="store_true",
+                        help="Ablation: disable cross-entity state propagation")
+    parser.add_argument("--bank_decay", type=float, default=0.95,
+                        help="Decay factor applied to bank after each chunk")
     parser.add_argument("--device", default=None)
     args = parser.parse_args()
 
@@ -180,6 +184,9 @@ def main():
     data_root = DATA_ROOT / args.dataset
     shards = SHARD_CONFIG[args.dataset]
 
+    use_state = not args.no_state
+    state_label = "WITH state propagation" if use_state else "WITHOUT state (ablation)"
+
     print("=" * 60)
     print(f"  HYPERMAMBA PROTOTYPE — {args.dataset.upper()}")
     print("=" * 60)
@@ -187,6 +194,8 @@ def main():
     print(f"  Label type:  {args.label_type}")
     print(f"  Chunk size:  {args.chunk_size}")
     print(f"  d_model:     {args.d_model}")
+    print(f"  State:       {state_label}")
+    print(f"  Bank decay:  {args.bank_decay}")
     print(f"  Train shards: {shards['train']}")
     print(f"  Val shards:   {shards['val']}")
 
@@ -213,6 +222,8 @@ def main():
         n_cont_features=train_ds.n_cont_features,
         num_event_types=train_ds.num_event_types,
         d_model=args.d_model,
+        use_state=use_state,
+        bank_decay=args.bank_decay,
     ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters())
