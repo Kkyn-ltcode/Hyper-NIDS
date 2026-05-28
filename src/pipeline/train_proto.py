@@ -67,6 +67,8 @@ def train_epoch(model, loader, optimizer, device, pos_weight, grad_clip=1.0):
     t0 = time.time()
     events_processed = 0
 
+    chunk_losses = []
+
     pw_t = torch.tensor([pos_weight], device=device)
 
     for i, batch in enumerate(loader):
@@ -109,6 +111,7 @@ def train_epoch(model, loader, optimizer, device, pos_weight, grad_clip=1.0):
         model.detach_bank()
 
         total_loss += loss.item()
+        chunk_losses.append(loss.item())
         n_chunks += 1
         events_processed += X_c.size(1)
 
@@ -129,7 +132,7 @@ def train_epoch(model, loader, optimizer, device, pos_weight, grad_clip=1.0):
     logging.info(f"    Epoch done: {events_processed:,} events in {elapsed:.1f}s "
           f"({throughput:.0f} events/s)")
 
-    return avg_loss
+    return avg_loss, chunk_losses
 
 
 @torch.no_grad()
@@ -258,17 +261,29 @@ def main():
     patience = 5
     no_improve = 0
 
+    history = {
+        'train_loss': [],
+        'val_auprc': [],
+        'val_f1': [],
+        'chunk_loss': []
+    }
+
     logging.info(f"\nStarting training ({args.epochs} epochs)...")
 
     for epoch in range(1, args.epochs + 1):
         logging.info(f"\n--- Epoch {epoch}/{args.epochs} ---")
 
-        train_loss = train_epoch(
+        train_loss, epoch_chunk_losses = train_epoch(
             model, train_loader, optimizer, device, pos_weight)
 
         val_metrics = evaluate(model, val_loader, device)
         auprc = val_metrics["auprc"]
         f1 = val_metrics["best_f1"]
+
+        history['train_loss'].append(train_loss)
+        history['chunk_loss'].extend(epoch_chunk_losses)
+        history['val_auprc'].append(auprc)
+        history['val_f1'].append(f1)
 
         logging.info(f"  Train Loss: {train_loss:.4f}")
         logging.info(f"  Val AUPRC:  {auprc:.4f}  |  Val F1: {f1:.4f}")
@@ -294,6 +309,52 @@ def main():
     logging.info(f"  DONE — Best AUPRC: {best_auprc:.4f} (epoch {best_epoch})")
     logging.info(f"  Checkpoint: {save_dir / 'best.pt'}")
     logging.info(f"{'='*60}")
+
+    try:
+        import matplotlib.pyplot as plt
+        
+        plt.figure(figsize=(12, 10))
+        
+        # Plot chunk losses
+        plt.subplot(3, 1, 1)
+        plt.plot(history['chunk_loss'], alpha=0.6, label='Chunk Loss')
+        plt.xlabel('Chunk')
+        plt.ylabel('Loss')
+        plt.title('Training Loss per Chunk')
+        plt.legend()
+        plt.grid(True)
+        
+        # Plot epoch losses
+        plt.subplot(3, 1, 2)
+        epochs_range = range(1, len(history['train_loss']) + 1)
+        plt.plot(epochs_range, history['train_loss'], marker='o', color='red', label='Train Loss')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.title('Training Loss per Epoch')
+        if epochs_range:
+            plt.xticks(epochs_range)
+        plt.legend()
+        plt.grid(True)
+        
+        # Plot validation metrics
+        plt.subplot(3, 1, 3)
+        val_epochs_range = range(1, len(history['val_auprc']) + 1)
+        plt.plot(val_epochs_range, history['val_auprc'], marker='s', color='green', label='Val AUPRC')
+        plt.plot(val_epochs_range, history['val_f1'], marker='^', color='purple', label='Val F1')
+        plt.xlabel('Epoch')
+        plt.ylabel('Score')
+        plt.title('Validation Metrics')
+        if val_epochs_range:
+            plt.xticks(val_epochs_range)
+        plt.legend()
+        plt.grid(True)
+        
+        plt.tight_layout()
+        plot_path = save_dir / "loss_plot.png"
+        plt.savefig(plot_path)
+        logging.info(f"Loss plot saved to {plot_path}")
+    except ImportError:
+        logging.warning("matplotlib is not installed. Skipping loss plot generation.")
 
 
 if __name__ == "__main__":
