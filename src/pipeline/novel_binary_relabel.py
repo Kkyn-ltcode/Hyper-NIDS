@@ -147,13 +147,13 @@ def main():
         shard_path = labeled_dir / f"labeled_shard{sid}.parquet"
         df = pd.read_parquet(shard_path)
 
-        is_train = sid in train_shards
+        is_test = sid in test_shards
 
         # Start from broad labels
         l1_labels = df["label_broad"].copy()
 
-        if is_train:
-            # In training: neutralize events from entry process
+        if not is_test:
+            # In training and validation: neutralize events from entry process
             is_entry = df["subject_uuid"].isin(entry_uuids)
             is_attack = l1_labels == 1
             neutralize_mask = is_entry & is_attack
@@ -167,9 +167,9 @@ def main():
             stats["remaining_attack"] += int((l1_labels == 1).sum())
 
             n_atk = int((l1_labels == 1).sum())
-            tag = "TRAIN"
+            tag = "TR/VL"
         else:
-            # Test/val: keep original broad labels
+            # Test: keep original broad labels
             n_atk = int((l1_labels == 1).sum())
             n_neutralized = 0
             tag = "TEST "

@@ -190,6 +190,8 @@ def main():
         description="Train HyperMamba Prototype (Cross-Entity State Propagation)")
     parser.add_argument("--dataset", default="theia", choices=["theia", "trace"])
     parser.add_argument("--label_type", default="l1", choices=["broad", "l1"])
+    parser.add_argument("--val_label_type", default="broad", choices=["broad", "l1"],
+                        help="Label type to use for validation set")
     parser.add_argument("--chunk_size", type=int, default=4096)
     parser.add_argument("--d_model", type=int, default=128)
     parser.add_argument("--epochs", type=int, default=5)
@@ -250,17 +252,17 @@ def main():
         shards["train"], data_root,
         chunk_size=args.chunk_size, label_type=args.label_type)
 
-    # Always evaluate on broad labels (even when training on L1*)
-    eval_label = "broad" if args.label_type == "l1" else args.label_type
-    logging.info(f"\nLoading validation data (labels={eval_label})...")
+    # Validation can use either label type based on args
+    print(f"\nLoading validation data (labels={args.val_label_type})...")
     val_ds = ChronoDataset(
         shards["val"], data_root,
-        chunk_size=args.chunk_size, label_type=eval_label)
+        chunk_size=args.chunk_size, label_type=args.val_label_type)
 
-    logging.info(f"\nLoading test data (labels={eval_label})...")
+    # Test ALWAYS uses broad labels
+    print(f"\nLoading test data (labels=broad)...")
     test_ds = ChronoDataset(
         shards["test"], data_root,
-        chunk_size=args.chunk_size, label_type=eval_label)
+        chunk_size=args.chunk_size, label_type="broad")
 
     # Strict chronological: batch_size=1, shuffle=False, num_workers=0
     train_loader = DataLoader(train_ds, batch_size=1, shuffle=False, num_workers=0)
