@@ -147,7 +147,9 @@ def train_epoch(model, loader, optimizer, device, pos_weight, grad_clip=1.0):
 @torch.no_grad()
 def evaluate(model, loader, device, pos_weight):
     model.eval()
-    model.reset_bank()
+    # DO NOT reset the bank here! We want to carry the warm states
+    # from the end of the training shards into the validation shards.
+    # model.reset_bank()
 
     all_logits = []
     all_labels = []
@@ -196,7 +198,7 @@ def main():
                         help="Cap pos_weight to prevent gradient explosion")
     parser.add_argument("--no_state", action="store_true",
                         help="Ablation: disable cross-entity state propagation")
-    parser.add_argument("--bank_decay", type=float, default=0.95,
+    parser.add_argument("--bank_decay", type=float, default=0.999,
                         help="Decay factor applied to bank after each chunk")
     parser.add_argument("--device", default=None)
     args = parser.parse_args()
