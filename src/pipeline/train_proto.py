@@ -145,20 +145,32 @@ def train_epoch(model, loader, optimizer, device, pos_weight, grad_clip=1.0):
 
 
 @torch.no_grad()
-def evaluate(model, loader, device):
+def evaluate(model, loader, device, pos_weight):
     model.eval()
     model.reset_bank()
 
     all_logits = []
     all_labels = []
+    total_loss = 0.0
+    n_chunks = 0
+    
+    pw_t = torch.tensor([pos_weight], device=device)
 
     for batch in loader:
         X_c = batch["X_cont"].to(device).clamp(-20, 20)
         et = batch["event_type"].to(device)
-        y = batch["y"].to(device)
+        y = batch["y"].to(device).float()
         ent = batch["entity_ids"].to(device)
 
         logits = model(X_c, et, ent)
+        
+        logits_clamp = logits.clamp(-50, 50)
+        loss = nn.functional.binary_cross_entropy_with_logits(
+            logits_clamp, y, pos_weight=pw_t)
+            
+        if not (torch.isnan(loss) or torch.isinf(loss)):
+            total_loss += loss.item()
+            n_chunks += 1
 
         # Detach bank during eval too
         model.detach_bank()
@@ -166,7 +178,9 @@ def evaluate(model, loader, device):
         all_logits.extend(logits.squeeze(0).cpu().tolist())
         all_labels.extend(y.squeeze(0).cpu().tolist())
 
-    return compute_metrics(all_logits, all_labels)
+    metrics = compute_metrics(all_logits, all_labels)
+    metrics["loss"] = total_loss / max(n_chunks, 1)
+    return metrics
 
 
 def main():
@@ -276,6 +290,7 @@ def main():
 
     history = {
         'train_loss': [],
+        'val_loss': [],
         'train_auprc': [],
         'train_f1': [],
         'val_auprc': [],
@@ -291,20 +306,22 @@ def main():
         train_loss, epoch_chunk_losses, train_metrics = train_epoch(
             model, train_loader, optimizer, device, pos_weight)
 
-        val_metrics = evaluate(model, val_loader, device)
+        val_metrics = evaluate(model, val_loader, device, pos_weight)
+        val_loss = val_metrics["loss"]
         auprc = val_metrics["auprc"]
         f1 = val_metrics["best_f1"]
         t_auprc = train_metrics["auprc"]
         t_f1 = train_metrics["best_f1"]
 
         history['train_loss'].append(train_loss)
+        history['val_loss'].append(val_loss)
         history['chunk_loss'].extend(epoch_chunk_losses)
         history['train_auprc'].append(t_auprc)
         history['train_f1'].append(t_f1)
         history['val_auprc'].append(auprc)
         history['val_f1'].append(f1)
 
-        logging.info(f"  Train Loss:  {train_loss:.4f}")
+        logging.info(f"  Train Loss:  {train_loss:.4f}  |  Val Loss:   {val_loss:.4f}")
         logging.info(f"  Train AUPRC: {t_auprc:.4f}  |  Train F1: {t_f1:.4f}")
         logging.info(f"  Val AUPRC:   {auprc:.4f}  |  Val F1:   {f1:.4f}")
 
@@ -336,11 +353,11 @@ def main():
     try:
         import matplotlib.pyplot as plt
         
-        plt.figure(figsize=(14, 12))
+        plt.figure(figsize=(14, 10))
         ep_range = range(1, len(history['train_loss']) + 1)
         
         # Plot 1: Chunk losses
-        plt.subplot(3, 1, 1)
+        plt.subplot(2, 2, 1)
         plt.plot(history['chunk_loss'], alpha=0.5, linewidth=0.5, label='Chunk Loss')
         # Add epoch boundaries as vertical lines
         chunks_per_epoch = len(history['chunk_loss']) // max(len(history['train_loss']), 1)
@@ -351,9 +368,20 @@ def main():
         plt.title('Training Loss per Chunk')
         plt.legend()
         plt.grid(True, alpha=0.3)
+
+        # Plot 2: Train vs Val Epoch Loss
+        plt.subplot(2, 2, 2)
+        plt.plot(ep_range, history['train_loss'], marker='o', color='blue', label='Train Loss')
+        plt.plot(ep_range, history['val_loss'], marker='s', color='red', label='Val Loss')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.title('Loss: Train vs Validation')
+        plt.xticks(ep_range)
+        plt.legend()
+        plt.grid(True, alpha=0.3)
         
-        # Plot 2: Train vs Val AUPRC
-        plt.subplot(3, 1, 2)
+        # Plot 3: Train vs Val AUPRC
+        plt.subplot(2, 2, 3)
         plt.plot(ep_range, history['train_auprc'], marker='o', color='blue', label='Train AUPRC')
         plt.plot(ep_range, history['val_auprc'], marker='s', color='green', label='Val AUPRC')
         plt.xlabel('Epoch')
@@ -363,8 +391,8 @@ def main():
         plt.legend()
         plt.grid(True, alpha=0.3)
         
-        # Plot 3: Train vs Val F1
-        plt.subplot(3, 1, 3)
+        # Plot 4: Train vs Val F1
+        plt.subplot(2, 2, 4)
         plt.plot(ep_range, history['train_f1'], marker='o', color='blue', label='Train F1')
         plt.plot(ep_range, history['val_f1'], marker='s', color='green', label='Val F1')
         plt.xlabel('Epoch')
