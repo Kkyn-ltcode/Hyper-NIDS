@@ -257,9 +257,15 @@ def main():
         shards["val"], data_root,
         chunk_size=args.chunk_size, label_type=eval_label)
 
+    logging.info(f"\nLoading test data (labels={eval_label})...")
+    test_ds = ChronoDataset(
+        shards["test"], data_root,
+        chunk_size=args.chunk_size, label_type=eval_label)
+
     # Strict chronological: batch_size=1, shuffle=False, num_workers=0
     train_loader = DataLoader(train_ds, batch_size=1, shuffle=False, num_workers=0)
     val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=0)
+    test_loader = DataLoader(test_ds, batch_size=1, shuffle=False, num_workers=0)
 
     # --- Model ---
     model = HyperMambaProto(
@@ -349,6 +355,24 @@ def main():
     logging.info(f"  Checkpoint: {save_dir / 'best.pt'}")
     logging.info(f"{'='*60}")
 
+    logging.info("\nEvaluating on Test Set with best model...")
+    checkpoint = torch.load(save_dir / 'best.pt')
+    model.load_state_dict(checkpoint["model_state"])
+    
+    test_metrics = evaluate(model, test_loader, device, pos_weight)
+    test_loss = test_metrics["loss"]
+    test_auprc = test_metrics["auprc"]
+    test_f1 = test_metrics["best_f1"]
+    
+    logging.info(f"  Test Loss:  {test_loss:.4f}")
+    logging.info(f"  Test AUPRC: {test_auprc:.4f}")
+    logging.info(f"  Test F1:    {test_f1:.4f}")
+    logging.info(f"{'='*60}")
+
+    history["test_loss"] = test_loss
+    history["test_auprc"] = test_auprc
+    history["test_f1"] = test_f1
+
     # Save training history
     torch.save(history, save_dir / "history.pt")
 
@@ -375,6 +399,8 @@ def main():
         plt.subplot(2, 2, 2)
         plt.plot(ep_range, history['train_loss'], marker='o', color='blue', label='Train Loss')
         plt.plot(ep_range, history['val_loss'], marker='s', color='red', label='Val Loss')
+        if 'test_loss' in history:
+            plt.plot(best_epoch, history['test_loss'], marker='*', markersize=15, color='darkred', label='Test Loss (Best Epoch)')
         plt.xlabel('Epoch')
         plt.ylabel('Loss')
         plt.title('Loss: Train vs Validation')
@@ -386,6 +412,8 @@ def main():
         plt.subplot(2, 2, 3)
         plt.plot(ep_range, history['train_auprc'], marker='o', color='blue', label='Train AUPRC')
         plt.plot(ep_range, history['val_auprc'], marker='s', color='green', label='Val AUPRC')
+        if 'test_auprc' in history:
+            plt.plot(best_epoch, history['test_auprc'], marker='*', markersize=15, color='darkgreen', label='Test AUPRC (Best Epoch)')
         plt.xlabel('Epoch')
         plt.ylabel('AUPRC')
         plt.title('AUPRC: Train vs Validation')
@@ -397,6 +425,8 @@ def main():
         plt.subplot(2, 2, 4)
         plt.plot(ep_range, history['train_f1'], marker='o', color='blue', label='Train F1')
         plt.plot(ep_range, history['val_f1'], marker='s', color='green', label='Val F1')
+        if 'test_f1' in history:
+            plt.plot(best_epoch, history['test_f1'], marker='*', markersize=15, color='darkgreen', label='Test F1 (Best Epoch)')
         plt.xlabel('Epoch')
         plt.ylabel('F1')
         plt.title('F1: Train vs Validation')
