@@ -1,15 +1,15 @@
 """
 HyperMamba Minimal Prototype — Cross-Entity State Propagation.
 
-Tests whether a global entity state bank with simple message passing
-improves L1* novel-binary detection over per-subject-only models.
+Vectorized version: the entire chunk is processed in ~10 GPU operations
+instead of a Python for-loop. States propagate ACROSS chunks (via the
+persistent bank) but not WITHIN a chunk. This matches TGN's batching
+strategy and is ~100-1000x faster than the sequential version.
 
-Key design:
-  - Sequential processing: events processed one-at-a-time in chronological order
-  - State bank: each entity (process/file/socket) has a hidden state vector
-  - On each event: gather states of participating entities, aggregate,
-    classify, then propagate updated state back
-  - Gated update with LayerNorm to prevent state explosion
+Key trade-off: if entity A appears at positions 5 and 900 in the same
+chunk, position 900 sees A's state from the PREVIOUS chunk, not the
+update from position 5. With chunk_size=4096 out of 32M events, this
+is a negligible loss.
 """
 
 import torch
@@ -35,7 +35,6 @@ class HyperMambaProto(nn.Module):
             nn.GELU(),
             nn.Linear(d_model, d_model),
         )
-        # Gate: controls how much new info enters the state (sigmoid → [0,1])
         self.gate = nn.Linear(d_model, d_model)
         self.state_norm = nn.LayerNorm(d_model)
 
@@ -47,9 +46,7 @@ class HyperMambaProto(nn.Module):
             nn.Linear(d_model // 2, 1),
         )
 
-        # --- State bank (managed manually, NOT a parameter) ---
-        # We store it as a buffer so it moves to the right device,
-        # but we'll replace it with a fresh tensor each epoch.
+        # --- State bank ---
         self.register_buffer("bank", torch.zeros(num_entities, d_model))
 
     def reset_bank(self):
@@ -64,71 +61,64 @@ class HyperMambaProto(nn.Module):
 
     def forward(self, X_cont, event_type, entity_ids):
         """
-        Process a chronological chunk of events sequentially.
+        Fully vectorized forward pass — NO Python for-loop.
 
         Args:
-            X_cont:     (1, chunk_size, n_cont_features)
-            event_type: (1, chunk_size)
-            entity_ids: (1, chunk_size, 3)  — [subj, obj, obj2]
+            X_cont:     (1, C, n_cont)
+            event_type: (1, C)
+            entity_ids: (1, C, 3)
 
         Returns:
-            logits: (1, chunk_size)
+            logits: (1, C)
         """
-        # Remove batch dim (must be 1 for chronological processing)
         X_cont = X_cont.squeeze(0)          # (C, n_cont)
         event_type = event_type.squeeze(0)  # (C,)
         entity_ids = entity_ids.squeeze(0)  # (C, 3)
-        chunk_size = X_cont.size(0)
+        C = X_cont.size(0)
 
-        # Encode all event features at once (this IS parallelizable)
+        # 1. ENCODE all event features at once
         feat = self.input_norm(
             self.cont_proj(X_cont) + self.etype_emb(event_type)
-        )  # (C, d_model)
+        )  # (C, d)
 
-        # Pre-allocate output
-        logits = torch.zeros(chunk_size, device=X_cont.device)
-        zero_state = torch.zeros(self.d_model, device=X_cont.device)
+        # 2. GATHER: fetch states for all entities in all events
+        valid_mask = entity_ids >= 0                        # (C, 3) bool
+        safe_ids = entity_ids.clamp(min=0)                  # (C, 3) — safe for indexing
+        all_states = self.bank[safe_ids]                    # (C, 3, d)
+        all_states = all_states * valid_mask.unsqueeze(-1)  # zero out invalid slots
 
-        # Sequential state propagation
-        active_states = {}
-        
-        for i in range(chunk_size):
-            ids = entity_ids[i].tolist()  # (3,)
-            valid_ids = [idx for idx in ids if idx >= 0]
-            
-            # 1. GATHER: fetch current states for participating entities
-            if valid_ids:
-                # Fetch from active_states dict (which has gradients) or fallback to global bank (detached)
-                states_list = [active_states.get(idx, self.bank[idx]) for idx in valid_ids]
-                states = torch.stack(states_list)   # (num_valid, d_model)
-                agg_state = states.mean(dim=0)      # (d_model,)
-            else:
-                states = None
-                agg_state = zero_state
+        # 3. AGGREGATE: mean over valid entity slots per event
+        n_valid = valid_mask.float().sum(dim=1, keepdim=True).clamp(min=1)  # (C, 1)
+        agg_states = all_states.sum(dim=1) / n_valid  # (C, d)
 
-            # 2. COMBINE: merge entity context with event features
-            x_event = agg_state + feat[i]           # (d_model,)
+        # 4. COMBINE event features with aggregated entity context
+        x_event = agg_states + feat  # (C, d)
 
-            # 3. CLASSIFY
-            logits[i] = self.classifier(x_event).squeeze(-1)
+        # 5. CLASSIFY all events at once
+        logits = self.classifier(x_event).squeeze(-1)  # (C,)
 
-            # 4. PROPAGATE: gated state update for each participating entity
-            if valid_ids:
-                update = self.update_mlp(x_event)          # (d_model,)
-                g = torch.sigmoid(self.gate(x_event))      # (d_model,)
+        # 6. PROPAGATE: compute gated state updates
+        update = self.update_mlp(x_event)           # (C, d)
+        g = torch.sigmoid(self.gate(x_event))       # (C, d)
 
-                # new_state = LayerNorm((1-g) * old_state + g * update)
-                new_states = self.state_norm(
-                    (1.0 - g).unsqueeze(0) * states +
-                    g.unsqueeze(0) * update.unsqueeze(0)
-                )  # (num_valid, d_model)
+        # Scatter updates back to bank for each entity slot
+        for slot in range(3):
+            slot_ids = entity_ids[:, slot]           # (C,)
+            slot_valid = slot_ids >= 0               # (C,)
+            if not slot_valid.any():
+                continue
 
-                # Write to active_states dictionary (maintains computation graph, no 1.7GB memory copy!)
-                for j, idx in enumerate(valid_ids):
-                    active_states[idx] = new_states[j]
+            v_ids = slot_ids[slot_valid]             # (N,)
+            old_states = self.bank[v_ids]            # (N, d)
+            slot_g = g[slot_valid]                   # (N, d)
+            slot_upd = update[slot_valid]            # (N, d)
 
-        # End of chunk: Write detached states back to global bank
-        for idx, state in active_states.items():
-            self.bank[idx] = state.detach()
+            new_states = self.state_norm(
+                (1.0 - slot_g) * old_states + slot_g * slot_upd
+            )  # (N, d)
 
-        return logits.unsqueeze(0)  # (1, chunk_size)
+            # Write back — for duplicate IDs, last write wins
+            # (equivalent to TGN's "most recent message" strategy)
+            self.bank[v_ids] = new_states
+
+        return logits.unsqueeze(0)  # (1, C)

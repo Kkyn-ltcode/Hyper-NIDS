@@ -161,7 +161,7 @@ def main():
         description="Train HyperMamba Prototype (Cross-Entity State Propagation)")
     parser.add_argument("--dataset", default="theia", choices=["theia", "trace"])
     parser.add_argument("--label_type", default="l1", choices=["broad", "l1"])
-    parser.add_argument("--chunk_size", type=int, default=1024)
+    parser.add_argument("--chunk_size", type=int, default=4096)
     parser.add_argument("--d_model", type=int, default=128)
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--lr", type=float, default=5e-4)
