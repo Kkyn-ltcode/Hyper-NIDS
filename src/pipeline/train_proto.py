@@ -70,6 +70,8 @@ def train_epoch(model, loader, optimizer, device, pos_weight, grad_clip=1.0):
     events_processed = 0
 
     chunk_losses = []
+    all_train_logits = []
+    all_train_labels = []
 
     pw_t = torch.tensor([pos_weight], device=device)
 
@@ -92,6 +94,10 @@ def train_epoch(model, loader, optimizer, device, pos_weight, grad_clip=1.0):
             nan_chunks += 1
             model.detach_bank()
             continue
+
+        # Collect train predictions (detached, no grad impact)
+        all_train_logits.extend(logits.detach().squeeze(0).cpu().tolist())
+        all_train_labels.extend(y.squeeze(0).cpu().tolist())
 
         loss.backward()
 
@@ -134,7 +140,8 @@ def train_epoch(model, loader, optimizer, device, pos_weight, grad_clip=1.0):
     logging.info(f"    Epoch done: {events_processed:,} events in {elapsed:.1f}s "
           f"({throughput:.0f} events/s)")
 
-    return avg_loss, chunk_losses
+    train_metrics = compute_metrics(all_train_logits, all_train_labels)
+    return avg_loss, chunk_losses, train_metrics
 
 
 @torch.no_grad()
@@ -269,6 +276,8 @@ def main():
 
     history = {
         'train_loss': [],
+        'train_auprc': [],
+        'train_f1': [],
         'val_auprc': [],
         'val_f1': [],
         'chunk_loss': []
@@ -279,20 +288,25 @@ def main():
     for epoch in range(1, args.epochs + 1):
         logging.info(f"\n--- Epoch {epoch}/{args.epochs} ---")
 
-        train_loss, epoch_chunk_losses = train_epoch(
+        train_loss, epoch_chunk_losses, train_metrics = train_epoch(
             model, train_loader, optimizer, device, pos_weight)
 
         val_metrics = evaluate(model, val_loader, device)
         auprc = val_metrics["auprc"]
         f1 = val_metrics["best_f1"]
+        t_auprc = train_metrics["auprc"]
+        t_f1 = train_metrics["best_f1"]
 
         history['train_loss'].append(train_loss)
         history['chunk_loss'].extend(epoch_chunk_losses)
+        history['train_auprc'].append(t_auprc)
+        history['train_f1'].append(t_f1)
         history['val_auprc'].append(auprc)
         history['val_f1'].append(f1)
 
-        logging.info(f"  Train Loss: {train_loss:.4f}")
-        logging.info(f"  Val AUPRC:  {auprc:.4f}  |  Val F1: {f1:.4f}")
+        logging.info(f"  Train Loss:  {train_loss:.4f}")
+        logging.info(f"  Train AUPRC: {t_auprc:.4f}  |  Train F1: {t_f1:.4f}")
+        logging.info(f"  Val AUPRC:   {auprc:.4f}  |  Val F1:   {f1:.4f}")
 
         if auprc > best_auprc:
             best_auprc = auprc
@@ -322,46 +336,49 @@ def main():
     try:
         import matplotlib.pyplot as plt
         
-        plt.figure(figsize=(12, 10))
+        plt.figure(figsize=(14, 12))
+        ep_range = range(1, len(history['train_loss']) + 1)
         
-        # Plot chunk losses
+        # Plot 1: Chunk losses
         plt.subplot(3, 1, 1)
-        plt.plot(history['chunk_loss'], alpha=0.6, label='Chunk Loss')
+        plt.plot(history['chunk_loss'], alpha=0.5, linewidth=0.5, label='Chunk Loss')
+        # Add epoch boundaries as vertical lines
+        chunks_per_epoch = len(history['chunk_loss']) // max(len(history['train_loss']), 1)
+        for e in range(1, len(history['train_loss'])):
+            plt.axvline(x=e * chunks_per_epoch, color='gray', linestyle='--', alpha=0.3)
         plt.xlabel('Chunk')
         plt.ylabel('Loss')
         plt.title('Training Loss per Chunk')
         plt.legend()
-        plt.grid(True)
+        plt.grid(True, alpha=0.3)
         
-        # Plot epoch losses
+        # Plot 2: Train vs Val AUPRC
         plt.subplot(3, 1, 2)
-        epochs_range = range(1, len(history['train_loss']) + 1)
-        plt.plot(epochs_range, history['train_loss'], marker='o', color='red', label='Train Loss')
+        plt.plot(ep_range, history['train_auprc'], marker='o', color='blue', label='Train AUPRC')
+        plt.plot(ep_range, history['val_auprc'], marker='s', color='green', label='Val AUPRC')
         plt.xlabel('Epoch')
-        plt.ylabel('Loss')
-        plt.title('Training Loss per Epoch')
-        if epochs_range:
-            plt.xticks(epochs_range)
+        plt.ylabel('AUPRC')
+        plt.title('AUPRC: Train vs Validation')
+        plt.xticks(ep_range)
         plt.legend()
-        plt.grid(True)
+        plt.grid(True, alpha=0.3)
         
-        # Plot validation metrics
+        # Plot 3: Train vs Val F1
         plt.subplot(3, 1, 3)
-        val_epochs_range = range(1, len(history['val_auprc']) + 1)
-        plt.plot(val_epochs_range, history['val_auprc'], marker='s', color='green', label='Val AUPRC')
-        plt.plot(val_epochs_range, history['val_f1'], marker='^', color='purple', label='Val F1')
+        plt.plot(ep_range, history['train_f1'], marker='o', color='blue', label='Train F1')
+        plt.plot(ep_range, history['val_f1'], marker='s', color='green', label='Val F1')
         plt.xlabel('Epoch')
-        plt.ylabel('Score')
-        plt.title('Validation Metrics')
-        if val_epochs_range:
-            plt.xticks(val_epochs_range)
+        plt.ylabel('F1')
+        plt.title('F1: Train vs Validation')
+        plt.xticks(ep_range)
         plt.legend()
-        plt.grid(True)
+        plt.grid(True, alpha=0.3)
         
         plt.tight_layout()
-        plot_path = save_dir / "loss_plot.png"
-        plt.savefig(plot_path)
-        logging.info(f"Loss plot saved to {plot_path}")
+        plot_path = save_dir / "training_curves.png"
+        plt.savefig(plot_path, dpi=150)
+        plt.close()
+        logging.info(f"Training curves saved to {plot_path}")
     except ImportError:
         logging.warning("matplotlib is not installed. Skipping loss plot generation.")
 
