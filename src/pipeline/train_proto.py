@@ -145,7 +145,7 @@ def train_epoch(model, loader, optimizer, device, pos_weight, grad_clip=1.0):
 
 
 @torch.no_grad()
-def evaluate(model, loader, device, pos_weight):
+def evaluate(model, loader, device, pos_weight=1.0):
     model.eval()
     # DO NOT reset the bank here! We want to carry the warm states
     # from the end of the training shards into the validation shards.
@@ -316,7 +316,7 @@ def main():
         train_loss, epoch_chunk_losses, train_metrics = train_epoch(
             model, train_loader, optimizer, device, pos_weight)
 
-        val_metrics = evaluate(model, val_loader, device, pos_weight)
+        val_metrics = evaluate(model, val_loader, device, pos_weight=1.0)
         val_loss = val_metrics["loss"]
         auprc = val_metrics["auprc"]
         f1 = val_metrics["best_f1"]
@@ -361,7 +361,7 @@ def main():
     checkpoint = torch.load(save_dir / 'best.pt')
     model.load_state_dict(checkpoint["model_state"])
     
-    test_metrics = evaluate(model, test_loader, device, pos_weight)
+    test_metrics = evaluate(model, test_loader, device, pos_weight=1.0)
     test_loss = test_metrics["loss"]
     test_auprc = test_metrics["auprc"]
     test_f1 = test_metrics["best_f1"]
