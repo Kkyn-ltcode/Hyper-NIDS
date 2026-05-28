@@ -1,88 +1,126 @@
+"""
+HyperMamba Minimal Prototype — Cross-Entity State Propagation.
+
+Tests whether a global entity state bank with simple message passing
+improves L1* novel-binary detection over per-subject-only models.
+
+Key design:
+  - Sequential processing: events processed one-at-a-time in chronological order
+  - State bank: each entity (process/file/socket) has a hidden state vector
+  - On each event: gather states of participating entities, aggregate,
+    classify, then propagate updated state back
+  - Gated update with LayerNorm to prevent state explosion
+"""
+
 import torch
 import torch.nn as nn
 
+
 class HyperMambaProto(nn.Module):
-    """
-    Minimal prototype to test cross-entity state propagation.
-    Uses sequential for-loop to update states chronologically.
-    """
-    def __init__(self, num_entities, n_cont_features, num_event_types, d_model=128):
+
+    def __init__(self, num_entities, n_cont_features, num_event_types,
+                 d_model=128, dropout=0.1):
         super().__init__()
         self.d_model = d_model
-        
+        self.num_entities = num_entities
+
+        # --- Input encoding ---
         self.etype_emb = nn.Embedding(num_event_types, d_model, padding_idx=0)
         self.cont_proj = nn.Linear(n_cont_features, d_model)
-        
-        # Simple update rule
-        self.update_proj = nn.Sequential(
+        self.input_norm = nn.LayerNorm(d_model)
+
+        # --- State update (gated residual) ---
+        self.update_mlp = nn.Sequential(
             nn.Linear(d_model, d_model),
             nn.GELU(),
-            nn.Linear(d_model, d_model)
+            nn.Linear(d_model, d_model),
         )
-        
-        # Classifier
+        # Gate: controls how much new info enters the state (sigmoid → [0,1])
+        self.gate = nn.Linear(d_model, d_model)
+        self.state_norm = nn.LayerNorm(d_model)
+
+        # --- Classifier ---
         self.classifier = nn.Sequential(
             nn.Linear(d_model, d_model // 2),
-            nn.ReLU(),
-            nn.Linear(d_model // 2, 1)
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model // 2, 1),
         )
-        
-        # Global state bank. Registered as buffer so it moves to device automatically.
+
+        # --- State bank (managed manually, NOT a parameter) ---
+        # We store it as a buffer so it moves to the right device,
+        # but we'll replace it with a fresh tensor each epoch.
         self.register_buffer("bank", torch.zeros(num_entities, d_model))
-        
+
     def reset_bank(self):
-        self.bank.zero_()
-        
-    def forward(self, X_c, et, entity_ids):
+        """Call at the start of each epoch."""
+        self.bank = torch.zeros(
+            self.num_entities, self.d_model,
+            device=self.bank.device, dtype=self.bank.dtype)
+
+    def detach_bank(self):
+        """Call after each chunk to cut the BPTT graph."""
+        self.bank = self.bank.detach()
+
+    def forward(self, X_cont, event_type, entity_ids):
         """
-        X_c: (batch, chunk_size, n_cont_features)
-        et: (batch, chunk_size)
-        entity_ids: (batch, chunk_size, 3)
+        Process a chronological chunk of events sequentially.
+
+        Args:
+            X_cont:     (1, chunk_size, n_cont_features)
+            event_type: (1, chunk_size)
+            entity_ids: (1, chunk_size, 3)  — [subj, obj, obj2]
+
+        Returns:
+            logits: (1, chunk_size)
         """
-        assert X_c.size(0) == 1, "Prototype only supports batch_size=1"
-        
-        chunk_size = X_c.size(1)
-        
-        X_c = X_c.squeeze(0)
-        et = et.squeeze(0)
-        entity_ids = entity_ids.squeeze(0)
-        
-        feat_emb = self.cont_proj(X_c) + self.etype_emb(et)
-        
-        active_states = {}
-        logits = []
-        
-        zero_state = torch.zeros(self.d_model, device=X_c.device)
-        
+        # Remove batch dim (must be 1 for chronological processing)
+        X_cont = X_cont.squeeze(0)          # (C, n_cont)
+        event_type = event_type.squeeze(0)  # (C,)
+        entity_ids = entity_ids.squeeze(0)  # (C, 3)
+        chunk_size = X_cont.size(0)
+
+        # Encode all event features at once (this IS parallelizable)
+        feat = self.input_norm(
+            self.cont_proj(X_cont) + self.etype_emb(event_type)
+        )  # (C, d_model)
+
+        # Pre-allocate output
+        logits = torch.zeros(chunk_size, device=X_cont.device)
+        zero_state = torch.zeros(self.d_model, device=X_cont.device)
+
+        # Sequential state propagation
         for i in range(chunk_size):
-            subj, obj, obj2 = entity_ids[i].tolist()
-            
-            # 1. Gather
-            s_subj = active_states.get(subj, self.bank[subj]) if subj >= 0 else zero_state
-            s_obj  = active_states.get(obj, self.bank[obj])   if obj >= 0  else zero_state
-            s_obj2 = active_states.get(obj2, self.bank[obj2]) if obj2 >= 0 else zero_state
-                
-            # 2. Aggregate
-            valid_entities = (subj >= 0) + (obj >= 0) + (obj2 >= 0)
-            if valid_entities > 0:
-                agg_state = (s_subj + s_obj + s_obj2) / valid_entities
+            ids = entity_ids[i]  # (3,)
+            valid_mask = ids >= 0
+            valid_ids = ids[valid_mask]
+
+            # 1. GATHER: fetch current states for participating entities
+            if valid_ids.numel() > 0:
+                states = self.bank[valid_ids]       # (num_valid, d_model)
+                agg_state = states.mean(dim=0)      # (d_model,)
             else:
+                states = None
                 agg_state = zero_state
-                
-            x_e = agg_state + feat_emb[i]
-            
-            # 3. Classify
-            logits.append(self.classifier(x_e))
-            
-            # 4. Update
-            dx = self.update_proj(x_e)
-            
-            if subj >= 0: active_states[subj] = s_subj + dx
-            if obj >= 0:  active_states[obj]  = s_obj + dx
-            if obj2 >= 0: active_states[obj2] = s_obj2 + dx
-                
-        # 5. Write back to global bank (detach to cut BPTT graph)
-        for idx, state in active_states.items():
-            self.bank[idx] = state.detach()
-            
-        return torch.stack(logits).unsqueeze(0).squeeze(-1)  # (1, chunk_size)
+
+            # 2. COMBINE: merge entity context with event features
+            x_event = agg_state + feat[i]           # (d_model,)
+
+            # 3. CLASSIFY
+            logits[i] = self.classifier(x_event).squeeze(-1)
+
+            # 4. PROPAGATE: gated state update for each participating entity
+            if valid_ids.numel() > 0:
+                update = self.update_mlp(x_event)          # (d_model,)
+                g = torch.sigmoid(self.gate(x_event))      # (d_model,)
+
+                # new_state = LayerNorm((1-g) * old_state + g * update)
+                new_states = self.state_norm(
+                    (1.0 - g).unsqueeze(0) * states +
+                    g.unsqueeze(0) * update.unsqueeze(0)
+                )  # (num_valid, d_model)
+
+                # Write back (in-place on detached bank — no autograd issue)
+                self.bank[valid_ids] = new_states
+
+        return logits.unsqueeze(0)  # (1, chunk_size)
