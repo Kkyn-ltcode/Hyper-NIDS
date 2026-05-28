@@ -13,6 +13,7 @@ Usage:
 """
 
 import argparse
+import logging
 import time
 from pathlib import Path
 
@@ -115,7 +116,7 @@ def train_epoch(model, loader, optimizer, device, pos_weight, grad_clip=1.0):
             elapsed = time.time() - t0
             throughput = events_processed / elapsed
             avg_loss = total_loss / max(n_chunks, 1)
-            print(f"    Chunk {i+1}/{len(loader)}: "
+            logging.info(f"    Chunk {i+1}/{len(loader)}: "
                   f"loss={avg_loss:.4f}, {throughput:.0f} events/s"
                   + (f", {nan_chunks} NaN skipped" if nan_chunks else ""))
 
@@ -124,8 +125,8 @@ def train_epoch(model, loader, optimizer, device, pos_weight, grad_clip=1.0):
     throughput = events_processed / elapsed if elapsed > 0 else 0
 
     if nan_chunks > 0:
-        print(f"    ⚠ {nan_chunks}/{i+1} chunks had NaN loss/gradients")
-    print(f"    Epoch done: {events_processed:,} events in {elapsed:.1f}s "
+        logging.info(f"    ⚠ {nan_chunks}/{i+1} chunks had NaN loss/gradients")
+    logging.info(f"    Epoch done: {events_processed:,} events in {elapsed:.1f}s "
           f"({throughput:.0f} events/s)")
 
     return avg_loss
@@ -181,33 +182,45 @@ def main():
     else:
         device = torch.device("cpu")
 
+    save_dir = Path("checkpoints") / f"proto_{args.dataset}_{args.label_type}"
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(message)s',
+        handlers=[
+            logging.FileHandler(save_dir / "train.log"),
+            logging.StreamHandler()
+        ]
+    )
+
     data_root = DATA_ROOT / args.dataset
     shards = SHARD_CONFIG[args.dataset]
 
     use_state = not args.no_state
     state_label = "WITH state propagation" if use_state else "WITHOUT state (ablation)"
 
-    print("=" * 60)
-    print(f"  HYPERMAMBA PROTOTYPE — {args.dataset.upper()}")
-    print("=" * 60)
-    print(f"  Device:      {device}")
-    print(f"  Label type:  {args.label_type}")
-    print(f"  Chunk size:  {args.chunk_size}")
-    print(f"  d_model:     {args.d_model}")
-    print(f"  State:       {state_label}")
-    print(f"  Bank decay:  {args.bank_decay}")
-    print(f"  Train shards: {shards['train']}")
-    print(f"  Val shards:   {shards['val']}")
+    logging.info("=" * 60)
+    logging.info(f"  HYPERMAMBA PROTOTYPE — {args.dataset.upper()}")
+    logging.info("=" * 60)
+    logging.info(f"  Device:      {device}")
+    logging.info(f"  Label type:  {args.label_type}")
+    logging.info(f"  Chunk size:  {args.chunk_size}")
+    logging.info(f"  d_model:     {args.d_model}")
+    logging.info(f"  State:       {state_label}")
+    logging.info(f"  Bank decay:  {args.bank_decay}")
+    logging.info(f"  Train shards: {shards['train']}")
+    logging.info(f"  Val shards:   {shards['val']}")
 
     # --- Data ---
-    print(f"\nLoading training data...")
+    logging.info(f"\nLoading training data...")
     train_ds = ChronoDataset(
         shards["train"], data_root,
         chunk_size=args.chunk_size, label_type=args.label_type)
 
     # Always evaluate on broad labels (even when training on L1*)
     eval_label = "broad" if args.label_type == "l1" else args.label_type
-    print(f"\nLoading validation data (labels={eval_label})...")
+    logging.info(f"\nLoading validation data (labels={eval_label})...")
     val_ds = ChronoDataset(
         shards["val"], data_root,
         chunk_size=args.chunk_size, label_type=eval_label)
@@ -227,7 +240,7 @@ def main():
     ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"\nModel parameters: {n_params:,}")
+    logging.info(f"\nModel parameters: {n_params:,}")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
 
@@ -236,21 +249,19 @@ def main():
     n_neg = int((train_ds.y == 0).sum())
     raw_pw = n_neg / max(n_pos, 1)
     pos_weight = min(raw_pw, args.max_pos_weight)
-    print(f"  pos_weight: {pos_weight:.1f} (raw={raw_pw:.1f}, cap={args.max_pos_weight})")
+    logging.info(f"  pos_weight: {pos_weight:.1f} (raw={raw_pw:.1f}, cap={args.max_pos_weight})")
 
     # --- Training ---
-    save_dir = Path("checkpoints") / f"proto_{args.dataset}_{args.label_type}"
-    save_dir.mkdir(parents=True, exist_ok=True)
 
     best_auprc = 0.0
     best_epoch = 0
     patience = 5
     no_improve = 0
 
-    print(f"\nStarting training ({args.epochs} epochs)...")
+    logging.info(f"\nStarting training ({args.epochs} epochs)...")
 
     for epoch in range(1, args.epochs + 1):
-        print(f"\n--- Epoch {epoch}/{args.epochs} ---")
+        logging.info(f"\n--- Epoch {epoch}/{args.epochs} ---")
 
         train_loss = train_epoch(
             model, train_loader, optimizer, device, pos_weight)
@@ -259,8 +270,8 @@ def main():
         auprc = val_metrics["auprc"]
         f1 = val_metrics["best_f1"]
 
-        print(f"  Train Loss: {train_loss:.4f}")
-        print(f"  Val AUPRC:  {auprc:.4f}  |  Val F1: {f1:.4f}")
+        logging.info(f"  Train Loss: {train_loss:.4f}")
+        logging.info(f"  Val AUPRC:  {auprc:.4f}  |  Val F1: {f1:.4f}")
 
         if auprc > best_auprc:
             best_auprc = auprc
@@ -272,17 +283,17 @@ def main():
                 "val_auprc": auprc,
                 "val_f1": f1,
             }, save_dir / "best.pt")
-            print(f"  ✓ New best! AUPRC={auprc:.4f}")
+            logging.info(f"  ✓ New best! AUPRC={auprc:.4f}")
         else:
             no_improve += 1
             if no_improve >= patience:
-                print(f"  Early stop at epoch {epoch} (best={best_epoch})")
+                logging.info(f"  Early stop at epoch {epoch} (best={best_epoch})")
                 break
 
-    print(f"\n{'='*60}")
-    print(f"  DONE — Best AUPRC: {best_auprc:.4f} (epoch {best_epoch})")
-    print(f"  Checkpoint: {save_dir / 'best.pt'}")
-    print(f"{'='*60}")
+    logging.info(f"\n{'='*60}")
+    logging.info(f"  DONE — Best AUPRC: {best_auprc:.4f} (epoch {best_epoch})")
+    logging.info(f"  Checkpoint: {save_dir / 'best.pt'}")
+    logging.info(f"{'='*60}")
 
 
 if __name__ == "__main__":
