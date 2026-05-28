@@ -71,50 +71,17 @@ def cleanup_distributed():
     if is_distributed():
         dist.destroy_process_group()
 
-LOG_FILE = None
-
 def log(msg):
     if is_main():
         print(msg)
-        if LOG_FILE is not None:
-            with open(LOG_FILE, "a") as f:
-                f.write(str(msg) + "\n")
 
-
-class EMA:
-    def __init__(self, model, decay=0.999):
-        self.decay = decay
-        self.shadow = {}
-        self.active = {}
-        for name, param in model.named_parameters():
-            if param.requires_grad:
-                self.shadow[name] = param.data.clone()
-                self.active[name] = param.data.clone()
-
-    def update(self, model):
-        for name, param in model.named_parameters():
-            if param.requires_grad:
-                self.shadow[name].sub_((1.0 - self.decay) * (self.shadow[name] - param.data))
-
-    def apply_shadow(self, model):
-        for name, param in model.named_parameters():
-            if param.requires_grad:
-                self.active[name].copy_(param.data)
-                param.data.copy_(self.shadow[name])
-
-    def restore(self, model):
-        for name, param in model.named_parameters():
-            if param.requires_grad:
-                param.data.copy_(self.active[name])
 
 # ── Training logic ───────────────────────────────────────────
 
-def masked_bce_loss(logits, y, mask, pos_weight_t, label_smoothing=0.0):
+def masked_bce_loss(logits, y, mask, pos_weight_t):
     real = mask.bool()
     logits_real = logits[real]
     y_real = y[real].float()
-    if label_smoothing > 0.0:
-        y_real = y_real * (1.0 - label_smoothing) + 0.5 * label_smoothing
 
     if logits_real.numel() == 0:
         return (logits.sum() * 0.0)
@@ -132,7 +99,7 @@ def masked_bce_loss(logits, y, mask, pos_weight_t, label_smoothing=0.0):
     return loss
 
 
-def focal_bce_loss(logits, y, mask, pos_weight_t, gamma=2.0, alpha=None, label_smoothing=0.0):
+def focal_bce_loss(logits, y, mask, pos_weight_t, gamma=2.0, alpha=None):
     """Focal loss with optional pos_weight and alpha balancing.
 
     FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
@@ -146,13 +113,10 @@ def focal_bce_loss(logits, y, mask, pos_weight_t, gamma=2.0, alpha=None, label_s
         pos_weight_t: positive class weight tensor (used only if alpha is None)
         gamma: focusing parameter (higher = more focus on hard examples)
         alpha: balance factor for positive class [0,1]. If None, use pos_weight.
-        label_smoothing: apply label smoothing [0,1]
     """
     real = mask.bool()
     logits_real = logits[real]
     y_real = y[real].float()
-    if label_smoothing > 0.0:
-        y_real = y_real * (1.0 - label_smoothing) + 0.5 * label_smoothing
 
     if logits_real.numel() == 0:
         return (logits.sum() * 0.0)
@@ -264,7 +228,7 @@ def compute_metrics(all_logits, all_labels, fixed_threshold=None):
 
 def train_epoch(model, loader, optimizer, pw_t, grad_clip, device,
                 log_every=100, loss_fn=None, accumulation_steps=1,
-                scheduler_step_fn=None, ema=None):
+                scheduler_step_fn=None):
     """Run one training epoch.
 
     Args:
@@ -336,9 +300,6 @@ def train_epoch(model, loader, optimizer, pw_t, grad_clip, device,
                 nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             optimizer.step()
             optimizer.zero_grad()
-            if ema is not None:
-                raw = model.module if isinstance(model, DDP) else model
-                ema.update(raw)
             if scheduler_step_fn is not None:
                 scheduler_step_fn()
 
@@ -437,10 +398,6 @@ def main():
     save_dir = Path("checkpoints") / cfg.get("name", "thyn_v0")
     if is_main():
         save_dir.mkdir(parents=True, exist_ok=True)
-        global LOG_FILE
-        LOG_FILE = save_dir / "training.log"
-        if LOG_FILE.exists() and not args.quick:
-            LOG_FILE.unlink()
 
     mcfg = cfg["model"]
     dcfg = cfg["data"]
@@ -582,26 +539,16 @@ def main():
         log(f"  Auto pos_weight: {pw_val:.1f} "
             f"(neg={n_neg:,} / pos={n_pos:,})")
     pw_t = torch.tensor([pw_val], device=device)
-    grad_clip = tcfg.get("grad_clip", 1.0)
-    patience = tcfg.get("patience", 12)
-    label_smoothing = tcfg.get("label_smoothing", 0.0)
-    use_ema = tcfg.get("use_ema", False)
-    
-    ema = None
-    if use_ema:
-        raw = model.module if isinstance(model, DDP) else model
-        ema = EMA(raw, decay=0.999)
+    grad_clip = tcfg["grad_clip"]
+    patience = tcfg["patience"]
 
     # ── Build loss function ──
     if loss_type == "focal":
         def loss_fn(logits, y, mask, pw):
             return focal_bce_loss(logits, y, mask, pw,
-                                  gamma=focal_gamma, alpha=focal_alpha,
-                                  label_smoothing=label_smoothing)
+                                  gamma=focal_gamma, alpha=focal_alpha)
     else:
-        def loss_fn(logits, y, mask, pw):
-            return masked_bce_loss(logits, y, mask, pw,
-                                   label_smoothing=label_smoothing)
+        loss_fn = masked_bce_loss
     log_every = tcfg["log_every"]
 
     # ── Train ──
@@ -641,8 +588,7 @@ def main():
             model, train_loader, optimizer, pw_t, grad_clip,
             device, log_every=log_every, loss_fn=loss_fn,
             accumulation_steps=accumulation_steps,
-            scheduler_step_fn=_scheduler_step_fn if warmup_scheduler else None,
-            ema=ema)
+            scheduler_step_fn=_scheduler_step_fn if warmup_scheduler else None)
 
         # Synchronize all ranks before rank 0 runs validation
         if is_distributed():
@@ -654,11 +600,6 @@ def main():
 
         if is_main():
             val_mb = 50 if args.quick else None
-            
-            raw = model.module if isinstance(model, DDP) else model
-            if ema is not None:
-                ema.apply_shadow(raw)
-                
             vm = evaluate(model, val_loader, pw_t, device,
                           max_batches=val_mb, loss_fn=loss_fn)
             val_auprc = vm["auprc"] if not np.isnan(vm["auprc"]) else 0.0
@@ -683,6 +624,7 @@ def main():
                 best_auprc = vm["auprc"]
                 best_epoch = epoch
                 no_improve = 0
+                raw = model.module if isinstance(model, DDP) else model
                 torch.save({
                     "epoch": epoch, "model_state": raw.state_dict(),
                     "optimizer_state": optimizer.state_dict(),
@@ -691,9 +633,6 @@ def main():
                 log(f"  ✓ New best! AUPRC={best_auprc:.4f}")
             else:
                 no_improve += 1
-                
-            if ema is not None:
-                ema.restore(raw)
 
             should_stop = no_improve >= patience
             if should_stop:

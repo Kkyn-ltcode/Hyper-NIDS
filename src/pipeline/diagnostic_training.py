@@ -14,20 +14,20 @@ def parse_log(log_path):
         
     current_epoch = -1
     for line in lines:
-        # Match ── Epoch X/Y ──
-        ep_match = re.search(r'Epoch (\d+)/', line)
+        # Match [Epoch X]
+        ep_match = re.search(r'\[Epoch (\d+)\]', line)
         if ep_match:
             current_epoch = int(ep_match.group(1))
             if current_epoch not in epochs:
                 epochs.append(current_epoch)
                 
         # Match Train Loss
-        tl_match = re.search(r'Train:\s*loss=([0-9.]+)', line)
+        tl_match = re.search(r'Train Loss:\s*([0-9.]+)', line)
         if tl_match and current_epoch == epochs[-1] and len(train_loss) < len(epochs):
             train_loss.append(float(tl_match.group(1)))
             
         # Match Val AUPRC
-        va_match = re.search(r'AUPRC=([0-9.]+)', line)
+        va_match = re.search(r'Val AUPRC:\s*([0-9.]+)', line)
         if va_match and current_epoch == epochs[-1] and len(val_auprc) < len(epochs):
             val_auprc.append(float(va_match.group(1)))
             
