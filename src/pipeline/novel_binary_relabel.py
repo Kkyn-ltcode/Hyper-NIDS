@@ -58,6 +58,8 @@ def main():
                         help="Only analyze, don't modify files")
     parser.add_argument("--entry-process", default=None,
                         help="Override entry process name (default: from ground truth)")
+    parser.add_argument("--neutralize_ratio", type=float, default=0.5,
+                        help="Ratio of entry process UUIDs to neutralize (0.0 to 1.0)")
     args = parser.parse_args()
 
     data_root = DATASET_ROOTS[args.dataset]
@@ -93,10 +95,17 @@ def main():
     print(f"  Entry process basename: '{entry_basename}'")
 
     # Identify all UUIDs matching the entry process basename
-    entry_uuids = set(
-        subj_df[subj_df["basename"] == entry_basename]["uuid"])
+    all_entry_uuids = list(subj_df[subj_df["basename"] == entry_basename]["uuid"])
+    
+    # Randomly sample a percentage to neutralize
+    import random
+    random.seed(42)  # for reproducibility
+    n_to_neutralize = int(len(all_entry_uuids) * args.neutralize_ratio)
+    entry_uuids = set(random.sample(all_entry_uuids, n_to_neutralize))
+    
     print(f"  Total subjects: {len(subj_df):,}")
-    print(f"  '{entry_basename}' instances (all shards): {len(entry_uuids):,}")
+    print(f"  '{entry_basename}' instances (all shards): {len(all_entry_uuids):,}")
+    print(f"  Targeted for neutralization ({args.neutralize_ratio*100:.0f}%): {len(entry_uuids):,}")
 
     del subj_df
     gc.collect()
