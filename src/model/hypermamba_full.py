@@ -86,14 +86,19 @@ class SelectiveSSMUpdater(nn.Module):
         super().__init__()
         self.d_model = d_model
         
-        # A: learned diagonal state decay matrix (initialized negative for stability)
-        self.A_log = nn.Parameter(torch.log(torch.rand(d_model) * 0.5 + 0.5))
+        # A: learned diagonal state decay matrix
+        # Initialize so that A = -exp(A_log) is in [-0.1, -1.0] range
+        # This ensures moderate decay rates at initialization
+        self.A_log = nn.Parameter(torch.log(torch.rand(d_model) * 0.9 + 0.1))
         
         # B: input projection matrix
         self.proj_B = nn.Linear(d_model, d_model)
         
         # Delta: input-dependent discretization step
         self.proj_delta = nn.Linear(d_model * 2, d_model)
+        
+        # LayerNorm on the output to prevent state drift
+        self.out_norm = nn.LayerNorm(d_model)
         
     def forward(self, x_e, r_emb, entity_states, log_dt):
         """
@@ -104,8 +109,8 @@ class SelectiveSSMUpdater(nn.Module):
         """
         batch_size = x_e.size(0)
         
-        # A matrix: (d_model,)
-        A = -torch.exp(self.A_log)
+        # A matrix: clamp A_log to prevent extreme decay values
+        A = -torch.exp(self.A_log.clamp(max=2.0))
         
         # Expand x_e to match entities: (batch, 3, d_model)
         x_e_expand = x_e.unsqueeze(1).expand(-1, 3, -1)
@@ -122,13 +127,15 @@ class SelectiveSSMUpdater(nn.Module):
         delta_raw = F.softplus(self.proj_delta(delta_input))
         
         # Incorporate actual time elapsed (log_dt) into the discretization step
-        # If log_dt is 0, we still want a minimum step size, so we add 1.0 (since log_dt is log(1+dt))
-        # log_dt has shape (batch, 3, 1). We broadcast it to (batch, 3, d_model)
-        # Ensure log_dt is strictly positive to prevent 0 step sizes in initialization
-        delta_i = delta_raw * (log_dt + 1.0)
+        # Cap log_dt to prevent extreme discretization steps for large time gaps
+        log_dt_clamped = log_dt.clamp(max=10.0)
+        delta_i = delta_raw * (log_dt_clamped + 1.0)
+        
+        # Cap delta_i to prevent exp() overflow in A_bar computation
+        delta_i = delta_i.clamp(max=10.0)
         
         # Discrete A: exp(A * Delta)
-        # A is (d_model,), delta_i is (batch, 3, d_model) -> elementwise multiply
+        # A is negative, delta_i is positive, so A*delta_i is negative -> A_bar in (0, 1)
         A_bar = torch.exp(A.view(1, 1, -1) * delta_i)
         
         # Discrete B approximation: Delta * B
@@ -137,10 +144,16 @@ class SelectiveSSMUpdater(nn.Module):
         # SSM Update: S(t) = A_bar * S(t-1) + B_bar * x_e
         new_states = A_bar * entity_states + B_bar * x_e_expand
         
+        # Normalize to prevent unbounded state growth across chunks
+        C = new_states.size(0)
+        new_states = self.out_norm(new_states.view(-1, self.d_model)).view(C, 3, self.d_model)
+        
         return new_states
 
 
 class HyperMambaFull(nn.Module):
+    BANK_DECAY = 0.999  # Gradual state fade to prevent unbounded accumulation
+    
     def __init__(self, num_entities, n_cont_features, num_event_types, d_model=128):
         super().__init__()
         self.d_model = d_model
@@ -171,6 +184,10 @@ class HyperMambaFull(nn.Module):
         
     def detach_bank(self):
         self.bank.detach_()
+        # Apply decay to prevent unbounded state accumulation across chunks
+        self.bank.states.mul_(self.BANK_DECAY)
+        # Clamp states as a safety net against any residual drift
+        self.bank.states.clamp_(-10.0, 10.0)
         
     def forward(self, x_cont, event_type, entity_ids, timestamps):
         """
@@ -235,6 +252,9 @@ class HyperMambaFull(nn.Module):
         
         valid_ids = flat_ids[flat_valid]
         valid_states = flat_new_states[flat_valid]
+        
+        # Clamp states before writing to bank to prevent NaN propagation
+        valid_states = valid_states.clamp(-10.0, 10.0)
         
         self.bank.states.scatter_(0, valid_ids.unsqueeze(1).expand(-1, self.d_model), valid_states)
         self.bank.last_seen_time.scatter_(0, valid_ids, t_curr.reshape(-1)[flat_valid])
