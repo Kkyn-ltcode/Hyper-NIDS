@@ -94,6 +94,7 @@ class ChronoDataset(Dataset):
         if verbose: print(f"  Loading entity IDs and timestamps...")
         ent_parts = []
         ts_parts = []
+        t0_nanos = None  # Will be set to the first timestamp for relative offsets
         for sid in shard_ids:
             df = pd.read_parquet(
                 labeled_dir / f"labeled_shard{sid}.parquet",
@@ -104,9 +105,15 @@ class ChronoDataset(Dataset):
             obj2 = df["predicate_object2_uuid"].map(uuid_to_id).fillna(-1).astype(np.int64).values
             ent_parts.append(np.stack([sub, obj, obj2], axis=1))
             
-            # Timestamp (nanoseconds). Convert to seconds as float64 for precision, then to float32
-            ts_sec = (df["timestamp_nanos"].values.astype(np.float64) / 1e9).astype(np.float32)
-            ts_parts.append(ts_sec)
+            # Timestamps: convert nanos to relative seconds from the first event.
+            # Absolute Unix timestamps (~1.52e9 seconds) exceed float32 precision (~7 digits),
+            # causing 100% of consecutive dt values to collapse to 0.
+            # Relative offsets (0 to ~8800 seconds for theia) fit perfectly in float32.
+            raw_nanos = df["timestamp_nanos"].values.astype(np.int64)
+            if t0_nanos is None:
+                t0_nanos = int(raw_nanos[0])
+            ts_relative_sec = ((raw_nanos - t0_nanos).astype(np.float64) / 1e9).astype(np.float32)
+            ts_parts.append(ts_relative_sec)
             del df; gc.collect()
             
         self.entity_ids = np.concatenate(ent_parts)

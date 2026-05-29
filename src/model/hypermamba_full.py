@@ -169,9 +169,15 @@ class HyperMambaFull(nn.Module):
         self.aggregator = AllSetAggregator(d_model, self.d_event)
         self.updater = SelectiveSSMUpdater(d_model)
         
-        # Classifier Head: x_e + subj state + obj state = 3 * d_model
+        # Project event features from d_event to d_model for classifier
+        self.event_proj = nn.Linear(self.d_event, d_model)
+        
+        # Classifier Head: event_feat + x_e + subj_state + obj_state = 4 * d_model
+        # The event_feat provides direct access to raw event features (event type,
+        # time-of-day, bytes, etc.) so the classifier can learn even when entity
+        # states are near zero at the start of training.
         self.classifier = nn.Sequential(
-            nn.Linear(d_model * 3, d_model),
+            nn.Linear(d_model * 4, d_model),
             nn.SiLU(),
             nn.Dropout(0.1),
             nn.Linear(d_model, 1)
@@ -241,11 +247,12 @@ class HyperMambaFull(nn.Module):
         self.bank.states.scatter_(0, valid_ids.unsqueeze(1).expand(-1, self.d_model), valid_st)
         self.bank.last_seen_time.scatter_(0, valid_ids, t_curr.reshape(-1)[flat_valid])
         
-        # 6. Classification
-        subj_state = new_states[:, 0, :]
-        obj_state = new_states[:, 1, :]
+        # 6. Classification: event features + aggregated context + entity states
+        event_feat = self.event_proj(f_e)       # (C, d_model)
+        subj_state = new_states[:, 0, :]         # (C, d_model)
+        obj_state = new_states[:, 1, :]          # (C, d_model)
         
-        cls_input = torch.cat([x_e, subj_state, obj_state], dim=-1)
-        logits = self.classifier(cls_input).squeeze(-1)
+        cls_input = torch.cat([event_feat, x_e, subj_state, obj_state], dim=-1)  # (C, 4*d_model)
+        logits = self.classifier(cls_input).squeeze(-1)  # (C,)
         
-        return logits.unsqueeze(0)
+        return logits.unsqueeze(0)  # (1, C)
