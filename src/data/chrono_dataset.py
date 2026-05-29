@@ -23,6 +23,7 @@ class ChronoDataset(Dataset):
         data_root: str | Path,
         chunk_size: int = 1024,
         label_type: str = "broad",
+        t0_nanos: int | None = None,
         verbose: bool = True,
     ):
         data_root = Path(data_root)
@@ -94,7 +95,7 @@ class ChronoDataset(Dataset):
         if verbose: print(f"  Loading entity IDs and timestamps...")
         ent_parts = []
         ts_parts = []
-        t0_nanos = None  # Will be set to the first timestamp for relative offsets
+        _t0 = t0_nanos  # Use provided t0, or compute from first shard
         for sid in shard_ids:
             df = pd.read_parquet(
                 labeled_dir / f"labeled_shard{sid}.parquet",
@@ -105,17 +106,17 @@ class ChronoDataset(Dataset):
             obj2 = df["predicate_object2_uuid"].map(uuid_to_id).fillna(-1).astype(np.int64).values
             ent_parts.append(np.stack([sub, obj, obj2], axis=1))
             
-            # Timestamps: convert nanos to relative seconds from the first event.
-            # Absolute Unix timestamps (~1.52e9 seconds) exceed float32 precision (~7 digits),
-            # causing 100% of consecutive dt values to collapse to 0.
-            # Relative offsets (0 to ~8800 seconds for theia) fit perfectly in float32.
+            # Timestamps: relative seconds from a GLOBAL reference point (t0).
+            # All splits (train/val/test) MUST share the same t0 so that
+            # dt = t_curr - last_seen is valid across the train→val boundary.
             raw_nanos = df["timestamp_nanos"].values.astype(np.int64)
-            if t0_nanos is None:
-                t0_nanos = int(raw_nanos[0])
-            ts_relative_sec = ((raw_nanos - t0_nanos).astype(np.float64) / 1e9).astype(np.float32)
+            if _t0 is None:
+                _t0 = int(raw_nanos[0])
+            ts_relative_sec = ((raw_nanos - _t0).astype(np.float64) / 1e9).astype(np.float32)
             ts_parts.append(ts_relative_sec)
             del df; gc.collect()
             
+        self.t0_nanos = _t0  # Expose so val/test can reuse
         self.entity_ids = np.concatenate(ent_parts)
         self.timestamps = np.concatenate(ts_parts)
         del ent_parts, ts_parts; gc.collect()

@@ -264,10 +264,15 @@ def main():
         shards["train"], data_root,
         chunk_size=args.chunk_size, label_type=args.label_type)
 
+    # All datasets must share the same timestamp reference (t0_nanos)
+    # so that dt = t_curr - last_seen is valid across train→val→test boundaries
+    t0 = train_ds.t0_nanos
+    logging.info(f"  Global t0_nanos: {t0} (all splits share this reference)")
+
     logging.info(f"Loading validation data (primary: {val_label_primary})...")
     val_ds = ChronoDataset(
         shards["val"], data_root,
-        chunk_size=args.chunk_size, label_type=val_label_primary)
+        chunk_size=args.chunk_size, label_type=val_label_primary, t0_nanos=t0)
 
     val_broad_ds = None
     val_broad_loader = None
@@ -275,13 +280,13 @@ def main():
         logging.info(f"Loading validation data (secondary: {val_label_secondary})...")
         val_broad_ds = ChronoDataset(
             shards["val"], data_root,
-            chunk_size=args.chunk_size, label_type=val_label_secondary)
+            chunk_size=args.chunk_size, label_type=val_label_secondary, t0_nanos=t0)
 
     # Test ALWAYS uses broad labels
     logging.info(f"Loading test data (labels=broad)...")
     test_ds = ChronoDataset(
         shards["test"], data_root,
-        chunk_size=args.chunk_size, label_type="broad")
+        chunk_size=args.chunk_size, label_type="broad", t0_nanos=t0)
 
     # Strict chronological: batch_size=1, shuffle=False, num_workers=0
     train_loader = DataLoader(train_ds, batch_size=1, shuffle=False, num_workers=0)
