@@ -192,7 +192,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Train HyperMamba Full (SSM-Driven Taint Propagation)")
     parser.add_argument("--dataset", default="theia", choices=["theia", "trace"])
-    parser.add_argument("--label_type", default="l1", choices=["broad", "l1"])
+    parser.add_argument("--label_type", default="l1", 
+                        help="Label type to train on (e.g., broad, l1, l1_moderate)")
     parser.add_argument("--dual_val", action="store_true",
                         help="Dual validation: L1* for early stopping, broad logged alongside")
     parser.add_argument("--chunk_size", type=int, default=4096)
