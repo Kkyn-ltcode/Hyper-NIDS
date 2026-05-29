@@ -8,8 +8,11 @@ Uses Truncated Backpropagation Through Time (TBPTT):
   - States reset at epoch boundaries
 
 Usage:
-    python -m src.pipeline.train_proto --dataset theia --label_type l1
-    python -m src.pipeline.train_proto --dataset trace --label_type l1
+    # Dual validation: L1* for early stopping, broad logged alongside
+    python -m src.pipeline.train_proto --dataset theia --label_type l1 --dual_val
+
+    # Standard: single val label type
+    python -m src.pipeline.train_proto --dataset theia --label_type broad
 """
 
 import argparse
@@ -145,18 +148,17 @@ def train_epoch(model, loader, optimizer, device, pos_weight, grad_clip=1.0):
 
 
 @torch.no_grad()
-def evaluate(model, loader, device, pos_weight=1.0):
+def evaluate(model, loader, device):
+    """Evaluate model on a dataset. Always uses pos_weight=1.0 (unweighted BCE)
+    since val/test may have different class distributions than training."""
     model.eval()
     # DO NOT reset the bank here! We want to carry the warm states
     # from the end of the training shards into the validation shards.
-    # model.reset_bank()
 
     all_logits = []
     all_labels = []
     total_loss = 0.0
     n_chunks = 0
-    
-    pw_t = torch.tensor([pos_weight], device=device)
 
     for batch in loader:
         X_c = batch["X_cont"].to(device).clamp(-20, 20)
@@ -167,8 +169,7 @@ def evaluate(model, loader, device, pos_weight=1.0):
         logits = model(X_c, et, ent)
         
         logits_clamp = logits.clamp(-50, 50)
-        loss = nn.functional.binary_cross_entropy_with_logits(
-            logits_clamp, y, pos_weight=pw_t)
+        loss = nn.functional.binary_cross_entropy_with_logits(logits_clamp, y)
             
         if not (torch.isnan(loss) or torch.isinf(loss)):
             total_loss += loss.item()
@@ -190,11 +191,11 @@ def main():
         description="Train HyperMamba Prototype (Cross-Entity State Propagation)")
     parser.add_argument("--dataset", default="theia", choices=["theia", "trace"])
     parser.add_argument("--label_type", default="l1", choices=["broad", "l1"])
-    parser.add_argument("--val_label_type", default="broad", choices=["broad", "l1"],
-                        help="Label type to use for validation set")
+    parser.add_argument("--dual_val", action="store_true",
+                        help="Dual validation: L1* for early stopping, broad logged alongside")
     parser.add_argument("--chunk_size", type=int, default=4096)
     parser.add_argument("--d_model", type=int, default=128)
-    parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--max_pos_weight", type=float, default=30.0,
                         help="Cap pos_weight to prevent gradient explosion")
@@ -202,8 +203,16 @@ def main():
                         help="Ablation: disable cross-entity state propagation")
     parser.add_argument("--bank_decay", type=float, default=0.999,
                         help="Decay factor applied to bank after each chunk")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed for reproducibility")
     parser.add_argument("--device", default=None)
     args = parser.parse_args()
+
+    # --- Reproducibility ---
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
 
     if args.device:
         device = torch.device(args.device)
@@ -214,9 +223,10 @@ def main():
 
     # Create a timestamped run directory (will be renamed with results at end)
     state_tag = "state" if not args.no_state else "nostate"
+    dual_tag = "_dualval" if args.dual_val else ""
     run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_base = Path("checkpoints") / "proto_runs"
-    save_dir = run_base / f"{args.dataset}_{args.label_type}_{state_tag}_{run_ts}"
+    save_dir = run_base / f"{args.dataset}_{args.label_type}_{state_tag}{dual_tag}_{run_ts}"
     save_dir.mkdir(parents=True, exist_ok=True)
 
     logging.basicConfig(
@@ -234,32 +244,51 @@ def main():
     use_state = not args.no_state
     state_label = "WITH state propagation" if use_state else "WITHOUT state (ablation)"
 
+    # Determine val label strategy
+    if args.dual_val:
+        val_label_primary = "l1"     # used for early stopping
+        val_label_secondary = "broad"  # logged alongside
+        val_mode = "DUAL (L1* for stopping, broad logged)"
+    else:
+        val_label_primary = args.label_type  # match training
+        val_label_secondary = None
+        val_mode = f"SINGLE ({val_label_primary})"
+
     logging.info("=" * 60)
     logging.info(f"  HYPERMAMBA PROTOTYPE — {args.dataset.upper()}")
     logging.info("=" * 60)
     logging.info(f"  Device:      {device}")
     logging.info(f"  Label type:  {args.label_type}")
+    logging.info(f"  Val mode:    {val_mode}")
     logging.info(f"  Chunk size:  {args.chunk_size}")
     logging.info(f"  d_model:     {args.d_model}")
     logging.info(f"  State:       {state_label}")
     logging.info(f"  Bank decay:  {args.bank_decay}")
+    logging.info(f"  Seed:        {args.seed}")
     logging.info(f"  Train shards: {shards['train']}")
     logging.info(f"  Val shards:   {shards['val']}")
 
     # --- Data ---
-    logging.info(f"\nLoading training data...")
+    logging.info(f"\nLoading training data (labels={args.label_type})...")
     train_ds = ChronoDataset(
         shards["train"], data_root,
         chunk_size=args.chunk_size, label_type=args.label_type)
 
-    # Validation can use either label type based on args
-    print(f"\nLoading validation data (labels={args.val_label_type})...")
+    logging.info(f"Loading validation data (primary: {val_label_primary})...")
     val_ds = ChronoDataset(
         shards["val"], data_root,
-        chunk_size=args.chunk_size, label_type=args.val_label_type)
+        chunk_size=args.chunk_size, label_type=val_label_primary)
+
+    val_broad_ds = None
+    val_broad_loader = None
+    if val_label_secondary:
+        logging.info(f"Loading validation data (secondary: {val_label_secondary})...")
+        val_broad_ds = ChronoDataset(
+            shards["val"], data_root,
+            chunk_size=args.chunk_size, label_type=val_label_secondary)
 
     # Test ALWAYS uses broad labels
-    print(f"\nLoading test data (labels=broad)...")
+    logging.info(f"Loading test data (labels=broad)...")
     test_ds = ChronoDataset(
         shards["test"], data_root,
         chunk_size=args.chunk_size, label_type="broad")
@@ -267,6 +296,8 @@ def main():
     # Strict chronological: batch_size=1, shuffle=False, num_workers=0
     train_loader = DataLoader(train_ds, batch_size=1, shuffle=False, num_workers=0)
     val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=0)
+    if val_broad_ds:
+        val_broad_loader = DataLoader(val_broad_ds, batch_size=1, shuffle=False, num_workers=0)
     test_loader = DataLoader(test_ds, batch_size=1, shuffle=False, num_workers=0)
 
     # --- Model ---
@@ -284,7 +315,7 @@ def main():
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
 
-    # Compute and cap pos_weight
+    # Compute and cap pos_weight for training loss
     n_pos = int((train_ds.y == 1).sum())
     n_neg = int((train_ds.y == 0).sum())
     raw_pw = n_neg / max(n_pos, 1)
@@ -292,7 +323,6 @@ def main():
     logging.info(f"  pos_weight: {pos_weight:.1f} (raw={raw_pw:.1f}, cap={args.max_pos_weight})")
 
     # --- Training ---
-
     best_auprc = 0.0
     best_epoch = 0
     patience = 5
@@ -305,8 +335,12 @@ def main():
         'train_f1': [],
         'val_auprc': [],
         'val_f1': [],
-        'chunk_loss': []
+        'chunk_loss': [],
     }
+    if args.dual_val:
+        history['val_broad_auprc'] = []
+        history['val_broad_f1'] = []
+        history['val_broad_loss'] = []
 
     logging.info(f"\nStarting training ({args.epochs} epochs)...")
 
@@ -316,7 +350,12 @@ def main():
         train_loss, epoch_chunk_losses, train_metrics = train_epoch(
             model, train_loader, optimizer, device, pos_weight)
 
-        val_metrics = evaluate(model, val_loader, device, pos_weight=1.0)
+        # Save bank state before eval so we can restore for secondary eval
+        if use_state:
+            bank_snapshot = model.bank.clone()
+
+        # Primary validation (used for early stopping)
+        val_metrics = evaluate(model, val_loader, device)
         val_loss = val_metrics["loss"]
         auprc = val_metrics["auprc"]
         f1 = val_metrics["best_f1"]
@@ -331,9 +370,23 @@ def main():
         history['val_auprc'].append(auprc)
         history['val_f1'].append(f1)
 
-        logging.info(f"  Train Loss:  {train_loss:.4f}  |  Val Loss:   {val_loss:.4f}")
+        logging.info(f"  Train Loss:  {train_loss:.4f}  |  Val({val_label_primary}) Loss: {val_loss:.4f}")
         logging.info(f"  Train AUPRC: {t_auprc:.4f}  |  Train F1: {t_f1:.4f}")
-        logging.info(f"  Val AUPRC:   {auprc:.4f}  |  Val F1:   {f1:.4f}")
+        logging.info(f"  Val({val_label_primary}) AUPRC: {auprc:.4f}  |  Val({val_label_primary}) F1: {f1:.4f}")
+
+        # Secondary validation (dual mode: broad logged but NOT used for stopping)
+        if val_broad_loader is not None:
+            # Restore bank to post-training state before running broad val
+            if use_state:
+                model.bank = bank_snapshot.clone()
+            vb_metrics = evaluate(model, val_broad_loader, device)
+            vb_auprc = vb_metrics["auprc"]
+            vb_f1 = vb_metrics["best_f1"]
+            vb_loss = vb_metrics["loss"]
+            history['val_broad_auprc'].append(vb_auprc)
+            history['val_broad_f1'].append(vb_f1)
+            history['val_broad_loss'].append(vb_loss)
+            logging.info(f"  Val(broad) AUPRC: {vb_auprc:.4f}  |  Val(broad) F1: {vb_f1:.4f}  [info only]")
 
         if auprc > best_auprc:
             best_auprc = auprc
@@ -345,7 +398,7 @@ def main():
                 "val_auprc": auprc,
                 "val_f1": f1,
             }, save_dir / "best.pt")
-            logging.info(f"  ✓ New best! AUPRC={auprc:.4f}")
+            logging.info(f"  ✓ New best! AUPRC={auprc:.4f} (early stopping on {val_label_primary})")
         else:
             no_improve += 1
             if no_improve >= patience:
@@ -353,15 +406,16 @@ def main():
                 break
 
     logging.info(f"\n{'='*60}")
-    logging.info(f"  DONE — Best AUPRC: {best_auprc:.4f} (epoch {best_epoch})")
+    logging.info(f"  DONE — Best Val({val_label_primary}) AUPRC: {best_auprc:.4f} (epoch {best_epoch})")
     logging.info(f"  Checkpoint: {save_dir / 'best.pt'}")
     logging.info(f"{'='*60}")
 
-    logging.info("\nEvaluating on Test Set with best model...")
+    logging.info("\nEvaluating on Test Set (broad labels) with best model...")
     checkpoint = torch.load(save_dir / 'best.pt')
     model.load_state_dict(checkpoint["model_state"])
+    model.reset_bank()  # fresh bank for test — simulates real deployment
     
-    test_metrics = evaluate(model, test_loader, device, pos_weight=1.0)
+    test_metrics = evaluate(model, test_loader, device)
     test_loss = test_metrics["loss"]
     test_auprc = test_metrics["auprc"]
     test_f1 = test_metrics["best_f1"]
@@ -413,27 +467,33 @@ def main():
         # Plot 3: Train vs Val AUPRC
         plt.subplot(2, 2, 3)
         plt.plot(ep_range, history['train_auprc'], marker='o', color='blue', label='Train AUPRC')
-        plt.plot(ep_range, history['val_auprc'], marker='s', color='green', label='Val AUPRC')
+        plt.plot(ep_range, history['val_auprc'], marker='s', color='green', label=f'Val({val_label_primary}) AUPRC')
+        if 'val_broad_auprc' in history and history['val_broad_auprc']:
+            plt.plot(ep_range, history['val_broad_auprc'], marker='D', color='orange',
+                     linestyle='--', label='Val(broad) AUPRC')
         if 'test_auprc' in history:
-            plt.plot(best_epoch, history['test_auprc'], marker='*', markersize=15, color='darkgreen', label='Test AUPRC (Best Epoch)')
+            plt.plot(best_epoch, history['test_auprc'], marker='*', markersize=15, color='darkgreen', label='Test AUPRC')
         plt.xlabel('Epoch')
         plt.ylabel('AUPRC')
         plt.title('AUPRC: Train vs Validation')
         plt.xticks(ep_range)
-        plt.legend()
+        plt.legend(fontsize=8)
         plt.grid(True, alpha=0.3)
         
         # Plot 4: Train vs Val F1
         plt.subplot(2, 2, 4)
         plt.plot(ep_range, history['train_f1'], marker='o', color='blue', label='Train F1')
-        plt.plot(ep_range, history['val_f1'], marker='s', color='green', label='Val F1')
+        plt.plot(ep_range, history['val_f1'], marker='s', color='green', label=f'Val({val_label_primary}) F1')
+        if 'val_broad_f1' in history and history['val_broad_f1']:
+            plt.plot(ep_range, history['val_broad_f1'], marker='D', color='orange',
+                     linestyle='--', label='Val(broad) F1')
         if 'test_f1' in history:
-            plt.plot(best_epoch, history['test_f1'], marker='*', markersize=15, color='darkgreen', label='Test F1 (Best Epoch)')
+            plt.plot(best_epoch, history['test_f1'], marker='*', markersize=15, color='darkgreen', label='Test F1')
         plt.xlabel('Epoch')
         plt.ylabel('F1')
         plt.title('F1: Train vs Validation')
         plt.xticks(ep_range)
-        plt.legend()
+        plt.legend(fontsize=8)
         plt.grid(True, alpha=0.3)
         
         plt.tight_layout()
