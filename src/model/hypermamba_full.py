@@ -20,8 +20,8 @@ class EntityStateBank(nn.Module):
         self.states.zero_()
         self.last_seen_time.fill_(-1.0)
         
-    def detach_(self):
-        self.states = self.states.detach()
+    def detach_(self, bank_decay=0.95):
+        self.states = self.states.detach() * bank_decay
         self.last_seen_time = self.last_seen_time.detach()
 
 
@@ -174,22 +174,21 @@ class HyperMambaFull(nn.Module):
         # Project event features from d_event to d_model for classifier
         self.event_proj = nn.Linear(self.d_event, d_model)
         
-        # Classifier Head: event_feat + x_e + subj_state + obj_state = 4 * d_model
-        # The event_feat provides direct access to raw event features (event type,
-        # time-of-day, bytes, etc.) so the classifier can learn even when entity
-        # states are near zero at the start of training.
+        # Classifier Head: matches prototype exactly [agg_states, event_feat]
         self.classifier = nn.Sequential(
-            nn.Linear(d_model * 4, d_model),
-            nn.SiLU(),
+            nn.Linear(d_model * 2, d_model),
+            nn.GELU(),
             nn.Dropout(0.1),
-            nn.Linear(d_model, 1)
+            nn.Linear(d_model, d_model // 2),
+            nn.GELU(),
+            nn.Linear(d_model // 2, 1)
         )
         
     def reset_bank(self):
         self.bank.reset()
         
-    def detach_bank(self):
-        self.bank.detach_()
+    def detach_bank(self, bank_decay=0.95):
+        self.bank.detach_(bank_decay)
         
     def forward(self, x_cont, event_type, entity_ids, timestamps):
         """
@@ -237,9 +236,7 @@ class HyperMambaFull(nn.Module):
             event_feat = self.event_proj(f_e)
             # Create dummy states to keep classifier size consistent
             dummy_state = torch.zeros_like(states[:, 0, :])
-            # x_e is also dummy
-            dummy_xe = torch.zeros_like(event_feat)
-            cls_input = torch.cat([event_feat, dummy_xe, dummy_state, dummy_state], dim=-1)
+            cls_input = torch.cat([dummy_state, event_feat], dim=-1)
             logits = self.classifier(cls_input).squeeze(-1)
             return logits.unsqueeze(0)
             
@@ -269,12 +266,13 @@ class HyperMambaFull(nn.Module):
         self.bank.states.scatter_(0, valid_ids.unsqueeze(1).expand(-1, self.d_model), valid_st.detach())
         self.bank.last_seen_time.scatter_(0, valid_ids, t_curr.reshape(-1)[flat_valid])
         
-        # 6. Classification: event features + aggregated context + entity states
-        event_feat = self.event_proj(f_e)       # (C, d_model)
-        subj_state = new_states[:, 0, :]         # (C, d_model)
-        obj_state = new_states[:, 1, :]          # (C, d_model)
+        # 6. Classification: matches prototype exactly (pre-update agg_states + event_feat)
+        n_valid = valid_mask.float().sum(dim=1, keepdim=True).clamp(min=1)
+        agg_states = states.sum(dim=1) / n_valid         # (C, d_model)
         
-        cls_input = torch.cat([event_feat, x_e, subj_state, obj_state], dim=-1)  # (C, 4*d_model)
+        event_feat = self.event_proj(f_e)                # (C, d_model)
+        
+        cls_input = torch.cat([agg_states, event_feat], dim=-1)  # (C, 2*d_model)
         logits = self.classifier(cls_input).squeeze(-1)  # (C,)
         
         return logits.unsqueeze(0)  # (1, C)
