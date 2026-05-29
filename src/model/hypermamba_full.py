@@ -1,3 +1,5 @@
+"""HyperMamba Full Architecture — SSM-Driven Taint Propagation on Provenance Hypergraphs."""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -146,6 +148,7 @@ class HyperMambaFull(nn.Module):
         # Event Encoder
         self.event_emb = nn.Embedding(num_event_types, d_model)
         self.cont_proj = nn.Linear(n_cont_features, d_model)
+        self.input_norm = nn.LayerNorm(d_model * 2)
         self.d_event = d_model * 2
         
         # State Bank
@@ -155,7 +158,7 @@ class HyperMambaFull(nn.Module):
         self.aggregator = AllSetAggregator(d_model, self.d_event)
         self.updater = SelectiveSSMUpdater(d_model)
         
-        # Classifier Head (takes x_e + subject state + object state)
+        # Classifier Head: x_e + updated subj state + updated obj state = 3 * d_model
         self.classifier = nn.Sequential(
             nn.Linear(d_model * 3, d_model),
             nn.SiLU(),
@@ -171,41 +174,53 @@ class HyperMambaFull(nn.Module):
         
     def forward(self, x_cont, event_type, entity_ids, timestamps):
         """
-        x_cont: (batch, n_cont_features)
-        event_type: (batch,)
-        entity_ids: (batch, 3) - [subj, obj, obj2]
-        timestamps: (batch,) - current event time in seconds
+        All inputs arrive as (1, C, ...) from DataLoader with batch_size=1.
+        We squeeze dim 0, process as (C, ...), and unsqueeze back on output.
+
+        Args:
+            x_cont:     (1, C, n_cont_features)
+            event_type: (1, C)
+            entity_ids: (1, C, 3) - [subj, obj, obj2]
+            timestamps: (1, C) - event time in seconds
+
+        Returns:
+            logits: (1, C)
         """
-        batch_size = x_cont.size(0)
+        # Squeeze the DataLoader batch dimension
+        x_cont = x_cont.squeeze(0)         # (C, n_cont)
+        event_type = event_type.squeeze(0)  # (C,)
+        entity_ids = entity_ids.squeeze(0)  # (C, 3)
+        timestamps = timestamps.squeeze(0)  # (C,)
+        
+        C = x_cont.size(0)
         device = x_cont.device
         
         # 1. Encode Event
-        e_emb = self.event_emb(event_type)
-        c_emb = self.cont_proj(x_cont)
-        f_e = torch.cat([e_emb, c_emb], dim=-1) # (batch, d_event)
+        e_emb = self.event_emb(event_type)  # (C, d_model)
+        c_emb = self.cont_proj(x_cont)      # (C, d_model)
+        f_e = self.input_norm(torch.cat([e_emb, c_emb], dim=-1))  # (C, d_event)
         
         # 2. Gather entity states and compute Delta t
-        # States
-        states_flat = self.bank.states[entity_ids.view(-1)]
-        states = states_flat.view(batch_size, 3, self.d_model)
+        # Clamp entity IDs to valid range for indexing (mask invalid later)
+        safe_ids = entity_ids.clamp(min=0)
+        valid_mask = entity_ids >= 0  # (C, 3)
         
-        # Timestamps
-        last_seen_flat = self.bank.last_seen_time[entity_ids.view(-1)]
-        last_seen = last_seen_flat.view(batch_size, 3)
+        # States: (C, 3, d_model)
+        states = self.bank.states[safe_ids.view(-1)].view(C, 3, self.d_model)
+        states = states * valid_mask.unsqueeze(-1)  # zero out invalid entities
         
-        # Expand timestamps to (batch, 3)
-        t_curr = timestamps.unsqueeze(1).expand(batch_size, 3)
+        # Timestamps: (C, 3)
+        last_seen = self.bank.last_seen_time[safe_ids.view(-1)].view(C, 3)
+        t_curr = timestamps.unsqueeze(1).expand(C, 3)
         
-        # Calculate dt. If last_seen is -1.0, it's the first time, set dt to 0.0
+        # Compute dt: time since entity was last seen
         is_first = (last_seen < 0)
         dt = t_curr - last_seen
         dt = torch.where(is_first, torch.zeros_like(dt), dt)
-        
-        # Cap negative dt (can happen due to minor out-of-order logs in real systems)
         dt = torch.clamp(dt, min=0.0)
         
-        # Log scaling to handle huge range of time (microseconds to days)
-        log_dt = torch.log1p(dt).unsqueeze(-1) # (batch, 3, 1)
+        # Log-scale to handle range from microseconds to days
+        log_dt = torch.log1p(dt).unsqueeze(-1)  # (C, 3, 1)
         
         # 3. Hyperedge Aggregation (V -> E)
         x_e, r_emb = self.aggregator(f_e, states, log_dt)
@@ -214,26 +229,21 @@ class HyperMambaFull(nn.Module):
         new_states = self.updater(x_e, r_emb, states, log_dt)
         
         # 5. Scatter updated states and timestamps back to bank
-        # We need to handle duplicate entities within the same batch.
-        # Since we are doing TBPTT with batch_size=1, this is trivial, 
-        # but scatter handles it safely anyway.
         flat_new_states = new_states.view(-1, self.d_model)
-        flat_entity_ids = entity_ids.view(-1)
+        flat_ids = safe_ids.view(-1)
+        flat_valid = valid_mask.view(-1)
         
-        # Ignore padding entities (-1)
-        valid_mask = flat_entity_ids >= 0
-        valid_ids = flat_entity_ids[valid_mask]
-        valid_states = flat_new_states[valid_mask]
+        valid_ids = flat_ids[flat_valid]
+        valid_states = flat_new_states[flat_valid]
         
         self.bank.states.scatter_(0, valid_ids.unsqueeze(1).expand(-1, self.d_model), valid_states)
-        self.bank.last_seen_time.scatter_(0, valid_ids, t_curr.reshape(-1)[valid_mask])
+        self.bank.last_seen_time.scatter_(0, valid_ids, t_curr.reshape(-1)[flat_valid])
         
         # 6. Classification
-        # We classify based on the event (x_e) and the NEW states of the primary actors (subj, obj)
-        subj_state = new_states[:, 0, :]
-        obj_state = new_states[:, 1, :]
+        subj_state = new_states[:, 0, :]  # (C, d_model)
+        obj_state = new_states[:, 1, :]   # (C, d_model)
         
-        cls_input = torch.cat([x_e, subj_state, obj_state], dim=-1)
-        logits = self.classifier(cls_input)
+        cls_input = torch.cat([x_e, subj_state, obj_state], dim=-1)  # (C, 3*d_model)
+        logits = self.classifier(cls_input).squeeze(-1)  # (C,)
         
-        return logits
+        return logits.unsqueeze(0)  # (1, C)

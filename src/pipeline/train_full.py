@@ -1,5 +1,5 @@
 """
-Training script for HyperMamba Minimal Prototype.
+Training script for HyperMamba Full Architecture.
 
 Uses Truncated Backpropagation Through Time (TBPTT):
   - Events processed in strict chronological order (batch_size=1, shuffle=False)
@@ -9,10 +9,10 @@ Uses Truncated Backpropagation Through Time (TBPTT):
 
 Usage:
     # Dual validation: L1* for early stopping, broad logged alongside
-    python -m src.pipeline.train_proto --dataset theia --label_type l1 --dual_val
+    python -m src.pipeline.train_full --dataset theia --label_type l1 --dual_val
 
     # Standard: single val label type
-    python -m src.pipeline.train_proto --dataset theia --label_type broad
+    python -m src.pipeline.train_full --dataset theia --label_type broad
 """
 
 import argparse
@@ -190,7 +190,7 @@ def evaluate(model, loader, device):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Train HyperMamba Prototype (Cross-Entity State Propagation)")
+        description="Train HyperMamba Full (SSM-Driven Taint Propagation)")
     parser.add_argument("--dataset", default="theia", choices=["theia", "trace"])
     parser.add_argument("--label_type", default="l1", choices=["broad", "l1"])
     parser.add_argument("--dual_val", action="store_true",
