@@ -209,6 +209,7 @@ class HyperMambaFull(nn.Module):
         timestamps = timestamps.squeeze(0)
         
         C = x_cont.size(0)
+        device = x_cont.device
         
         # 1. Encode event features
         e_emb = self.event_emb(event_type)
