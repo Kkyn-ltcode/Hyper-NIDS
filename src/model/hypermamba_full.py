@@ -152,9 +152,11 @@ class SelectiveSSMUpdater(nn.Module):
 
 
 class HyperMambaFull(nn.Module):
-    def __init__(self, num_entities, n_cont_features, num_event_types, d_model=128):
+    def __init__(self, num_entities, n_cont_features, num_event_types, d_model=128, use_state=True, cross_entity=True):
         super().__init__()
         self.d_model = d_model
+        self.use_state = use_state
+        self.cross_entity = cross_entity
         
         # Event Encoder
         self.event_emb = nn.Embedding(num_event_types, d_model)
@@ -230,8 +232,27 @@ class HyperMambaFull(nn.Module):
         dt = torch.clamp(dt, min=0.0)
         log_dt = torch.log1p(dt).unsqueeze(-1)  # (C, 3, 1)
         
+        if not self.use_state:
+            # Ablation: Pure event feature classification, no state tracking
+            event_feat = self.event_proj(f_e)
+            # Create dummy states to keep classifier size consistent
+            dummy_state = torch.zeros_like(states[:, 0, :])
+            # x_e is also dummy
+            dummy_xe = torch.zeros_like(event_feat)
+            cls_input = torch.cat([event_feat, dummy_xe, dummy_state, dummy_state], dim=-1)
+            logits = self.classifier(cls_input).squeeze(-1)
+            return logits.unsqueeze(0)
+            
         # 3. Hyperedge Aggregation (V → E)
-        x_e, r_emb = self.aggregator(f_e, states, log_dt)
+        if self.cross_entity:
+            x_e, r_emb = self.aggregator(f_e, states, log_dt)
+        else:
+            # Ablation: No cross-entity aggregation.
+            # Represent hyperedge purely by event features.
+            # We still need x_e and r_emb for the updater.
+            x_e = self.event_proj(f_e)
+            roles = torch.arange(3, device=device).unsqueeze(0).expand(C, 3)
+            r_emb = self.aggregator.role_emb(roles)
         
         # 4. Selective SSM State Update (E → V)
         new_states = self.updater(x_e, r_emb, states, log_dt)
@@ -244,7 +265,8 @@ class HyperMambaFull(nn.Module):
         valid_ids = flat_ids[flat_valid]
         valid_st = flat_new_states[flat_valid].clamp(-10.0, 10.0)
         
-        self.bank.states.scatter_(0, valid_ids.unsqueeze(1).expand(-1, self.d_model), valid_st)
+        # MUST detach before saving to bank to truncate BPTT at chunk boundary!
+        self.bank.states.scatter_(0, valid_ids.unsqueeze(1).expand(-1, self.d_model), valid_st.detach())
         self.bank.last_seen_time.scatter_(0, valid_ids, t_curr.reshape(-1)[flat_valid])
         
         # 6. Classification: event features + aggregated context + entity states

@@ -328,6 +328,11 @@ def evaluate(model, loader, pw_t, device, max_batches=None,
              fixed_threshold=None, loss_fn=None, temperature=1.0):
     if loss_fn is None:
         loss_fn = masked_bce_loss
+        
+    # ALWAYS use pos_weight=1.0 for validation/test evaluation loss!
+    # This prevents artificial inflation of cross-entropy from training weights
+    pw_eval = torch.tensor([1.0], device=device)
+    
     model.eval()
     total_loss = 0.0
     n_batches = 0
@@ -350,7 +355,7 @@ def evaluate(model, loader, pw_t, device, max_batches=None,
 
         m = model.module if isinstance(model, DDP) else model
         logits = m(X_c, et, entity_ids=ent, mask=mask)
-        loss = loss_fn(logits, y, mask, pw_t)
+        loss = loss_fn(logits, y, mask, pw_eval)
 
         total_loss += loss.item()
         n_batches += 1
@@ -452,7 +457,7 @@ def main():
     test_loader = None
     if is_main():
         # L1* test definition: evaluate on original broad labels
-        eval_label_type = "broad" if label_type == "l1" else label_type
+        eval_label_type = "broad" if label_type.startswith("l1") else label_type
 
         val_ds = THyNDataset(
             dcfg["val_shards"], data_root,

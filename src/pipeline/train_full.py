@@ -192,10 +192,13 @@ def main():
     parser = argparse.ArgumentParser(
         description="Train HyperMamba Full (SSM-Driven Taint Propagation)")
     parser.add_argument("--dataset", default="theia", choices=["theia", "trace"])
-    parser.add_argument("--label_type", default="l1", 
-                        help="Label type to train on (e.g., broad, l1, l1_moderate)")
+    parser.add_argument("--label_type", default="broad", choices=["broad", "l1", "crossprocess"])
     parser.add_argument("--dual_val", action="store_true",
-                        help="Dual validation: L1* for early stopping, broad logged alongside")
+                        help="Evaluate on both primary label_type and broad labels simultaneously")
+    
+    # Ablation flags
+    parser.add_argument("--no_state", action="store_true", help="Ablation: Disable entity state bank (event features only)")
+    parser.add_argument("--no_cross_entity", action="store_true", help="Ablation: Disable cross-entity propagation (self-state only)")
     parser.add_argument("--chunk_size", type=int, default=4096)
     parser.add_argument("--d_model", type=int, default=128)
     parser.add_argument("--epochs", type=int, default=10)
@@ -302,6 +305,8 @@ def main():
         n_cont_features=train_ds.n_cont_features,
         num_event_types=train_ds.num_event_types,
         d_model=args.d_model,
+        use_state=not args.no_state,
+        cross_entity=not args.no_cross_entity
     ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters())

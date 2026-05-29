@@ -64,12 +64,20 @@ class ChronoDataset(Dataset):
             
             if label_type == "broad":
                 ys.append(d["y_broad"])
-            else:
+            elif label_type == "l1":
                 ldf = pd.read_parquet(
                     labeled_dir / f"labeled_shard{sid}.parquet",
-                    columns=[label_col])
-                ys.append(ldf[label_col].values.astype(np.int64))
+                    columns=["label_l1"])
+                ys.append(ldf["label_l1"].values.astype(np.int64))
                 del ldf
+            elif label_type == "crossprocess":
+                ldf = pd.read_parquet(
+                    labeled_dir / f"labeled_shard{sid}.parquet",
+                    columns=["label_crossprocess"])
+                ys.append(ldf["label_crossprocess"].values.astype(np.int64))
+                del ldf
+            else:
+                raise ValueError(f"Unknown label_type: {label_type}")
                 
         # Align feature dimensions
         max_cols = max(x.shape[1] for x in Xs)
