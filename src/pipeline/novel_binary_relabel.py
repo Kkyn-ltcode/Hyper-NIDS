@@ -60,6 +60,8 @@ def main():
                         help="Override entry process name (default: from ground truth)")
     parser.add_argument("--neutralize_ratio", type=float, default=0.5,
                         help="Ratio of entry process UUIDs to neutralize (0.0 to 1.0)")
+    parser.add_argument("--label_type", default="l1",
+                        help="The label type name to write to (e.g. l1, l1_moderate, l1_extreme). Will create a column named label_{label_type}.")
     args = parser.parse_args()
 
     data_root = DATASET_ROOTS[args.dataset]
@@ -71,7 +73,7 @@ def main():
     entry_process = args.entry_process or gt.attack_entry_process
 
     print("=" * 60)
-    print(f"L1** NOVEL-BINARY RELABEL: {args.dataset.upper()}")
+    print(f"NOVEL-BINARY RELABEL ({args.label_type}): {args.dataset.upper()}")
     print("=" * 60)
     print(f"  Entry process to neutralize: {entry_process}")
     print(f"  Train shards: {train_shards}")
@@ -189,7 +191,7 @@ def main():
               f"[neutralized: {n_neutralized:,}]")
 
         if not args.dry_run:
-            df["label_l1"] = l1_labels.astype(np.int8)
+            df[f"label_{args.label_type}"] = l1_labels.astype(np.int8)
             df.to_parquet(shard_path, index=False)
 
         del df, l1_labels
@@ -215,8 +217,8 @@ def main():
     if args.dry_run:
         print(f"\n  ⚠ DRY RUN — no files modified")
     else:
-        print(f"\n  ✓ Added 'label_l1' column to all labeled shards")
-        print(f"  → Use label_type: l1 in config YAML to train")
+        print(f"\n  ✓ Added 'label_{args.label_type}' column to all labeled shards")
+        print(f"  → Use --label_type {args.label_type} to train")
 
     # Quick sanity check
     if stats["remaining_attack"] == 0:
