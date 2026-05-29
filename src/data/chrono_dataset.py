@@ -90,22 +90,28 @@ class ChronoDataset(Dataset):
         self.X_cont = X_all[:, n_etype:].astype(np.float32)
         del X_all, etype_onehot; gc.collect()
         
-        # --- Load entity IDs ---
-        if verbose: print(f"  Loading entity IDs...")
+        # --- Load entity IDs and timestamps ---
+        if verbose: print(f"  Loading entity IDs and timestamps...")
         ent_parts = []
+        ts_parts = []
         for sid in shard_ids:
             df = pd.read_parquet(
                 labeled_dir / f"labeled_shard{sid}.parquet",
-                columns=["subject_uuid", "predicate_object_uuid", "predicate_object2_uuid"],
+                columns=["subject_uuid", "predicate_object_uuid", "predicate_object2_uuid", "timestamp_nanos"],
             )
             sub = df["subject_uuid"].map(uuid_to_id).fillna(-1).astype(np.int64).values
             obj = df["predicate_object_uuid"].map(uuid_to_id).fillna(-1).astype(np.int64).values
             obj2 = df["predicate_object2_uuid"].map(uuid_to_id).fillna(-1).astype(np.int64).values
             ent_parts.append(np.stack([sub, obj, obj2], axis=1))
+            
+            # Timestamp (nanoseconds). Convert to seconds as float64 for precision, then to float32
+            ts_sec = (df["timestamp_nanos"].values.astype(np.float64) / 1e9).astype(np.float32)
+            ts_parts.append(ts_sec)
             del df; gc.collect()
             
         self.entity_ids = np.concatenate(ent_parts)
-        del ent_parts; gc.collect()
+        self.timestamps = np.concatenate(ts_parts)
+        del ent_parts, ts_parts; gc.collect()
         
         self.total_events = len(self.X_cont)
         self.num_chunks = self.total_events // self.chunk_size
@@ -125,6 +131,7 @@ class ChronoDataset(Dataset):
         et = self.event_type[start:end]
         y = self.y[start:end]
         ent = self.entity_ids[start:end]
+        ts = self.timestamps[start:end]
         mask = np.ones(self.chunk_size, dtype=np.float32)
         
         return {
@@ -132,5 +139,6 @@ class ChronoDataset(Dataset):
             "event_type": torch.from_numpy(et.copy()).long(),
             "y": torch.from_numpy(y.copy()).long(),
             "entity_ids": torch.from_numpy(ent.copy()).long(),
+            "timestamp": torch.from_numpy(ts.copy()).float(),
             "mask": torch.from_numpy(mask),
         }
