@@ -53,11 +53,13 @@ class AllSetAggregator(nn.Module):
         self.out_proj = nn.Linear(d_model, d_model)
         self.scale = d_model ** -0.5
         
-    def forward(self, event_features, entity_states, log_dt):
+    def forward(self, event_features, entity_states, log_dt, valid_mask):
         """
         event_features: (C, d_event)
         entity_states:  (C, 3, d_model)
         log_dt:         (C, 3, 1)
+        valid_mask:     (C, 3) boolean mask
+
         Returns: x_e (C, d_model), r_emb (C, 3, d_model)
         """
         C = event_features.size(0)
@@ -76,7 +78,11 @@ class AllSetAggregator(nn.Module):
         
         # Scaled dot-product attention
         scores = torch.bmm(q, k.transpose(1, 2)) * self.scale  # (C, 1, 3)
+        scores = scores.masked_fill(~valid_mask.unsqueeze(1), float('-inf'))
         attn = F.softmax(scores, dim=-1)
+        # In case all entities are invalid (shouldn't happen, but just in case), softmax gives NaNs.
+        # Replace NaNs with 0.
+        attn = torch.nan_to_num(attn, nan=0.0)
         agg = torch.bmm(attn, v).squeeze(1)  # (C, d_model)
         
         x_e = self.out_proj(agg)
@@ -190,6 +196,9 @@ class HyperMambaFull(nn.Module):
             nn.Linear(d_model // 2, 1)
         )
         
+        # Normalize aggregated states before classifier so they don't drown out event features
+        self.state_norm = nn.LayerNorm(d_model)
+        
     def reset_bank(self):
         self.bank.reset()
         
@@ -249,7 +258,7 @@ class HyperMambaFull(nn.Module):
             
         # 3. Hyperedge Aggregation (V → E)
         if self.cross_entity:
-            x_e, r_emb = self.aggregator(f_e, states, log_dt)
+            x_e, r_emb = self.aggregator(f_e, states, log_dt, valid_mask)
         else:
             # Ablation: No cross-entity aggregation.
             # Represent hyperedge purely by event features.
@@ -267,7 +276,7 @@ class HyperMambaFull(nn.Module):
         flat_valid = valid_mask.view(-1)
         
         valid_ids = flat_ids[flat_valid]
-        valid_st = flat_new_states[flat_valid].clamp(-10.0, 10.0)
+        valid_st = flat_new_states[flat_valid]
         
         # MUST detach before saving to bank to truncate BPTT at chunk boundary!
         self.bank.states.scatter_(0, valid_ids.unsqueeze(1).expand(-1, self.d_model), valid_st.detach())
@@ -277,6 +286,10 @@ class HyperMambaFull(nn.Module):
         n_valid = valid_mask.float().sum(dim=1, keepdim=True).clamp(min=1)
         agg_states = states.sum(dim=1) / n_valid         # (C, d_model)
         
+        # Apply LayerNorm to stabilize states before classifier
+        if self.use_state:
+            agg_states = self.state_norm(agg_states)
+            
         event_feat = self.event_proj(f_e)                # (C, d_model)
         
         cls_input = torch.cat([agg_states, event_feat], dim=-1)  # (C, 2*d_model)

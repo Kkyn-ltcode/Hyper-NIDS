@@ -378,6 +378,12 @@ def main():
     for epoch in range(1, args.epochs + 1):
         logging.info(f"\n--- Epoch {epoch}/{args.epochs} ---")
 
+        # CRITICAL: Reset the bank at the start of each epoch!
+        # Otherwise, epoch 2 starts training on shard 0 using the future
+        # entity states left over from the end of the validation set (shard 7).
+        # This creates a massive data leak and completely breaks learning.
+        model.reset_bank()
+
         train_loss, epoch_chunk_losses, train_metrics = train_epoch(
             model, train_loader, optimizer, device, pos_weight)
 
