@@ -196,6 +196,8 @@ def main():
     parser.add_argument("--train_label_type", type=str, default=None, help="Override label type for training")
     parser.add_argument("--test_label_type", type=str, default=None, help="Override label type for testing")
     parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--finetune_from", type=str, default=None, help="Path to checkpoint to fine-tune from")
+    parser.add_argument("--freeze_body", action="store_true", help="Freeze everything except the classifier head")
     parser.add_argument("--dual_val", action="store_true",
                         help="Evaluate on both primary label_type and broad labels simultaneously")
     
@@ -310,10 +312,21 @@ def main():
         cross_entity=not args.no_cross_entity
     ).to(device)
 
-    n_params = sum(p.numel() for p in model.parameters())
-    logging.info(f"\nModel parameters: {n_params:,}")
+    if args.finetune_from:
+        logging.info(f"Loading checkpoint from {args.finetune_from}")
+        ckpt = torch.load(args.finetune_from, map_location=device)
+        model.load_state_dict(ckpt)
+        
+        if args.freeze_body:
+            logging.info("Freezing all parameters except the classifier head...")
+            for name, param in model.named_parameters():
+                if "classifier" not in name:
+                    param.requires_grad = False
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logging.info(f"\nTrainable parameters: {n_params:,}")
+
+    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr, weight_decay=1e-4)
 
     # Compute and cap pos_weight for training loss
     n_pos = int((train_ds.y == 1).sum())
