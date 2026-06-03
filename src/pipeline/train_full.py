@@ -253,6 +253,11 @@ def main():
     else:
         device = torch.device("cpu")
 
+    # Determine label strategy:
+    train_lbl = args.train_label_type if args.train_label_type else args.label_type
+    test_lbl = args.test_label_type if args.test_label_type else args.label_type
+    val_label_primary = train_lbl
+
     # Create a timestamped run directory (will be renamed with results at end)
     run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_base = Path("checkpoints") / "full_runs"
@@ -271,13 +276,7 @@ def main():
     data_root = DATA_ROOT / args.dataset
     shards = SHARD_CONFIG[args.dataset]
 
-    # Determine label strategy:
-    # - Training uses train_lbl (default: label_type)
-    # - Validation uses train_lbl for early stopping (same distribution as training)
-    # - Test uses test_lbl (can differ to test generalization, e.g., broad→crossprocess)
-    train_lbl = args.train_label_type if args.train_label_type else args.label_type
-    test_lbl = args.test_label_type if args.test_label_type else args.label_type
-    val_label_primary = train_lbl
+
 
     logging.info("=" * 60)
     logging.info(f"  HYPERMAMBA FULL — {args.dataset.upper()}")
