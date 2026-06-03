@@ -108,8 +108,8 @@ class SelectiveSSMUpdater(nn.Module):
         A_init = torch.log(torch.linspace(0.1, 2.0, d_model))
         self.A_log = nn.Parameter(A_init)
         
-        # B: input projection
-        self.proj_B = nn.Linear(d_model, d_model)
+        # B: input projection, now role-specific to prevent over-smoothing
+        self.proj_B = nn.Linear(d_model * 2, d_model)
         
         # Delta: input-dependent discretization step
         # Initialize bias to produce small delta values (around 0.1-1.0)
@@ -119,6 +119,11 @@ class SelectiveSSMUpdater(nn.Module):
         
         # Gating: how much of the SSM update vs old state to keep
         self.gate_proj = nn.Linear(d_model * 2, d_model)
+        with torch.no_grad():
+            # CRITICAL: Initialize gate to be mostly closed (sigmoid(-3) ≈ 0.04)
+            # This forces the model to actively LEARN to propagate state, preventing
+            # catastrophic over-smoothing (diffusion of state) at initialization.
+            self.gate_proj.bias.fill_(-3.0)
         
     def forward(self, x_e, r_emb, entity_states, log_dt):
         """
@@ -133,12 +138,14 @@ class SelectiveSSMUpdater(nn.Module):
         
         x_e_exp = x_e.unsqueeze(1).expand(-1, 3, -1)  # (C, 3, d_model)
         
-        # B: input-to-state projection
-        B = self.proj_B(x_e).unsqueeze(1).expand(-1, 3, -1)  # (C, 3, d_model)
+        # B: input-to-state projection (Role-Specific)
+        # If we don't include r_emb here, all 3 entities get the EXACT same
+        # update direction, forcing them to become identical and destroying graph structure.
+        B_input = torch.cat([x_e_exp, r_emb], dim=-1)  # (C, 3, 2*d_model)
+        B = self.proj_B(B_input)  # (C, 3, d_model)
         
         # Delta: input-dependent discretization step
-        delta_input = torch.cat([x_e_exp, r_emb], dim=-1)  # (C, 3, 2*d_model)
-        delta_raw = F.softplus(self.proj_delta(delta_input))  # (C, 3, d_model), positive
+        delta_raw = F.softplus(self.proj_delta(B_input))  # (C, 3, d_model), positive
         
         # Incorporate time elapsed — but scale gently
         # Use log_dt as an additive offset, not multiplicative
