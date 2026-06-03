@@ -254,10 +254,9 @@ def main():
         device = torch.device("cpu")
 
     # Create a timestamped run directory (will be renamed with results at end)
-    dual_tag = "_dualval" if args.dual_val else ""
     run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_base = Path("checkpoints") / "full_runs"
-    save_dir = run_base / f"{args.dataset}_{args.label_type}{dual_tag}_{run_ts}"
+    save_dir = run_base / f"{args.dataset}_{train_lbl}_{run_ts}"
     save_dir.mkdir(parents=True, exist_ok=True)
 
     logging.basicConfig(
