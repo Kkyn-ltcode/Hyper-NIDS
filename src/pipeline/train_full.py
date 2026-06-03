@@ -314,7 +314,17 @@ def main():
     if args.finetune_from:
         logging.info(f"Loading checkpoint from {args.finetune_from}")
         ckpt = torch.load(args.finetune_from, map_location=device)
-        model.load_state_dict(ckpt)
+        
+        # Handle both raw state_dict and our checkpoint dict wrapper
+        state_dict = ckpt["model_state"] if "model_state" in ckpt else ckpt
+        
+        # strict=False allows loading even if the classifier head architecture has changed
+        # (e.g. going from 4*d_model to 2*d_model input)
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        if missing:
+            logging.info(f"  Missing keys (expected if classifier changed): {len(missing)}")
+        if unexpected:
+            logging.info(f"  Unexpected keys: {len(unexpected)}")
         
         if args.freeze_body:
             logging.info("Freezing all parameters except the classifier head...")
