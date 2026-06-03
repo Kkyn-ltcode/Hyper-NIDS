@@ -192,7 +192,10 @@ def main():
     parser = argparse.ArgumentParser(
         description="Train HyperMamba Full (SSM-Driven Taint Propagation)")
     parser.add_argument("--dataset", default="theia", choices=["theia", "trace"])
-    parser.add_argument("--label_type", default="broad", choices=["broad", "l1", "crossprocess"])
+    parser.add_argument("--label_type", type=str, default="crossprocess", choices=["broad", "crossprocess", "l1"])
+    parser.add_argument("--train_label_type", type=str, default=None, help="Override label type for training")
+    parser.add_argument("--test_label_type", type=str, default=None, help="Override label type for testing")
+    parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--dual_val", action="store_true",
                         help="Evaluate on both primary label_type and broad labels simultaneously")
     
@@ -263,34 +266,32 @@ def main():
     logging.info(f"  Val shards:   {shards['val']}")
 
     # --- Data ---
-    logging.info(f"\nLoading training data (labels={args.label_type})...")
+    train_lbl = args.train_label_type if args.train_label_type else args.label_type
+    test_lbl = args.test_label_type if args.test_label_type else args.label_type
+
+    logging.info(f"\nLoading datasets for {args.dataset}...")
     train_ds = ChronoDataset(
         shards["train"], data_root,
-        chunk_size=args.chunk_size, label_type=args.label_type)
+        chunk_size=args.chunk_size, label_type=train_lbl)
 
     # All datasets must share the same timestamp reference (t0_nanos)
     # so that dt = t_curr - last_seen is valid across train→val→test boundaries
     t0 = train_ds.t0_nanos
     logging.info(f"  Global t0_nanos: {t0} (all splits share this reference)")
 
-    logging.info(f"Loading validation data (primary: {val_label_primary})...")
+    logging.info(f"Loading validation data (labels={test_lbl})...")
     val_ds = ChronoDataset(
         shards["val"], data_root,
-        chunk_size=args.chunk_size, label_type=val_label_primary, t0_nanos=t0)
+        chunk_size=args.chunk_size, label_type=test_lbl, t0_nanos=t0)
 
     val_broad_ds = None
     val_broad_loader = None
-    if val_label_secondary:
-        logging.info(f"Loading validation data (secondary: {val_label_secondary})...")
-        val_broad_ds = ChronoDataset(
-            shards["val"], data_root,
-            chunk_size=args.chunk_size, label_type=val_label_secondary, t0_nanos=t0)
 
-    # Test ALWAYS uses broad labels
-    logging.info(f"Loading test data (labels=broad)...")
+    logging.info(f"\nLoading testing data (labels={test_lbl})...")
     test_ds = ChronoDataset(
         shards["test"], data_root,
-        chunk_size=args.chunk_size, label_type="broad", t0_nanos=t0)
+        chunk_size=args.chunk_size, label_type=test_lbl,
+        t0_nanos=train_ds.t0_nanos)
 
     # Strict chronological: batch_size=1, shuffle=False, num_workers=0
     train_loader = DataLoader(train_ds, batch_size=1, shuffle=False, num_workers=0)
