@@ -20,8 +20,14 @@ class EntityStateBank(nn.Module):
         self.states.zero_()
         self.last_seen_time.fill_(-1.0)
         
-    def detach_(self, bank_decay=0.95):
-        self.states = self.states.detach() * bank_decay
+    def detach_(self):
+        """Detach states from computation graph at TBPTT boundary.
+        
+        NO bank_decay: the SSM's A matrix provides principled, learned temporal
+        decay. Adding a global 0.95 multiplier was killing long-range taint
+        propagation (0.95^8 = 0.66 signal loss over the 8-chunk attack gap).
+        """
+        self.states = self.states.detach()
         self.last_seen_time = self.last_seen_time.detach()
 
 
@@ -187,8 +193,8 @@ class HyperMambaFull(nn.Module):
     def reset_bank(self):
         self.bank.reset()
         
-    def detach_bank(self, bank_decay=0.95):
-        self.bank.detach_(bank_decay)
+    def detach_bank(self):
+        self.bank.detach_()
         
     def forward(self, x_cont, event_type, entity_ids, timestamps):
         """

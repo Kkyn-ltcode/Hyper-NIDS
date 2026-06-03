@@ -149,6 +149,34 @@ def train_epoch(model, loader, optimizer, device, pos_weight, grad_clip=1.0):
 
 
 @torch.no_grad()
+def warmup_bank(model, loaders, device):
+    """Process data shards in eval mode to warm up entity states.
+    
+    In real deployment, the IDS runs continuously — entity states are never
+    'cold'. Before test evaluation, we must simulate this by processing
+    the training + val shards in forward-pass-only mode to build up the
+    entity state bank. No gradients, no metric collection — just state
+    accumulation.
+    """
+    model.eval()
+    model.reset_bank()
+    
+    total_events = 0
+    for loader in loaders:
+        for batch in loader:
+            X_c = batch["X_cont"].to(device).clamp(-20, 20)
+            et = batch["event_type"].to(device)
+            ent = batch["entity_ids"].to(device)
+            ts = batch["timestamp"].to(device)
+            
+            _ = model(X_c, et, ent, ts)
+            model.detach_bank()
+            total_events += X_c.size(1)
+    
+    logging.info(f"  Bank warmup complete: {total_events:,} events processed")
+
+
+@torch.no_grad()
 def evaluate(model, loader, device):
     """Evaluate model on a dataset. Always uses pos_weight=1.0 (unweighted BCE)
     since val/test may have different class distributions than training."""
@@ -198,8 +226,6 @@ def main():
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--finetune_from", type=str, default=None, help="Path to checkpoint to fine-tune from")
     parser.add_argument("--freeze_body", action="store_true", help="Freeze everything except the classifier head")
-    parser.add_argument("--dual_val", action="store_true",
-                        help="Evaluate on both primary label_type and broad labels simultaneously")
     
     # Ablation flags
     parser.add_argument("--no_state", action="store_true", help="Ablation: Disable entity state bank (event features only)")
@@ -246,31 +272,26 @@ def main():
     data_root = DATA_ROOT / args.dataset
     shards = SHARD_CONFIG[args.dataset]
 
-    # Determine val label strategy
-    if args.dual_val:
-        val_label_primary = "l1"     # used for early stopping
-        val_label_secondary = "broad"  # logged alongside
-        val_mode = "DUAL (L1* for stopping, broad logged)"
-    else:
-        val_label_primary = args.label_type  # match training
-        val_label_secondary = None
-        val_mode = f"SINGLE ({val_label_primary})"
+    # Determine label strategy:
+    # - Training uses train_lbl (default: label_type)
+    # - Validation uses train_lbl for early stopping (same distribution as training)
+    # - Test uses test_lbl (can differ to test generalization, e.g., broad→crossprocess)
+    train_lbl = args.train_label_type if args.train_label_type else args.label_type
+    test_lbl = args.test_label_type if args.test_label_type else args.label_type
+    val_label_primary = train_lbl
 
     logging.info("=" * 60)
     logging.info(f"  HYPERMAMBA FULL — {args.dataset.upper()}")
     logging.info("=" * 60)
-    logging.info(f"  Device:      {device}")
-    logging.info(f"  Label type:  {args.label_type}")
-    logging.info(f"  Val mode:    {val_mode}")
-    logging.info(f"  Seed:        {args.seed}")
+    logging.info(f"  Device:       {device}")
+    logging.info(f"  Train labels: {train_lbl}")
+    logging.info(f"  Test labels:  {test_lbl}")
+    logging.info(f"  Seed:         {args.seed}")
     logging.info(f"  Train shards: {shards['train']}")
     logging.info(f"  Val shards:   {shards['val']}")
 
     # --- Data ---
-    train_lbl = args.train_label_type if args.train_label_type else args.label_type
-    test_lbl = args.test_label_type if args.test_label_type else args.label_type
-
-    logging.info(f"\nLoading datasets for {args.dataset}...")
+    logging.info(f"\nLoading training data (labels={train_lbl})...")
     train_ds = ChronoDataset(
         shards["train"], data_root,
         chunk_size=args.chunk_size, label_type=train_lbl)
@@ -280,25 +301,19 @@ def main():
     t0 = train_ds.t0_nanos
     logging.info(f"  Global t0_nanos: {t0} (all splits share this reference)")
 
-    logging.info(f"Loading validation data (labels={test_lbl})...")
+    logging.info(f"Loading validation data (labels={train_lbl})...")
     val_ds = ChronoDataset(
         shards["val"], data_root,
-        chunk_size=args.chunk_size, label_type=test_lbl, t0_nanos=t0)
+        chunk_size=args.chunk_size, label_type=train_lbl, t0_nanos=t0)
 
-    val_broad_ds = None
-    val_broad_loader = None
-
-    logging.info(f"\nLoading testing data (labels={test_lbl})...")
+    logging.info(f"Loading testing data (labels={test_lbl})...")
     test_ds = ChronoDataset(
         shards["test"], data_root,
-        chunk_size=args.chunk_size, label_type=test_lbl,
-        t0_nanos=train_ds.t0_nanos)
+        chunk_size=args.chunk_size, label_type=test_lbl, t0_nanos=t0)
 
     # Strict chronological: batch_size=1, shuffle=False, num_workers=0
     train_loader = DataLoader(train_ds, batch_size=1, shuffle=False, num_workers=0)
     val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=0)
-    if val_broad_ds:
-        val_broad_loader = DataLoader(val_broad_ds, batch_size=1, shuffle=False, num_workers=0)
     test_loader = DataLoader(test_ds, batch_size=1, shuffle=False, num_workers=0)
 
     # --- Model ---
@@ -359,10 +374,6 @@ def main():
         'val_f1': [],
         'chunk_loss': [],
     }
-    if args.dual_val:
-        history['val_broad_auprc'] = []
-        history['val_broad_f1'] = []
-        history['val_broad_loss'] = []
 
     logging.info(f"\nStarting training ({args.epochs} epochs)...")
 
@@ -372,10 +383,7 @@ def main():
         train_loss, epoch_chunk_losses, train_metrics = train_epoch(
             model, train_loader, optimizer, device, pos_weight)
 
-        # Save bank state before eval so we can restore for secondary eval
-        bank_snapshot = model.bank.last_seen_time.clone(), model.bank.states.clone()
-
-        # Primary validation (used for early stopping)
+        # Validation (used for early stopping) — bank carries warm state from training
         val_metrics = evaluate(model, val_loader, device)
         val_loss = val_metrics["loss"]
         auprc = val_metrics["auprc"]
@@ -394,21 +402,6 @@ def main():
         logging.info(f"  Train Loss:  {train_loss:.4f}  |  Val({val_label_primary}) Loss: {val_loss:.4f}")
         logging.info(f"  Train AUPRC: {t_auprc:.4f}  |  Train F1: {t_f1:.4f}")
         logging.info(f"  Val({val_label_primary}) AUPRC: {auprc:.4f}  |  Val({val_label_primary}) F1: {f1:.4f}")
-
-        # Secondary validation (dual mode: broad logged but NOT used for stopping)
-        if val_broad_loader is not None:
-            # Restore bank to post-training state before running broad val
-            last_seen_snap, states_snap = bank_snapshot
-            model.bank.last_seen_time = last_seen_snap.clone()
-            model.bank.states = states_snap.clone()
-            vb_metrics = evaluate(model, val_broad_loader, device)
-            vb_auprc = vb_metrics["auprc"]
-            vb_f1 = vb_metrics["best_f1"]
-            vb_loss = vb_metrics["loss"]
-            history['val_broad_auprc'].append(vb_auprc)
-            history['val_broad_f1'].append(vb_f1)
-            history['val_broad_loss'].append(vb_loss)
-            logging.info(f"  Val(broad) AUPRC: {vb_auprc:.4f}  |  Val(broad) F1: {vb_f1:.4f}  [info only]")
 
         if auprc > best_auprc:
             best_auprc = auprc
@@ -432,10 +425,16 @@ def main():
     logging.info(f"  Checkpoint: {save_dir / 'best.pt'}")
     logging.info(f"{'='*60}")
 
-    logging.info("\nEvaluating on Test Set (broad labels) with best model...")
+    logging.info(f"\nEvaluating on Test Set (labels={test_lbl}) with best model...")
     checkpoint = torch.load(save_dir / 'best.pt')
     model.load_state_dict(checkpoint["model_state"])
-    model.reset_bank()  # fresh bank for test — simulates real deployment
+    
+    # Warm up entity states by processing train+val shards in eval mode.
+    # In real deployment, the IDS runs continuously — entity states are
+    # never 'cold'. Resetting to zeros would destroy all temporal context
+    # and reduce the model to a stateless event classifier.
+    logging.info("  Warming up entity state bank (processing train+val shards)...")
+    warmup_bank(model, [train_loader, val_loader], device)
     
     test_metrics = evaluate(model, test_loader, device)
     test_loss = test_metrics["loss"]
@@ -490,9 +489,6 @@ def main():
         plt.subplot(2, 2, 3)
         plt.plot(ep_range, history['train_auprc'], marker='o', color='blue', label='Train AUPRC')
         plt.plot(ep_range, history['val_auprc'], marker='s', color='green', label=f'Val({val_label_primary}) AUPRC')
-        if 'val_broad_auprc' in history and history['val_broad_auprc']:
-            plt.plot(ep_range, history['val_broad_auprc'], marker='D', color='orange',
-                     linestyle='--', label='Val(broad) AUPRC')
         if 'test_auprc' in history:
             plt.plot(best_epoch, history['test_auprc'], marker='*', markersize=15, color='darkgreen', label='Test AUPRC')
         plt.xlabel('Epoch')
@@ -506,9 +502,6 @@ def main():
         plt.subplot(2, 2, 4)
         plt.plot(ep_range, history['train_f1'], marker='o', color='blue', label='Train F1')
         plt.plot(ep_range, history['val_f1'], marker='s', color='green', label=f'Val({val_label_primary}) F1')
-        if 'val_broad_f1' in history and history['val_broad_f1']:
-            plt.plot(ep_range, history['val_broad_f1'], marker='D', color='orange',
-                     linestyle='--', label='Val(broad) F1')
         if 'test_f1' in history:
             plt.plot(best_epoch, history['test_f1'], marker='*', markersize=15, color='darkgreen', label='Test F1')
         plt.xlabel('Epoch')
@@ -530,7 +523,7 @@ def main():
     best_f1 = max(history['val_f1']) if history['val_f1'] else 0.0
     actual_epochs = len(history['train_loss'])
     final_name = (
-        f"{args.dataset}_{args.label_type}"
+        f"{args.dataset}_train-{train_lbl}_test-{test_lbl}"
         f"_auprc{best_auprc:.4f}_f1{best_f1:.4f}"
         f"_chunk{args.chunk_size}_ep{actual_epochs}"
     )
