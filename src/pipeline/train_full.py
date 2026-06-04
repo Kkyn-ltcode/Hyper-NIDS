@@ -350,12 +350,13 @@ def main():
 
     optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr, weight_decay=1e-4)
 
-    # Compute and cap pos_weight for training loss
+    # Compute pos_weight for training loss — use true class ratio
+    # Previous cap at 30 was under-penalizing missed positives for crossprocess
+    # (true ratio ~99:1), systematically hurting recall and AUPRC.
     n_pos = int((train_ds.y == 1).sum())
     n_neg = int((train_ds.y == 0).sum())
-    raw_pw = n_neg / max(n_pos, 1)
-    pos_weight = min(raw_pw, args.max_pos_weight)
-    logging.info(f"  pos_weight: {pos_weight:.1f} (raw={raw_pw:.1f}, cap={args.max_pos_weight})")
+    pos_weight = n_neg / max(n_pos, 1)
+    logging.info(f"  pos_weight: {pos_weight:.1f} (true class ratio)")
 
     # --- Training ---
     best_auprc = 0.0

@@ -36,6 +36,12 @@ class ChronoDataset(Dataset):
         # Load entity vocabulary to get total entities
         vocab = np.load(graph_dir / "entity_vocab.npz", allow_pickle=True)
         uuid_to_id = {str(u): i for i, u in enumerate(vocab["uuids"])}
+        # Remove the null UUID — it appears as predicate_object2_uuid on most events.
+        # If left in the vocab, it gets a real integer ID, accumulates state from
+        # every single event, and becomes a corrupted super-node that bleeds noise
+        # into every cross-entity aggregation. Removing it makes .map() return NaN,
+        # then .fillna(-1) correctly marks it as invalid for valid_mask.
+        uuid_to_id.pop("00000000-0000-0000-0000-000000000000", None)
         self.num_entities = int(vocab["num_entities"])
         
         # --- Identify feature columns ---

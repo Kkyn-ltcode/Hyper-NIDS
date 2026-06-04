@@ -289,9 +289,12 @@ class HyperMambaFull(nn.Module):
         self.bank.states.scatter_(0, valid_ids.unsqueeze(1).expand(-1, self.d_model), valid_st.detach())
         self.bank.last_seen_time.scatter_(0, valid_ids, t_curr.reshape(-1)[flat_valid])
         
-        # 6. Classification: matches prototype exactly (pre-update agg_states + event_feat)
+        # 6. Classification: use POST-UPDATE states so gradient flows through
+        #    the SSM updater and Aggregator. Using pre-update `states` (from the
+        #    buffer) would have requires_grad=False, cutting all gradient to the
+        #    SSM (A_log, proj_B, proj_delta, gate_proj) and Aggregator (q/k/v_proj).
         n_valid = valid_mask.float().sum(dim=1, keepdim=True).clamp(min=1)
-        agg_states = states.sum(dim=1) / n_valid         # (C, d_model)
+        agg_states = new_states.sum(dim=1) / n_valid      # (C, d_model) — LIVE autograd tensor
         
         # Apply LayerNorm to stabilize states before classifier
         if self.use_state:
