@@ -350,13 +350,15 @@ def main():
 
     optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr, weight_decay=1e-4)
 
-    # Compute pos_weight for training loss — use true class ratio
-    # Previous cap at 30 was under-penalizing missed positives for crossprocess
-    # (true ratio ~99:1), systematically hurting recall and AUPRC.
+    # Compute pos_weight for training loss
+    # True ratio is ~99:1 for crossprocess, but uncapped causes NaN gradients
+    # through the SSM exponentials. Cap at 50 — high enough for proper recall
+    # penalization, low enough for numerical stability in the exp(A*delta) path.
     n_pos = int((train_ds.y == 1).sum())
     n_neg = int((train_ds.y == 0).sum())
-    pos_weight = n_neg / max(n_pos, 1)
-    logging.info(f"  pos_weight: {pos_weight:.1f} (true class ratio)")
+    raw_pw = n_neg / max(n_pos, 1)
+    pos_weight = min(raw_pw, 50.0)
+    logging.info(f"  pos_weight: {pos_weight:.1f} (raw={raw_pw:.1f}, capped at 50)")
 
     # --- Training ---
     best_auprc = 0.0
