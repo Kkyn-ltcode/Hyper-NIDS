@@ -79,7 +79,7 @@ def train_epoch(model, loader, optimizer, device, pos_weight, grad_clip=1.0):
     pw_t = torch.tensor([pos_weight], device=device)
 
     for i, batch in enumerate(loader):
-        X_c = batch["X_cont"].to(device).clamp(-20, 20)
+        X_c = torch.nan_to_num(batch["X_cont"].to(device), nan=0.0).clamp(-20, 20)
         et = batch["event_type"].to(device)
         y = batch["y"].to(device).float()
         ent = batch["entity_ids"].to(device)
@@ -164,7 +164,7 @@ def warmup_bank(model, loaders, device):
     total_events = 0
     for loader in loaders:
         for batch in loader:
-            X_c = batch["X_cont"].to(device).clamp(-20, 20)
+            X_c = torch.nan_to_num(batch["X_cont"].to(device), nan=0.0).clamp(-20, 20)
             et = batch["event_type"].to(device)
             ent = batch["entity_ids"].to(device)
             ts = batch["timestamp"].to(device)
@@ -190,7 +190,7 @@ def evaluate(model, loader, device):
     n_chunks = 0
 
     for batch in loader:
-        X_c = batch["X_cont"].to(device).clamp(-20, 20)
+        X_c = torch.nan_to_num(batch["X_cont"].to(device), nan=0.0).clamp(-20, 20)
         et = batch["event_type"].to(device)
         y = batch["y"].to(device).float()
         ent = batch["entity_ids"].to(device)
@@ -350,15 +350,13 @@ def main():
 
     optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr, weight_decay=1e-4)
 
-    # Compute pos_weight for training loss
-    # True ratio is ~99:1 for crossprocess, but uncapped causes NaN gradients
-    # through the SSM exponentials. Cap at 50 — high enough for proper recall
-    # penalization, low enough for numerical stability in the exp(A*delta) path.
+    # Compute pos_weight for training loss — use true class ratio
+    # Previous cap at 30 was under-penalizing missed positives for crossprocess
+    # (true ratio ~99:1), systematically hurting recall and AUPRC.
     n_pos = int((train_ds.y == 1).sum())
     n_neg = int((train_ds.y == 0).sum())
-    raw_pw = n_neg / max(n_pos, 1)
-    pos_weight = min(raw_pw, 50.0)
-    logging.info(f"  pos_weight: {pos_weight:.1f} (raw={raw_pw:.1f}, capped at 50)")
+    pos_weight = n_neg / max(n_pos, 1)
+    logging.info(f"  pos_weight: {pos_weight:.1f} (true class ratio)")
 
     # --- Training ---
     best_auprc = 0.0

@@ -28,6 +28,8 @@ class EntityStateBank(nn.Module):
         propagation (0.95^8 = 0.66 signal loss over the 8-chunk attack gap).
         """
         self.states = self.states.detach()
+        # Clean any NaN that slipped through — prevents cascade across chunks
+        self.states = torch.nan_to_num(self.states, nan=0.0)
         self.last_seen_time = self.last_seen_time.detach()
 
 
@@ -243,6 +245,11 @@ class HyperMambaFull(nn.Module):
         valid_mask = entity_ids >= 0  # (C, 3)
         
         states = self.bank.states[safe_ids.view(-1)].view(C, 3, self.d_model)
+        # Normalize gathered states to prevent unbounded accumulation from
+        # causing attention score overflow (exp(>88) = inf in float32).
+        # Hub entities (pid 1, shell) get updated ~157k times; without this,
+        # k_proj produces scores that overflow softmax.
+        states = F.layer_norm(states, [self.d_model])
         states = states * valid_mask.unsqueeze(-1)
         
         last_seen = self.bank.last_seen_time[safe_ids.view(-1)].view(C, 3)
@@ -286,7 +293,10 @@ class HyperMambaFull(nn.Module):
         valid_st = flat_new_states[flat_valid]
         
         # MUST detach before saving to bank to truncate BPTT at chunk boundary!
-        self.bank.states.scatter_(0, valid_ids.unsqueeze(1).expand(-1, self.d_model), valid_st.detach())
+        # Guard against NaN before scatter — once NaN enters the bank, it cascades
+        # to every future chunk that reads from the corrupted entity.
+        valid_st_safe = torch.nan_to_num(valid_st.detach(), nan=0.0, posinf=1.0, neginf=-1.0)
+        self.bank.states.scatter_(0, valid_ids.unsqueeze(1).expand(-1, self.d_model), valid_st_safe)
         self.bank.last_seen_time.scatter_(0, valid_ids, t_curr.reshape(-1)[flat_valid])
         
         # 6. Classification: use POST-UPDATE states so gradient flows through
@@ -294,7 +304,10 @@ class HyperMambaFull(nn.Module):
         #    buffer) would have requires_grad=False, cutting all gradient to the
         #    SSM (A_log, proj_B, proj_delta, gate_proj) and Aggregator (q/k/v_proj).
         n_valid = valid_mask.float().sum(dim=1, keepdim=True).clamp(min=1)
-        agg_states = new_states.sum(dim=1) / n_valid      # (C, d_model) — LIVE autograd tensor
+        # Mask out invalid entities BEFORE summing — the SSM still computes
+        # new_states for slot 2 (null UUID) via gate*B_bar*x_e, producing
+        # non-zero values. Without masking, we sum 3 entities but divide by 2.
+        agg_states = (new_states * valid_mask.unsqueeze(-1)).sum(dim=1) / n_valid  # (C, d_model)
         
         # Apply LayerNorm to stabilize states before classifier
         if self.use_state:
