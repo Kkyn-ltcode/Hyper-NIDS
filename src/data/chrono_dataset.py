@@ -86,7 +86,17 @@ class ChronoDataset(Dataset):
         Xs, ys = [], []
         for sid in shard_ids:
             d = np.load(features_dir / f"thyne_shard{sid}.npz")
-            Xs.append(d["X"])
+            x_base = d["X"]
+            
+            # Load enriched features
+            enriched_path = data_root / "labeled" / f"enriched_shard{sid}.npz"
+            if enriched_path.exists():
+                ed = np.load(enriched_path)
+                x_enr = ed["features"]
+                # Append enriched features
+                x_base = np.concatenate([x_base, x_enr], axis=1)
+                
+            Xs.append(x_base)
             
             if label_type == "broad":
                 ys.append(d["y_broad"])
@@ -123,6 +133,7 @@ class ChronoDataset(Dataset):
         self.event_type[no_etype] = 0
         
         self.X_cont = X_all[:, n_etype:].astype(np.float32)
+        self.n_cont_features = self.X_cont.shape[1]
         del X_all, etype_onehot; gc.collect()
         
         # --- Load entity IDs and timestamps ---

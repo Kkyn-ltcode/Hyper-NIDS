@@ -179,13 +179,11 @@ class SelectiveSSMUpdater(nn.Module):
 
 class HyperMambaFull(nn.Module):
     def __init__(self, num_entities, n_cont_features, num_event_types, d_model=128,
-                 use_state=True, cross_entity=True, n_entity_features=0,
-                 entity_feature_matrix=None):
+                 use_state=True, cross_entity=True):
         super().__init__()
         self.d_model = d_model
         self.use_state = use_state
         self.cross_entity = cross_entity
-        self.n_entity_features = n_entity_features
         
         # Event Encoder
         self.event_emb = nn.Embedding(num_event_types, d_model)
@@ -196,24 +194,14 @@ class HyperMambaFull(nn.Module):
         # State Bank
         self.bank = EntityStateBank(num_entities, d_model)
         
-        # Static entity features (path hash, entity type, network info)
-        # Registered as a buffer so it moves to GPU with model.to(device)
-        if entity_feature_matrix is not None:
-            self.register_buffer("entity_features",
-                                 torch.from_numpy(entity_feature_matrix).float())
-            self.ent_proj = nn.Linear(n_entity_features, d_model)
-        else:
-            self.register_buffer("entity_features", None)
-            self.ent_proj = None
-        
         # Architecture Components
-        self.aggregator = AllSetAggregator(d_model, self.d_event, n_entity_features)
+        self.aggregator = AllSetAggregator(d_model, self.d_event)
         self.updater = SelectiveSSMUpdater(d_model)
         
         # Project event features from d_event to d_model for classifier
         self.event_proj = nn.Linear(self.d_event, d_model)
         
-        # Classifier Head: matches prototype exactly [agg_states, event_feat]
+        # Classifier Head: [agg_states, event_feat]
         self.classifier = nn.Sequential(
             nn.Linear(d_model * 2, d_model),
             nn.GELU(),
@@ -223,7 +211,7 @@ class HyperMambaFull(nn.Module):
             nn.Linear(d_model // 2, 1)
         )
         
-        # Normalize aggregated states before classifier so they don't drown out event features
+        # Normalize aggregated states before classifier
         self.state_norm = nn.LayerNorm(d_model)
         
     def reset_bank(self):
@@ -279,22 +267,9 @@ class HyperMambaFull(nn.Module):
         dt = torch.clamp(dt, min=0.0)
         log_dt = torch.log1p(dt).unsqueeze(-1)  # (C, 3, 1)
         
-        # 2b. Gather static entity features (path hash, entity type, network)
-        if self.entity_features is not None:
-            ent_feat = self.entity_features[safe_ids.view(-1)].view(C, 3, self.n_entity_features)
-            ent_feat = ent_feat * valid_mask.unsqueeze(-1)
-            
-            # Pool entity features for the event representation (ensures fair ablations)
-            n_valid = valid_mask.float().sum(dim=1, keepdim=True).clamp(min=1)
-            pooled_ent_feat = ent_feat.sum(dim=1) / n_valid  # (C, n_entity_features)
-            pooled_ent_emb = self.ent_proj(pooled_ent_feat)  # (C, d_model)
-        else:
-            ent_feat = None
-            pooled_ent_emb = 0.0
-        
         if not self.use_state:
             # Ablation: Pure event feature classification, no state tracking
-            event_feat = self.event_proj(f_e) + pooled_ent_emb
+            event_feat = self.event_proj(f_e)
             # Create dummy states to keep classifier size consistent
             dummy_state = torch.zeros_like(states[:, 0, :])
             cls_input = torch.cat([dummy_state, event_feat], dim=-1)
@@ -303,11 +278,12 @@ class HyperMambaFull(nn.Module):
             
         # 3. Hyperedge Aggregation (V → E)
         if self.cross_entity:
-            x_e, r_emb = self.aggregator(f_e, states, log_dt, valid_mask, ent_feat)
+            x_e, r_emb = self.aggregator(f_e, states, log_dt, valid_mask)
         else:
             # Ablation: No cross-entity aggregation.
-            # Represent hyperedge purely by event features + pooled entity features.
-            x_e = self.event_proj(f_e) + pooled_ent_emb
+            # Represent hyperedge purely by event features.
+            # We still need x_e and r_emb for the updater.
+            x_e = self.event_proj(f_e)
             roles = torch.arange(3, device=device).unsqueeze(0).expand(C, 3)
             r_emb = self.aggregator.role_emb(roles)
         
@@ -343,7 +319,7 @@ class HyperMambaFull(nn.Module):
         if self.use_state:
             agg_states = self.state_norm(agg_states)
             
-        event_feat = self.event_proj(f_e) + pooled_ent_emb   # (C, d_model)
+        event_feat = self.event_proj(f_e)                # (C, d_model)
         
         cls_input = torch.cat([agg_states, event_feat], dim=-1)  # (C, 2*d_model)
         logits = self.classifier(cls_input).squeeze(-1)  # (C,)

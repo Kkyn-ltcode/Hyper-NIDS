@@ -315,23 +315,13 @@ def main():
     test_loader = DataLoader(test_ds, batch_size=1, shuffle=False, num_workers=0)
 
     # --- Model ---
-    # Get entity feature matrix if available
-    entity_feat_matrix = getattr(train_ds, 'entity_feature_matrix', None)
-    n_entity_features = getattr(train_ds, 'n_entity_features', 0)
-    if entity_feat_matrix is not None:
-        logging.info(f"  Entity features: {entity_feat_matrix.shape} ({n_entity_features} dims)")
-    else:
-        logging.info("  Entity features: not available")
-    
     model = HyperMambaFull(
         num_entities=train_ds.num_entities,
         n_cont_features=train_ds.n_cont_features,
         num_event_types=train_ds.num_event_types,
         d_model=args.d_model,
         use_state=not args.no_state,
-        cross_entity=not args.no_cross_entity,
-        n_entity_features=n_entity_features,
-        entity_feature_matrix=entity_feat_matrix
+        cross_entity=not args.no_cross_entity
     ).to(device)
 
     if args.finetune_from:
