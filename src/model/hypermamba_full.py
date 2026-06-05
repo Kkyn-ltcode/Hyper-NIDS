@@ -37,12 +37,11 @@ class AllSetAggregator(nn.Module):
     """V→E: Aggregate entity states into a hyperedge representation using
     dynamic attention conditioned on event features."""
     
-    def __init__(self, d_model, d_event, n_entity_features=0, n_roles=3):
+    def __init__(self, d_model, d_event, n_roles=3):
         super().__init__()
         self.d_model = d_model
-        self.n_entity_features = n_entity_features
-        # h_i = [state || role_emb || dt_enc || entity_feat]
-        self.d_h = d_model * 2 + 1 + n_entity_features
+        # h_i = [state || role_emb || dt_enc]
+        self.d_h = d_model * 2 + 1
         
         self.role_emb = nn.Embedding(n_roles, d_model)
         
@@ -56,13 +55,12 @@ class AllSetAggregator(nn.Module):
         self.out_proj = nn.Linear(d_model, d_model)
         self.scale = d_model ** -0.5
         
-    def forward(self, event_features, entity_states, log_dt, valid_mask, entity_feat=None):
+    def forward(self, event_features, entity_states, log_dt, valid_mask):
         """
         event_features: (C, d_event)
         entity_states:  (C, 3, d_model)
         log_dt:         (C, 3, 1)
         valid_mask:     (C, 3) boolean mask
-        entity_feat:    (C, 3, n_entity_features) or None
 
         Returns: x_e (C, d_model), r_emb (C, 3, d_model)
         """
@@ -72,11 +70,8 @@ class AllSetAggregator(nn.Module):
         roles = torch.arange(3, device=device).unsqueeze(0).expand(C, 3)
         r_emb = self.role_emb(roles)  # (C, 3, d_model)
         
-        # h_i = [state || role || log_dt || entity_feat]
-        parts = [entity_states, r_emb, log_dt]
-        if entity_feat is not None:
-            parts.append(entity_feat)
-        h = torch.cat(parts, dim=-1)  # (C, 3, d_h)
+        # h_i = [state || role || log_dt]
+        h = torch.cat([entity_states, r_emb, log_dt], dim=-1)  # (C, 3, d_h)
         
         # Dynamic query from event features
         q = self.q_proj(event_features).unsqueeze(1)  # (C, 1, d_model)
