@@ -79,11 +79,20 @@ def process_network_features(remote_address, remote_port):
         pass
     else:
         addr = str(remote_address)
-        if addr.startswith('127.'):
-            is_loopback = 1.0
-        elif addr.startswith('10.') or addr.startswith('192.168.') or (addr.startswith('172.') and 16 <= int(addr.split('.')[1]) <= 31):
-            is_private = 1.0
-        else:
+        try:
+            if addr.startswith('127.'):
+                is_loopback = 1.0
+            elif addr.startswith('10.') or addr.startswith('192.168.'):
+                is_private = 1.0
+            elif addr.startswith('172.'):
+                second_octet = int(addr.split('.')[1])
+                if 16 <= second_octet <= 31:
+                    is_private = 1.0
+                else:
+                    is_external = 1.0
+            else:
+                is_external = 1.0
+        except (ValueError, IndexError):
             is_external = 1.0
             
     if pd.isna(remote_port):
@@ -225,12 +234,20 @@ def main():
                 buckets = get_hfh_buckets(obj_dict[obj_id]['path'])
                 for b in buckets:
                     out_features[i, 24 + b] += 1.0
+                
+                hfh_norm = out_features[i, 24:40].sum()
+                if hfh_norm > 0:
+                    out_features[i, 24:40] /= hfh_norm
                     
             # Obj2 HFH (40-55) — only for FILE objects
             if obj2_id != null_uuid and obj2_id in obj_dict and obj_dict[obj2_id]['type_code'] == TYPE_FILE:
                 buckets = get_hfh_buckets(obj_dict[obj2_id]['path'])
                 for b in buckets:
                     out_features[i, 40 + b] += 1.0
+                    
+                hfh2_norm = out_features[i, 40:56].sum()
+                if hfh2_norm > 0:
+                    out_features[i, 40:56] /= hfh2_norm
                     
             # --- Group 4: Network (Cols 56-61) ---
             # Only for NETFLOW objects. We check both obj and obj2, and max them

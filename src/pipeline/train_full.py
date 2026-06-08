@@ -231,7 +231,7 @@ def main():
     parser.add_argument("--no_state", action="store_true", help="Ablation: Disable entity state bank (event features only)")
     parser.add_argument("--no_cross_entity", action="store_true", help="Ablation: Disable cross-entity propagation (self-state only)")
     parser.add_argument("--chunk_size", type=int, default=4096)
-    parser.add_argument("--d_model", type=int, default=128)
+    parser.add_argument("--d_model", type=int, default=256)
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--max_pos_weight", type=float, default=30.0,
                         help="Cap pos_weight to prevent gradient explosion")
