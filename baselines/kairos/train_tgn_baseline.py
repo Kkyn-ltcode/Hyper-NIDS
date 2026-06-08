@@ -145,7 +145,7 @@ def train_epoch(model, loader, optimizer, device, pos_weight, num_event_types, g
         # KAIROS focuses on src->dst edges (ignores hyperedge obj2)
         src = batch["entity_ids"][:, 0].to(device)
         dst = batch["entity_ids"][:, 1].to(device)
-        t = batch["timestamp"].to(device)
+        t = batch["timestamp"].to(device).long()
         y = batch["y"].to(device).float()
 
         optimizer.zero_grad()
@@ -208,7 +208,7 @@ def evaluate(model, loader, device, num_event_types):
         
         src = batch["entity_ids"][:, 0].to(device)
         dst = batch["entity_ids"][:, 1].to(device)
-        t = batch["timestamp"].to(device)
+        t = batch["timestamp"].to(device).long()
         y = batch["y"].to(device).float()
 
         logits = model(src, dst, t, msg)
