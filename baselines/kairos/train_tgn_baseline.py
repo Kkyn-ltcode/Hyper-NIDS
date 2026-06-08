@@ -253,16 +253,16 @@ def main():
 
     # --- Data ---
     shards = SHARD_CONFIG[args.dataset]
+    data_root = DATA_ROOT / args.dataset
     ds_kwargs = dict(
-        data_root=DATA_ROOT,
-        dataset_name=args.dataset,
-        label_col=f"label_{args.label_type}",
+        data_root=data_root,
+        label_type=args.label_type,
         chunk_size=args.batch_size
     )
 
-    train_ds = ChronoDataset(shards=shards["train"], **ds_kwargs)
-    val_ds = ChronoDataset(shards=shards["val"], vocab=train_ds.vocab, **ds_kwargs)
-    test_ds = ChronoDataset(shards=shards["test"], vocab=train_ds.vocab, **ds_kwargs)
+    train_ds = ChronoDataset(shard_ids=shards["train"], **ds_kwargs)
+    val_ds = ChronoDataset(shard_ids=shards["val"], t0_nanos=train_ds.t0_nanos, **ds_kwargs)
+    test_ds = ChronoDataset(shard_ids=shards["test"], t0_nanos=train_ds.t0_nanos, **ds_kwargs)
 
     train_loader = DataLoader(train_ds, batch_size=None, num_workers=0)
     val_loader = DataLoader(val_ds, batch_size=None, num_workers=0)
