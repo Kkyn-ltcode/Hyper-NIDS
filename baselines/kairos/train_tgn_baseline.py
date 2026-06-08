@@ -29,10 +29,11 @@ class TGNBaseline(nn.Module):
     def __init__(self, num_entities, msg_dim, d_model=128):
         super().__init__()
         self.d_model = d_model
+        self.dummy_node = num_entities
         
-        # TGN Memory uses GRU under the hood
+        # TGN Memory uses GRU under the hood. Add +1 to num_nodes for the dummy sink.
         self.memory = TGNMemory(
-            num_nodes=num_entities,
+            num_nodes=num_entities + 1,
             raw_msg_dim=msg_dim,
             memory_dim=d_model,
             time_dim=d_model,
@@ -65,28 +66,31 @@ class TGNBaseline(nn.Module):
         t: (C,)
         msg: (C, msg_dim)
         """
+        # Route missing entities (-1) to the dummy sink node
+        safe_src = torch.where(src >= 0, src, self.dummy_node)
+        safe_dst = torch.where(dst >= 0, dst, self.dummy_node)
+        
         # We need the memory states *before* the update to predict the current event
-        # (This is standard in TGN and matches HyperMamba)
-        n_id = torch.cat([src, dst]).unique()
+        n_id = torch.cat([safe_src, safe_dst]).unique()
         z, last_update = self.memory(n_id)
         
         # Create a mapping from global node ID to the index in z
-        # We can do this efficiently via a sparse tensor or simple array mapping if nodes are small
-        # But PyG provides an easier way: memory gives states for all n_id.
-        # We just need to map src and dst back.
         assoc = torch.empty(self.memory.memory.size(0), dtype=torch.long, device=z.device)
         assoc[n_id] = torch.arange(n_id.size(0), device=z.device)
         
-        z_src = z[assoc[src]]
-        z_dst = z[assoc[dst]]
+        z_src = z[assoc[safe_src]]
+        z_dst = z[assoc[safe_dst]]
+        
+        # Zero out invalid states so they don't corrupt the classifier
+        z_src = z_src * (src >= 0).unsqueeze(-1)
+        z_dst = z_dst * (dst >= 0).unsqueeze(-1)
         
         # Predict
         cls_input = torch.cat([z_src, z_dst, msg], dim=-1)
         logits = self.classifier(cls_input).squeeze(-1)
         
         # Update memory *after* prediction
-        # TGNMemory expects t to be float/int, msg to be float
-        self.memory.update_state(src, dst, t, msg)
+        self.memory.update_state(safe_src, safe_dst, t, msg)
         
         return logits
 
