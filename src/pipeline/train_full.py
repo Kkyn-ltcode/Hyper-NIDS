@@ -350,13 +350,12 @@ def main():
 
     optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr, weight_decay=1e-4)
 
-    # Compute pos_weight for training loss — use true class ratio
-    # Previous cap at 30 was under-penalizing missed positives for crossprocess
-    # (true ratio ~99:1), systematically hurting recall and AUPRC.
+    # Compute pos_weight for training loss — cap to prevent gradient explosion
     n_pos = int((train_ds.y == 1).sum())
     n_neg = int((train_ds.y == 0).sum())
-    pos_weight = n_neg / max(n_pos, 1)
-    logging.info(f"  pos_weight: {pos_weight:.1f} (true class ratio)")
+    raw_ratio = n_neg / max(n_pos, 1)
+    pos_weight = min(raw_ratio, args.max_pos_weight)
+    logging.info(f"  pos_weight: {pos_weight:.1f} (raw ratio {raw_ratio:.1f}, capped at {args.max_pos_weight})")
 
     # --- Training ---
     best_auprc = 0.0
@@ -374,6 +373,10 @@ def main():
         'chunk_loss': [],
     }
 
+    # Learning rate scheduler — cosine decay to eta_min
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=args.epochs, eta_min=1e-5)
+
     logging.info(f"\nStarting training ({args.epochs} epochs)...")
 
     for epoch in range(1, args.epochs + 1):
@@ -390,6 +393,9 @@ def main():
 
         # Validation (used for early stopping) — bank carries warm state from training
         val_metrics = evaluate(model, val_loader, device)
+
+        # Step LR scheduler
+        scheduler.step()
         val_loss = val_metrics["loss"]
         auprc = val_metrics["auprc"]
         f1 = val_metrics["best_f1"]

@@ -160,11 +160,12 @@ def main():
         
         # Dimensions:
         # Group 1: 3 roles * 4 object types = 12 dims
+        # Group 1b: Subject path zone = 4 dims
         # Group 2: 2 roles (obj, obj2) * 4 zones = 8 dims
         # Group 3: 2 roles (obj, obj2) * 16 HFH buckets = 32 dims
         # Group 4: network features = 6 dims
-        # Total = 12 + 8 + 32 + 6 = 58 dims
-        out_features = np.zeros((N, 58), dtype=np.float32)
+        # Total = 12 + 4 + 8 + 32 + 6 = 62 dims
+        out_features = np.zeros((N, 62), dtype=np.float32)
         
         # We will iterate and build the features
         # Vectorizing this perfectly is hard due to lookups, but we can do it efficiently
@@ -188,42 +189,51 @@ def main():
             if sub_id != null_uuid:
                 out_features[i, TYPE_PROCESS] = 1.0 # 0..3
             
-            # Object type
-            if obj_id != null_uuid and obj_id in obj_dict:
-                obj_meta = obj_dict[obj_id]
-                out_features[i, 4 + obj_meta['type_code']] = 1.0 # 4..7
+            # Object type — fall back to sub_dict for clone/exec events
+            if obj_id != null_uuid:
+                if obj_id in obj_dict:
+                    out_features[i, 4 + obj_dict[obj_id]['type_code']] = 1.0 # 4..7
+                elif obj_id in sub_dict:
+                    out_features[i, 4 + TYPE_PROCESS] = 1.0  # child process in clone/exec
             
-            # Object2 type
-            if obj2_id != null_uuid and obj2_id in obj_dict:
-                obj2_meta = obj_dict[obj2_id]
-                out_features[i, 8 + obj2_meta['type_code']] = 1.0 # 8..11
+            # Object2 type — same fallback
+            if obj2_id != null_uuid:
+                if obj2_id in obj_dict:
+                    out_features[i, 8 + obj_dict[obj2_id]['type_code']] = 1.0 # 8..11
+                elif obj2_id in sub_dict:
+                    out_features[i, 8 + TYPE_PROCESS] = 1.0
                 
-            # --- Group 2: Path Zones (Cols 12-19) ---
-            # Obj Zone (12-15)
+            # --- Group 1b: Subject Path Zone (Cols 12-15) ---
+            if sub_id != null_uuid and sub_id in sub_dict:
+                zone = classify_path_zone(sub_dict[sub_id]['path'])
+                out_features[i, 12 + zone] = 1.0
+                
+            # --- Group 2: Object Path Zones (Cols 16-23) ---
+            # Obj Zone (16-19) — only for FILE objects
             if obj_id != null_uuid and obj_id in obj_dict and obj_dict[obj_id]['type_code'] == TYPE_FILE:
                 zone = classify_path_zone(obj_dict[obj_id]['path'])
-                out_features[i, 12 + zone] = 1.0
+                out_features[i, 16 + zone] = 1.0
             
-            # Obj2 Zone (16-19)
+            # Obj2 Zone (20-23) — only for FILE objects
             if obj2_id != null_uuid and obj2_id in obj_dict and obj_dict[obj2_id]['type_code'] == TYPE_FILE:
                 zone = classify_path_zone(obj_dict[obj2_id]['path'])
-                out_features[i, 16 + zone] = 1.0
+                out_features[i, 20 + zone] = 1.0
                 
-            # --- Group 3: HFH (Cols 20-51) ---
-            # Obj HFH (20-35)
+            # --- Group 3: HFH (Cols 24-55) ---
+            # Obj HFH (24-39) — only for FILE objects
             if obj_id != null_uuid and obj_id in obj_dict and obj_dict[obj_id]['type_code'] == TYPE_FILE:
                 buckets = get_hfh_buckets(obj_dict[obj_id]['path'])
                 for b in buckets:
-                    out_features[i, 20 + b] += 1.0
+                    out_features[i, 24 + b] += 1.0
                     
-            # Obj2 HFH (36-51)
+            # Obj2 HFH (40-55) — only for FILE objects
             if obj2_id != null_uuid and obj2_id in obj_dict and obj_dict[obj2_id]['type_code'] == TYPE_FILE:
                 buckets = get_hfh_buckets(obj_dict[obj2_id]['path'])
                 for b in buckets:
-                    out_features[i, 36 + b] += 1.0
+                    out_features[i, 40 + b] += 1.0
                     
-            # --- Group 4: Network (Cols 52-57) ---
-            # Only for NETFLOW objects. We check both obj and obj2, and max them (or just combine)
+            # --- Group 4: Network (Cols 56-61) ---
+            # Only for NETFLOW objects. We check both obj and obj2, and max them
             net_feats = np.zeros(6, dtype=np.float32)
             if obj_id != null_uuid and obj_id in obj_dict and obj_dict[obj_id]['type_code'] == TYPE_NETFLOW:
                 f = process_network_features(obj_dict[obj_id]['remote_address'], obj_dict[obj_id]['remote_port'])
@@ -232,7 +242,7 @@ def main():
                 f = process_network_features(obj_dict[obj2_id]['remote_address'], obj_dict[obj2_id]['remote_port'])
                 net_feats = np.maximum(net_feats, f)
                 
-            out_features[i, 52:58] = net_feats
+            out_features[i, 56:62] = net_feats
 
         # Save the enriched features
         out_path = f"{shard_dir}/enriched_shard{sid}.npz"
