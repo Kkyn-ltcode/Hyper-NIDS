@@ -15,10 +15,6 @@ class ChronoDataset(Dataset):
         y:            (chunk_size,) int64
         entity_ids:   (chunk_size, 3) int64 — [subj, obj, obj2]
         mask:         (chunk_size,) float32 — 1=real
-    
-    Also exposes:
-        entity_feature_matrix: (num_entities, n_entity_features) np.ndarray
-        n_entity_features:     int
     """
     
     def __init__(
@@ -47,22 +43,6 @@ class ChronoDataset(Dataset):
         # then .fillna(-1) correctly marks it as invalid for valid_mask.
         uuid_to_id.pop("00000000-0000-0000-0000-000000000000", None)
         self.num_entities = int(vocab["num_entities"])
-        
-        # Load static entity features (entity type, path hash, network features)
-        entity_feat_path = graph_dir / "entity_features.npz"
-        if entity_feat_path.exists():
-            ef = np.load(entity_feat_path)
-            self.entity_feature_matrix = ef["features"]  # (num_entities, n_entity_features)
-            self.n_entity_features = self.entity_feature_matrix.shape[1]
-            if verbose:
-                n_nonzero = (self.entity_feature_matrix.sum(axis=1) > 0).sum()
-                print(f"  Entity features loaded: {self.entity_feature_matrix.shape}, "
-                      f"{n_nonzero} non-zero rows")
-        else:
-            self.entity_feature_matrix = None
-            self.n_entity_features = 0
-            if verbose:
-                print(f"  Entity features not found at {entity_feat_path}, skipping")
         
         # --- Identify feature columns ---
         feat_names_path = data_root / "features" / "feature_names.txt"
