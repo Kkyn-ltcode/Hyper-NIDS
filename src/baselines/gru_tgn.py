@@ -1,10 +1,10 @@
-"""Supervised KAIROS Baseline — GRU-based Temporal Graph Network for Provenance Graphs.
+"""GRU-TGN Baseline — GRU-based Temporal Graph Network for Provenance Graphs.
 
-Adapts the core KAIROS architecture (Cheng et al., 2024 S&P) for supervised
-event-level classification on the same chronological shard pipeline used by
-HyperMamba. This enables a fair, apples-to-apples comparison.
+Adapts the core GRU-TGN architecture (inspired by Cheng et al., 2024 S&P KAIROS) for
+supervised event-level classification on the same chronological shard pipeline
+used by HyperMamba. This enables a fair, apples-to-apples comparison.
 
-Key KAIROS design choices preserved:
+Key GRU-TGN design choices preserved:
   - Per-entity GRU hidden states (vs. HyperMamba's Selective SSM)
   - Edge-level processing: each event updates source and destination entities
     independently (vs. HyperMamba's 3-role hyperedge aggregation)
@@ -23,8 +23,8 @@ import torch.nn.functional as F
 import math
 
 
-class KAIROSEntityBank(nn.Module):
-    """Entity state bank for KAIROS — same infrastructure as HyperMamba's
+class GRUTGNEntityBank(nn.Module):
+    """Entity state bank for GRU-TGN — same infrastructure as HyperMamba's
     EntityStateBank but stores GRU hidden states instead of SSM states."""
     
     def __init__(self, num_entities, d_model):
@@ -44,14 +44,14 @@ class KAIROSEntityBank(nn.Module):
         self.last_seen_time = self.last_seen_time.detach()
 
 
-class KAIROSTemporalEncoder(nn.Module):
-    """KAIROS-style temporal encoder: GRU update of entity states.
+class GRUTGNTemporalEncoder(nn.Module):
+    """GRU-TGN-style temporal encoder: GRU update of entity states.
     
     For each event, the source and destination entity states are updated
     through a GRU cell conditioned on the event features and time delta.
     This is the core difference from HyperMamba's Selective SSM updater.
     
-    KAIROS processes edges (src, dst) not hyperedges (subj, obj, obj2).
+    GRU-TGN processes edges (src, dst) not hyperedges (subj, obj, obj2).
     To handle the 3-role provenance events fairly, we process:
       - Subject entity (always updated)
       - Object entity (updated if valid)
@@ -119,8 +119,8 @@ class KAIROSTemporalEncoder(nn.Module):
         return new_states
 
 
-class SupervisedKAIROS(nn.Module):
-    """Supervised KAIROS baseline for fair comparison with HyperMamba.
+class GRUTGNBaseline(nn.Module):
+    """GRU-TGN baseline for fair comparison with HyperMamba.
     
     Architecture:
       1. Event Encoder (shared design): event_type embedding + continuous features
@@ -149,10 +149,10 @@ class SupervisedKAIROS(nn.Module):
         self.d_event = d_model * 2
         
         # Entity State Bank
-        self.bank = KAIROSEntityBank(num_entities, d_model)
+        self.bank = GRUTGNEntityBank(num_entities, d_model)
         
-        # KAIROS GRU-based temporal encoder
-        self.temporal_encoder = KAIROSTemporalEncoder(d_model)
+        # GRU-based temporal encoder
+        self.temporal_encoder = GRUTGNTemporalEncoder(d_model)
         
         # Project event features from d_event to d_model for classifier
         self.event_proj = nn.Linear(self.d_event, d_model)
@@ -217,7 +217,7 @@ class SupervisedKAIROS(nn.Module):
         dt = torch.clamp(dt, min=0.0)
         log_dt = torch.log1p(dt).unsqueeze(-1)  # (C, 3, 1)
         
-        # 3. GRU temporal update (KAIROS's core mechanism)
+        # 3. GRU temporal update (GRU-TGN's core mechanism)
         new_states = self.temporal_encoder(f_e, states, log_dt, valid_mask)
         
         # 4. Scatter updated states back to bank

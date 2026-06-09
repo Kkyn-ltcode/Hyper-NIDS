@@ -439,11 +439,11 @@ def main():
     logging.info(f"\nEvaluating on Test Set (labels={test_lbl}) with best model...")
     checkpoint = torch.load(save_dir / 'best.pt')
     model.load_state_dict(checkpoint["model_state"])
-    # state_dict() includes bank buffers (states + last_seen_time) from the
-    # best epoch's post-val pass. These are the EXACT warm states that produced
-    # the best val AUPRC. No reset or warmup needed — test shards continue
-    # chronologically from where val left off.
-    logging.info(f"  Bank states restored from checkpoint (warm from shards 0-7)")
+    # state_dict() includes bank buffers, but they were accumulated during
+    # training using mid-epoch weights. We re-warm the bank using the final
+    # best weights in clean eval mode for a stronger, more consistent initialization.
+    logging.info(f"  Warming up bank states with best weights...")
+    warmup_bank(model, [train_loader, val_loader], device)
     
     test_metrics = evaluate(model, test_loader, device)
     test_loss = test_metrics["loss"]

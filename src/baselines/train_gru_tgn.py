@@ -1,11 +1,11 @@
 """
-Training script for Supervised KAIROS baseline.
+Training script for GRU-TGN Baseline.
 
 Reuses the same data pipeline (ChronoDataset), training loop structure,
 and evaluation metrics as train_full.py for a fair comparison.
 
 Usage:
-    python -m src.baselines.train_kairos --label_type crossprocess
+    python -m src.baselines.train_gru_tgn --label_type crossprocess
 """
 
 import argparse
@@ -21,7 +21,7 @@ from torch.utils.data import DataLoader
 from sklearn.metrics import average_precision_score, precision_recall_curve
 
 from src.data.chrono_dataset import ChronoDataset
-from src.baselines.supervised_kairos import SupervisedKAIROS
+from src.baselines.gru_tgn import GRUTGNBaseline
 
 DATA_ROOT = Path("data/processed/darpa_tc_e3")
 
@@ -193,7 +193,7 @@ def evaluate(model, loader, device):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Train Supervised KAIROS Baseline")
+        description="Train GRU-TGN Baseline")
     parser.add_argument("--dataset", default="theia", choices=["theia", "trace"])
     parser.add_argument("--label_type", type=str, default="crossprocess")
     parser.add_argument("--epochs", type=int, default=10)
@@ -220,7 +220,7 @@ def main():
 
     # --- Logging ---
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_dir = Path("runs") / f"kairos_{args.dataset}_{args.label_type}_{timestamp}"
+    log_dir = Path("runs") / f"gru_tgn_{args.dataset}_{args.label_type}_{timestamp}"
     log_dir.mkdir(parents=True, exist_ok=True)
 
     logging.basicConfig(
@@ -231,7 +231,7 @@ def main():
             logging.StreamHandler(),
         ],
     )
-    logging.info(f"KAIROS Baseline | args={vars(args)}")
+    logging.info(f"GRU-TGN Baseline | args={vars(args)}")
     logging.info(f"Device: {device}")
     logging.info(f"Log dir: {log_dir}")
 
@@ -270,7 +270,7 @@ def main():
     test_loader = DataLoader(test_ds, batch_size=1, shuffle=False, num_workers=0)
 
     # --- Model ---
-    model = SupervisedKAIROS(
+    model = GRUTGNBaseline(
         num_entities=train_ds.num_entities,
         n_cont_features=train_ds.n_cont_features,
         num_event_types=train_ds.num_event_types,
@@ -304,7 +304,7 @@ def main():
     patience = 5
     no_improve = 0
 
-    logging.info(f"\nStarting KAIROS training ({args.epochs} epochs)...")
+    logging.info(f"\nStarting GRU-TGN training ({args.epochs} epochs)...")
 
     for epoch in range(1, args.epochs + 1):
         logging.info(f"\n--- Epoch {epoch}/{args.epochs} ---")
@@ -359,7 +359,7 @@ def main():
 
     # Final summary
     logging.info(f"\n{'='*60}")
-    logging.info(f"KAIROS BASELINE RESULTS ({args.dataset} / {args.label_type})")
+    logging.info(f"GRU-TGN BASELINE RESULTS ({args.dataset} / {args.label_type})")
     logging.info(f"  Best epoch: {best_epoch}")
     logging.info(f"  Val  AUPRC: {best_auprc:.4f}")
     logging.info(f"  Test AUPRC: {test_metrics['auprc']:.4f}")
