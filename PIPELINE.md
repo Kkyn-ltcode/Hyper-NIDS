@@ -67,7 +67,7 @@ torchrun --nproc_per_node=4 -m src.pipeline.train --config configs/baseline_a.ya
 ```bash
 # Control experiments (temporal, entity-ID, label shuffle)
 python -m src.pipeline.control_experiment \
-    --checkpoint checkpoints/thyn_v0/best.pt \
+    --checkpoint ckpts/thyn_v0/best.pt \
     --config configs/thyn_v0.yaml
 ```
 

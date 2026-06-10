@@ -226,7 +226,7 @@ def main():
     state_tag = "state" if not args.no_state else "nostate"
     dual_tag = "_dualval" if args.dual_val else ""
     run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_base = Path("checkpoints") / "proto_runs"
+    run_base = Path("ckpts") / "proto_runs"
     save_dir = run_base / f"{args.dataset}_{args.label_type}_{state_tag}{dual_tag}_{run_ts}"
     save_dir.mkdir(parents=True, exist_ok=True)
 

@@ -400,7 +400,7 @@ def main():
 
     world_size = get_world_size()
     data_root = DATA_ROOT / args.dataset
-    save_dir = Path("checkpoints") / cfg.get("name", "thyn_v0")
+    save_dir = Path("ckpts") / cfg.get("name", "thyn_v0")
     if is_main():
         save_dir.mkdir(parents=True, exist_ok=True)
 

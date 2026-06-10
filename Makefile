@@ -85,10 +85,10 @@ train-baseline-l1:  ## Train Baseline A on L1** labels
 
 control-experiment:  ## Run control experiment (temporal/entity/label shuffle)
 	$(PYTHON) -m src.pipeline.control_experiment \
-		--checkpoint checkpoints/thyn_v0/best.pt \
+		--checkpoint ckpts/thyn_v0/best.pt \
 		--config configs/theia_thyn_v0.yaml
 	$(PYTHON) -m src.pipeline.control_experiment \
-		--checkpoint checkpoints/baseline_a/best.pt \
+		--checkpoint ckpts/baseline_a/best.pt \
 		--config configs/theia_baseline_a.yaml
 
 # ============================================================

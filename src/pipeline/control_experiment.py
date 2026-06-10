@@ -15,7 +15,7 @@ is using per-event features only.
 
 Usage:
     python -m src.pipeline.control_experiment \
-        --checkpoint checkpoints/thyn_v0/best.pt \
+        --checkpoint ckpts/thyn_v0/best.pt \
         --config configs/thyn_v0.yaml
 """
 

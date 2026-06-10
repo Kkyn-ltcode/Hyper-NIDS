@@ -260,7 +260,7 @@ def main():
 
     # Create a timestamped run directory (will be renamed with results at end)
     run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_base = Path("checkpoints") / "full_runs"
+    run_base = Path("ckpts") / "full_runs"
     save_dir = run_base / f"{args.dataset}_{train_lbl}_{run_ts}"
     save_dir.mkdir(parents=True, exist_ok=True)
 

@@ -40,7 +40,7 @@ def main():
     parser.add_argument("--dataset", default="theia")
     args = parser.parse_args()
     
-    ckpt_dir = Path("checkpoints")
+    ckpt_dir = Path("ckpts")
     models = ["thyn", "baseline_a", "l1_thyn", "l1_baseline_a"]
     
     plt.figure(figsize=(15, 10))

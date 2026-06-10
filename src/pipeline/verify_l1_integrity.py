@@ -484,7 +484,7 @@ def check_checkpoint_sanity(dataset, data_root):
     from src.model.thyn import THyN
     from src.pipeline.train import compute_metrics
 
-    ckpt_dir = Path("checkpoints")
+    ckpt_dir = Path("ckpts")
 
     for config_name in [f"{dataset}_thyn", f"{dataset}_baseline_a",
                         f"{dataset}_l1_thyn", f"{dataset}_l1_baseline_a"]:

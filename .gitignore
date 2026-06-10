@@ -28,7 +28,7 @@ venv/
 *.swo
 
 # Notebooks
-.ipynb_checkpoints/
+.ipynb_ckpts/
 
 # OS
 .DS_Store
@@ -38,6 +38,6 @@ Thumbs.db
 experiments/results/
 
 # Model checkpoints
-checkpoints/
+ckpts/
 *.pt
 *.pth
