@@ -18,8 +18,8 @@ Outputs:
     ├── parameter_counts.csv           # Model parameter breakdown
     ├── throughput_vs_chunk_size.png   # Plot: events/s vs chunk_size
     ├── throughput_vs_d_model.png      # Plot: events/s vs d_model
-    ├── memory_vs_d_model.png         # Plot: memory vs d_model
-    └── summary.txt                    # Paper-ready summary table
+    ├── entity_bank_memory.png        # Plot: theoretical bank memory
+    └── <mode>.txt                     # Paper-ready summary table
 
 Usage:
     python -m src.analysis.scalability_experiment
@@ -132,79 +132,17 @@ def count_parameter_breakdown(model, model_type):
 
 
 # ---------------------------------------------------------------------------
-# Memory measurement
+# Entity bank memory (theoretical — identical for both models)
 # ---------------------------------------------------------------------------
 
-def measure_memory(model, batch, device, mode="inference"):
-    """Measure peak memory for a single forward (+ optional backward) pass.
+def compute_bank_memory_mb(num_entities, d_model):
+    """Theoretical entity bank memory: num_entities × d_model × 4 bytes (float32).
 
-    Returns peak memory in MB.
+    The state bank is the dominant memory cost for deployment. Both models
+    store identical (num_entities, d_model) buffers, so memory scaling is
+    a shared property, not a differentiator.
     """
-    x_cont, event_type, entity_ids, timestamps = batch
-
-    # Force garbage collection
-    gc.collect()
-
-    if device.type == "cuda":
-        torch.cuda.reset_peak_memory_stats(device)
-        torch.cuda.synchronize(device)
-        baseline = torch.cuda.memory_allocated(device)
-
-        if mode == "inference":
-            with torch.no_grad():
-                logits = model(x_cont, event_type, entity_ids, timestamps)
-        else:
-            logits = model(x_cont, event_type, entity_ids, timestamps)
-            loss = logits.sum()
-            loss.backward()
-
-        torch.cuda.synchronize(device)
-        peak = torch.cuda.max_memory_allocated(device)
-        model.detach_bank()
-        return (peak - baseline) / (1024 * 1024)  # MB
-
-    elif device.type == "mps":
-        # MPS: use driver memory reporting
-        torch.mps.synchronize()
-        baseline = torch.mps.current_allocated_memory()
-
-        if mode == "inference":
-            with torch.no_grad():
-                logits = model(x_cont, event_type, entity_ids, timestamps)
-        else:
-            logits = model(x_cont, event_type, entity_ids, timestamps)
-            loss = logits.sum()
-            loss.backward()
-
-        torch.mps.synchronize()
-        peak = torch.mps.current_allocated_memory()
-        model.detach_bank()
-        return max(0, (peak - baseline)) / (1024 * 1024)
-
-    else:
-        # CPU: estimate from model + activation size (no reliable peak API)
-        import resource
-        gc.collect()
-        r0 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss  # KB on Linux, bytes on Mac
-
-        if mode == "inference":
-            with torch.no_grad():
-                logits = model(x_cont, event_type, entity_ids, timestamps)
-        else:
-            logits = model(x_cont, event_type, entity_ids, timestamps)
-            loss = logits.sum()
-            loss.backward()
-
-        gc.collect()
-        r1 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        model.detach_bank()
-
-        # macOS reports in bytes, Linux in KB
-        import platform
-        if platform.system() == "Darwin":
-            return max(0, (r1 - r0)) / (1024 * 1024)  # bytes → MB
-        else:
-            return max(0, (r1 - r0)) / 1024  # KB → MB
+    return num_entities * d_model * 4 / (1024 ** 2)
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +235,7 @@ def run_profiling(args):
     logging.info(f"Profile entities: {PROFILE_N_ENTITIES:,}")
 
     model_types = ["hypermamba", "gru_tgn"]
-    chunk_sizes = [512, 1024, 2048, 4096, 8192, 16384, 32768]
+    chunk_sizes = [512, 1024, 2048, 4096, 8192, 16384]
     d_models = [64, 128, 256, 512]
 
     # Fixed defaults for single-variable sweeps
@@ -349,11 +287,6 @@ def run_profiling(args):
             try:
                 result = measure_throughput(model, cs, PROFILE_N_ENTITIES, device,
                                             mode=args.mode)
-                # Memory measurement
-                model.reset_bank()
-                batch = make_synthetic_batch(cs, REAL_N_CONT, REAL_N_EVENT_TYPES,
-                                             PROFILE_N_ENTITIES, device)
-                mem_mb = measure_memory(model, batch, device, mode=args.mode)
 
                 row = {
                     "model": mt,
@@ -362,14 +295,12 @@ def run_profiling(args):
                     "sweep": "chunk_size",
                     "events_per_sec": result["events_per_sec"],
                     "ms_per_chunk": result["ms_per_chunk"],
-                    "peak_memory_mb": mem_mb,
                 }
                 all_results.append(row)
 
                 logging.info(f"  {mt:>12} chunk={cs:>5}: "
                              f"{result['events_per_sec']:>8,.0f} evt/s, "
-                             f"{result['ms_per_chunk']:>7.1f} ms/chunk, "
-                             f"{mem_mb:>6.1f} MB")
+                             f"{result['ms_per_chunk']:>7.1f} ms/chunk")
             except RuntimeError as e:
                 if "out of memory" in str(e).lower():
                     logging.warning(f"  {mt:>12} chunk={cs:>5}: OOM — skipped")
@@ -400,11 +331,6 @@ def run_profiling(args):
                 result = measure_throughput(model, default_chunk, PROFILE_N_ENTITIES,
                                             device, mode=args.mode)
 
-                model.reset_bank()
-                batch = make_synthetic_batch(default_chunk, REAL_N_CONT, REAL_N_EVENT_TYPES,
-                                             PROFILE_N_ENTITIES, device)
-                mem_mb = measure_memory(model, batch, device, mode=args.mode)
-
                 row = {
                     "model": mt,
                     "d_model": d,
@@ -412,14 +338,12 @@ def run_profiling(args):
                     "sweep": "d_model",
                     "events_per_sec": result["events_per_sec"],
                     "ms_per_chunk": result["ms_per_chunk"],
-                    "peak_memory_mb": mem_mb,
                 }
                 all_results.append(row)
 
                 logging.info(f"  {mt:>12} d={d:>3}: "
                              f"{result['events_per_sec']:>8,.0f} evt/s, "
-                             f"{result['ms_per_chunk']:>7.1f} ms/chunk, "
-                             f"{mem_mb:>6.1f} MB")
+                             f"{result['ms_per_chunk']:>7.1f} ms/chunk")
 
                 del model
                 gc.collect()
@@ -508,25 +432,34 @@ def generate_plots(results_df, param_df, out_dir):
         plt.close()
         logging.info(f"  Plot: throughput_vs_d_model.png")
 
-    # --- Plot 3: Memory vs d_model ---
-    if not dmodel_data.empty:
-        fig, ax = plt.subplots(figsize=(10, 6))
-        for mt in ["hypermamba", "gru_tgn"]:
-            d = dmodel_data[dmodel_data["model"] == mt].sort_values("d_model")
-            if not d.empty:
-                ax.plot(d["d_model"], d["peak_memory_mb"],
-                        marker=markers[mt], color=colors[mt], label=labels[mt],
-                        linewidth=2, markersize=8)
+    # --- Plot 3: Entity Bank Memory (theoretical, both models identical) ---
+    fig, ax = plt.subplots(figsize=(10, 6))
+    entity_counts = [100_000, 500_000, 1_000_000, 2_736_362, 5_000_000]
+    d_vals_mem = [128, 256, 512]
+    bar_colors = ["#60a5fa", "#2563eb", "#1e3a5f"]
 
-        ax.set_xlabel("Model Dimension (d_model)", fontsize=12)
-        ax.set_ylabel("Peak Activation Memory (MB)", fontsize=12)
-        ax.set_title("Memory vs Model Capacity (chunk_size=4096)", fontsize=14)
-        ax.legend(fontsize=11)
-        ax.grid(True, alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(out_dir / "memory_vs_d_model.png", dpi=150, bbox_inches="tight")
-        plt.close()
-        logging.info(f"  Plot: memory_vs_d_model.png")
+    x = np.arange(len(entity_counts))
+    width = 0.25
+    for idx, d in enumerate(d_vals_mem):
+        mems = [compute_bank_memory_mb(n, d) for n in entity_counts]
+        offset = (idx - 1) * width
+        bars = ax.bar(x + offset, mems, width, label=f"d={d}",
+                      color=bar_colors[idx], alpha=0.85, edgecolor="white")
+        for bar, m in zip(bars, mems):
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 30,
+                    f"{m:.0f}", ha="center", va="bottom", fontsize=7)
+
+    ax.set_xlabel("Number of Entities", fontsize=12)
+    ax.set_ylabel("Entity Bank Memory (MB)", fontsize=12)
+    ax.set_title("Entity Bank Memory Scaling (identical for both models)", fontsize=14)
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"{n:,}" for n in entity_counts], fontsize=9)
+    ax.legend(fontsize=11, title="d_model")
+    ax.grid(axis="y", alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(out_dir / "entity_bank_memory.png", dpi=150, bbox_inches="tight")
+    plt.close()
+    logging.info(f"  Plot: entity_bank_memory.png")
 
     # --- Plot 4: Parameter count comparison ---
     if not param_df.empty:
@@ -602,8 +535,8 @@ def generate_summary(results_df, param_df, out_dir, mode):
             ratio = throughputs[mt] / DARPA_TC_INGESTION_RATE
             lines.append(f"  {label:>12}: {ratio:.1f}x DARPA TC ingestion rate")
 
-    # Throughput scaling summary
-    lines.append(f"\n--- Throughput Scaling (d_model=256) ---")
+    # Throughput vs chunk_size scaling
+    lines.append(f"\n--- Throughput vs Chunk Size (d_model=256) ---")
     lines.append(f"  {'chunk':>8} | {'HyperMamba':>12} | {'GRU-TGN':>12} | {'Overhead':>10}")
     lines.append(f"  {'-'*8} | {'-'*12} | {'-'*12} | {'-'*10}")
 
@@ -617,18 +550,32 @@ def generate_summary(results_df, param_df, out_dir, mode):
             oh = (1 - hm_eps / gt_eps) * 100
             lines.append(f"  {cs:>8} | {hm_eps:>10,.0f}/s | {gt_eps:>10,.0f}/s | {oh:>+8.1f}%")
 
-    # Memory scaling
-    lines.append(f"\n--- Memory Scaling (chunk_size=4096) ---")
-    lines.append(f"  {'d_model':>8} | {'HyperMamba':>12} | {'GRU-TGN':>12}")
-    lines.append(f"  {'-'*8} | {'-'*12} | {'-'*12}")
+    # Throughput vs d_model scaling
+    lines.append(f"\n--- Throughput vs d_model (chunk_size=4096) ---")
+    lines.append(f"  {'d_model':>8} | {'HyperMamba':>12} | {'GRU-TGN':>12} | {'Overhead':>10}")
+    lines.append(f"  {'-'*8} | {'-'*12} | {'-'*12} | {'-'*10}")
 
     dmodel_data = results_df[results_df["sweep"] == "d_model"]
     for d in sorted(dmodel_data["d_model"].unique()):
         hm = dmodel_data[(dmodel_data["model"] == "hypermamba") & (dmodel_data["d_model"] == d)]
         gt = dmodel_data[(dmodel_data["model"] == "gru_tgn") & (dmodel_data["d_model"] == d)]
         if len(hm) > 0 and len(gt) > 0:
-            lines.append(f"  {d:>8} | {hm.iloc[0]['peak_memory_mb']:>9.1f} MB | "
-                         f"{gt.iloc[0]['peak_memory_mb']:>9.1f} MB")
+            hm_eps = hm.iloc[0]["events_per_sec"]
+            gt_eps = gt.iloc[0]["events_per_sec"]
+            oh = (1 - hm_eps / gt_eps) * 100
+            lines.append(f"  {d:>8} | {hm_eps:>10,.0f}/s | {gt_eps:>10,.0f}/s | {oh:>+8.1f}%")
+
+    # Entity bank memory (theoretical, identical for both models)
+    lines.append(f"\n--- Entity Bank Memory (theoretical, both models identical) ---")
+    lines.append(f"  Both models store an (|E|, d_model) float32 state bank.")
+    lines.append(f"  {'Entities':>12} | {'d=128':>8} | {'d=256':>8} | {'d=512':>8}")
+    lines.append(f"  {'-'*12} | {'-'*8} | {'-'*8} | {'-'*8}")
+    for n in [100_000, 500_000, REAL_N_ENTITIES, 5_000_000]:
+        row = f"  {n:>12,} |"
+        for d in [128, 256, 512]:
+            mb = compute_bank_memory_mb(n, d)
+            row += f" {mb:>6.0f} MB |"
+        lines.append(row)
 
     # Deployment viability
     lines.append(f"\n--- Deployment Viability ---")
@@ -641,14 +588,19 @@ def generate_summary(results_df, param_df, out_dir, mode):
             lines.append(f"  ✗ HyperMamba at {throughputs['hypermamba']:,.0f} evt/s is below "
                          f"the {DARPA_TC_INGESTION_RATE:,} evt/s DARPA TC rate")
 
+    lines.append(f"\n  Note: Entity bank memory is O(|E|·d), bounded by entity vocabulary")
+    lines.append(f"  size (not event history length). Both architectures share identical")
+    lines.append(f"  memory scaling. At full THEIA scale ({REAL_N_ENTITIES:,} entities,")
+    lines.append(f"  d=256): {compute_bank_memory_mb(REAL_N_ENTITIES, 256):.0f} MB.")
+
     lines.append("=" * 72)
 
     summary_text = "\n".join(lines)
     logging.info("\n" + summary_text)
 
-    with open(out_dir / "summary.txt", "w") as f:
+    with open(out_dir / f"{out_dir.name}.txt", "w") as f:
         f.write(summary_text)
-    logging.info(f"\nSummary saved to {out_dir / 'summary.txt'}")
+    logging.info(f"\nSummary saved to {out_dir / f'{out_dir.name}.txt'}")
 
 
 # ---------------------------------------------------------------------------
