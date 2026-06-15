@@ -286,7 +286,9 @@ def run_profiling(args):
             model.reset_bank()
             try:
                 result = measure_throughput(model, cs, PROFILE_N_ENTITIES, device,
-                                            mode=args.mode)
+                                            mode=args.mode,
+                                            warmup_iters=args.warmup_iters,
+                                            timed_iters=args.timed_iters)
 
                 row = {
                     "model": mt,
@@ -329,7 +331,9 @@ def run_profiling(args):
                 model.reset_bank()
 
                 result = measure_throughput(model, default_chunk, PROFILE_N_ENTITIES,
-                                            device, mode=args.mode)
+                                            device, mode=args.mode,
+                                            warmup_iters=args.warmup_iters,
+                                            timed_iters=args.timed_iters)
 
                 row = {
                     "model": mt,
@@ -369,7 +373,8 @@ def run_profiling(args):
     # Generate plots and summary
     # -----------------------------------------------------------------------
     generate_plots(results_df, param_df, out_dir)
-    generate_summary(results_df, param_df, out_dir, args.mode)
+    generate_summary(results_df, param_df, out_dir, args.mode,
+                      args.warmup_iters, args.timed_iters)
 
 
 # ---------------------------------------------------------------------------
@@ -497,12 +502,13 @@ def generate_plots(results_df, param_df, out_dir):
 # Summary table (paper-ready)
 # ---------------------------------------------------------------------------
 
-def generate_summary(results_df, param_df, out_dir, mode):
+def generate_summary(results_df, param_df, out_dir, mode,
+                     warmup_iters=5, timed_iters=50):
     """Generate a paper-ready summary comparing the two models."""
     lines = []
     lines.append("=" * 72)
     lines.append("EXPERIMENT 4: COMPUTATIONAL SCALABILITY SUMMARY")
-    lines.append(f"Mode: {mode}")
+    lines.append(f"Mode: {mode} | warmup={warmup_iters} | timed_iters={timed_iters}")
     lines.append("=" * 72)
 
     # Parameter comparison at d_model=256
@@ -616,8 +622,10 @@ def main():
                         help="Device (auto-detects cuda > mps > cpu)")
     parser.add_argument("--out_dir", default="results/scalability",
                         help="Output directory for results and plots")
-    parser.add_argument("--warmup_iters", type=int, default=3)
-    parser.add_argument("--timed_iters", type=int, default=10)
+    parser.add_argument("--warmup_iters", type=int, default=5,
+                        help="Warmup iterations before timing (default: 5)")
+    parser.add_argument("--timed_iters", type=int, default=50,
+                        help="Timed iterations for measurement (default: 50, reduces GPU variance ~7x vs 10)")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
