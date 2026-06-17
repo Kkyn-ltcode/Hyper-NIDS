@@ -8,11 +8,13 @@ Uses Truncated Backpropagation Through Time (TBPTT):
   - States reset at epoch boundaries
 
 Usage:
-    # Dual validation: L1* for early stopping, broad logged alongside
-    python -m src.pipeline.train_full --dataset theia --label_type l1 --dual_val
+    # Standard training
+    python -m src.pipeline.train_full --dataset theia --label_type crossprocess
 
-    # Standard: single val label type
-    python -m src.pipeline.train_full --dataset theia --label_type broad
+    # Ablation study (Experiment 2)
+    python -m src.pipeline.train_full --dataset theia --label_type crossprocess --ablation full
+    python -m src.pipeline.train_full --dataset theia --label_type crossprocess --ablation no_cross_entity
+    python -m src.pipeline.train_full --dataset theia --label_type crossprocess --ablation no_state
 """
 
 import argparse
@@ -57,7 +59,8 @@ def compute_metrics(all_logits, all_labels):
     return m
 
 
-def train_epoch(model, loader, optimizer, device, pos_weight, grad_clip=1.0):
+def train_epoch(model, loader, optimizer, device, pos_weight, grad_clip=1.0,
+                ablation="full"):
     model.train()
     model.reset_bank()
 
@@ -91,7 +94,10 @@ def train_epoch(model, loader, optimizer, device, pos_weight, grad_clip=1.0):
 
         if torch.isnan(loss) or torch.isinf(loss):
             nan_chunks += 1
-            model.detach_bank()
+            if ablation == "no_state":
+                model.reset_bank()
+            else:
+                model.detach_bank()
             continue
 
         # Collect train predictions (detached, no grad impact)
@@ -108,14 +114,20 @@ def train_epoch(model, loader, optimizer, device, pos_weight, grad_clip=1.0):
         if has_nan:
             nan_chunks += 1
             optimizer.zero_grad()
-            model.detach_bank()
+            if ablation == "no_state":
+                model.reset_bank()
+            else:
+                model.detach_bank()
             continue
 
         nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
 
-        # Detach bank after each chunk (TBPTT boundary)
-        model.detach_bank()
+        # TBPTT boundary: detach bank (or reset for no_state ablation)
+        if ablation == "no_state":
+            model.reset_bank()
+        else:
+            model.detach_bank()
 
         total_loss += loss.item()
         chunk_losses.append(loss.item())
@@ -236,7 +248,11 @@ def main():
     parser.add_argument("--finetune_from", type=str, default=None, help="Path to checkpoint to fine-tune from")
     parser.add_argument("--freeze_body", action="store_true", help="Freeze everything except the classifier head")
     
-    # Ablation flags
+    # Ablation: unified flag (preferred for Experiment 2)
+    parser.add_argument("--ablation", type=str, default=None,
+                        choices=["full", "no_cross_entity", "no_state"],
+                        help="Ablation variant: full (default), no_cross_entity, no_state")
+    # Legacy boolean flags (kept for backward compatibility)
     parser.add_argument("--no_state", action="store_true", help="Ablation: Disable entity state bank (event features only)")
     parser.add_argument("--no_cross_entity", action="store_true", help="Ablation: Disable cross-entity propagation (self-state only)")
     parser.add_argument("--chunk_size", type=int, default=4096)
@@ -244,10 +260,36 @@ def main():
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--max_pos_weight", type=float, default=30.0,
                         help="Cap pos_weight to prevent gradient explosion")
+    parser.add_argument("--patience", type=int, default=None,
+                        help="Early stopping patience (default: 5, or 10 for ablation runs)")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for reproducibility")
     parser.add_argument("--device", default=None)
     args = parser.parse_args()
+
+    # Resolve ablation mode: --ablation flag takes priority over legacy booleans
+    if args.ablation is not None:
+        ablation_mode = args.ablation
+        if ablation_mode == "no_cross_entity":
+            args.no_cross_entity = True
+            args.no_state = False
+        elif ablation_mode == "no_state":
+            # no_state ablation: full architecture, but reset bank every chunk.
+            # The model uses use_state=True, cross_entity=True — the ablation
+            # is purely a training-loop change (reset vs detach at boundaries).
+            args.no_cross_entity = False
+            args.no_state = False  # Model sees use_state=True
+        else:  # "full"
+            args.no_cross_entity = False
+            args.no_state = False
+    else:
+        # Derive ablation_mode from legacy flags
+        if args.no_state:
+            ablation_mode = "no_state"
+        elif args.no_cross_entity:
+            ablation_mode = "no_cross_entity"
+        else:
+            ablation_mode = "full"
 
     # --- Reproducibility ---
     torch.manual_seed(args.seed)
@@ -270,7 +312,8 @@ def main():
     # Create a timestamped run directory (will be renamed with results at end)
     run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_base = Path("ckpts") / "full_runs"
-    save_dir = run_base / f"{args.dataset}_{train_lbl}_{run_ts}"
+    ablation_tag = f"_ablation-{ablation_mode}"
+    save_dir = run_base / f"{args.dataset}_{train_lbl}{ablation_tag}_{run_ts}"
     save_dir.mkdir(parents=True, exist_ok=True)
 
     logging.basicConfig(
@@ -295,6 +338,7 @@ def main():
     logging.info(f"  HYPERMAMBA FULL — {args.dataset.upper()}")
     logging.info("=" * 60)
     logging.info(f"  Device:       {device}")
+    logging.info(f"  Ablation:     {ablation_mode}")
     logging.info(f"  Train labels: {train_lbl}")
     logging.info(f"  Test labels:  {test_lbl}")
     logging.info(f"  Seed:         {args.seed}")
@@ -402,7 +446,8 @@ def main():
     # --- Training ---
     best_auprc = 0.0
     best_epoch = 0
-    patience = 5
+    # Higher patience for ablation runs to observe overfitting divergence
+    patience = args.patience if args.patience is not None else (10 if ablation_mode != "full" else 5)
     no_improve = 0
 
     history = {
@@ -412,17 +457,21 @@ def main():
         'train_f1': [],
         'val_auprc': [],
         'val_f1': [],
+        'test_auprc': [],
+        'test_f1': [],
         'chunk_loss': [],
+        'ablation_mode': ablation_mode,
     }
 
     # Learning rate scheduler — cosine decay to eta_min
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=args.epochs, eta_min=1e-5)
 
-    logging.info(f"\nStarting training ({args.epochs} epochs)...")
+    logging.info(f"\nStarting training ({args.epochs} epochs, patience={patience})...")
+    logging.info(f"  Per-epoch test evaluation: enabled")
 
     for epoch in range(1, args.epochs + 1):
-        logging.info(f"\n--- Epoch {epoch}/{args.epochs} ---")
+        logging.info(f"\n--- Epoch {epoch}/{args.epochs} [ablation={ablation_mode}] ---")
 
         # CRITICAL: Reset the bank at the start of each epoch!
         # Otherwise, epoch 2 starts training on shard 0 using the future
@@ -431,10 +480,17 @@ def main():
         model.reset_bank()
 
         train_loss, epoch_chunk_losses, train_metrics = train_epoch(
-            model, train_loader, optimizer, device, pos_weight)
+            model, train_loader, optimizer, device, pos_weight,
+            ablation=ablation_mode)
 
         # Validation (used for early stopping) — bank carries warm state from training
         val_metrics = evaluate(model, val_loader, device)
+
+        # Per-epoch test evaluation: use the warm bank from val eval.
+        # After evaluate(val_loader), the bank has been warmed through
+        # train+val data in eval mode — we can directly evaluate test
+        # without re-warming. This is Option B from the plan.
+        test_metrics_epoch = evaluate(model, test_loader, device)
 
         # Step LR scheduler
         scheduler.step()
@@ -443,6 +499,8 @@ def main():
         f1 = val_metrics["best_f1"]
         t_auprc = train_metrics["auprc"]
         t_f1 = train_metrics["best_f1"]
+        te_auprc = test_metrics_epoch["auprc"]
+        te_f1 = test_metrics_epoch["best_f1"]
 
         history['train_loss'].append(train_loss)
         history['val_loss'].append(val_loss)
@@ -451,10 +509,13 @@ def main():
         history['train_f1'].append(t_f1)
         history['val_auprc'].append(auprc)
         history['val_f1'].append(f1)
+        history['test_auprc'].append(te_auprc)
+        history['test_f1'].append(te_f1)
 
         logging.info(f"  Train Loss:  {train_loss:.4f}  |  Val({val_label_primary}) Loss: {val_loss:.4f}")
         logging.info(f"  Train AUPRC: {t_auprc:.4f}  |  Train F1: {t_f1:.4f}")
         logging.info(f"  Val({val_label_primary}) AUPRC: {auprc:.4f}  |  Val({val_label_primary}) F1: {f1:.4f}")
+        logging.info(f"  Test AUPRC:  {te_auprc:.4f}  |  Test F1: {te_f1:.4f}")
 
         if auprc > best_auprc:
             best_auprc = auprc
@@ -503,9 +564,9 @@ def main():
     logging.info(f"  Test F1:    {test_f1:.4f}")
     logging.info(f"{'='*60}")
 
-    history["test_loss"] = test_loss
-    history["test_auprc"] = test_auprc
-    history["test_f1"] = test_f1
+    history["final_test_loss"] = test_loss
+    history["final_test_auprc"] = test_auprc
+    history["final_test_f1"] = test_f1
 
     # Save training history
     torch.save(history, save_dir / "history.pt")
@@ -533,8 +594,8 @@ def main():
         plt.subplot(2, 2, 2)
         plt.plot(ep_range, history['train_loss'], marker='o', color='blue', label='Train Loss')
         plt.plot(ep_range, history['val_loss'], marker='s', color='red', label='Val Loss')
-        if 'test_loss' in history:
-            plt.plot(best_epoch, history['test_loss'], marker='*', markersize=15, color='darkred', label='Test Loss (Best Epoch)')
+        if 'final_test_loss' in history:
+            plt.plot(best_epoch, history['final_test_loss'], marker='*', markersize=15, color='darkred', label='Test Loss (Best Epoch)')
         plt.xlabel('Epoch')
         plt.ylabel('Loss')
         plt.title('Loss: Train vs Validation')
@@ -546,8 +607,10 @@ def main():
         plt.subplot(2, 2, 3)
         plt.plot(ep_range, history['train_auprc'], marker='o', color='blue', label='Train AUPRC')
         plt.plot(ep_range, history['val_auprc'], marker='s', color='green', label=f'Val({val_label_primary}) AUPRC')
-        if 'test_auprc' in history:
-            plt.plot(best_epoch, history['test_auprc'], marker='*', markersize=15, color='darkgreen', label='Test AUPRC')
+        if isinstance(history.get('test_auprc'), list) and len(history['test_auprc']) > 0:
+            plt.plot(ep_range, history['test_auprc'], marker='^', color='darkgreen', label='Test AUPRC')
+        elif 'final_test_auprc' in history:
+            plt.plot(best_epoch, history['final_test_auprc'], marker='*', markersize=15, color='darkgreen', label='Test AUPRC')
         plt.xlabel('Epoch')
         plt.ylabel('AUPRC')
         plt.title('AUPRC: Train vs Validation')
@@ -559,8 +622,10 @@ def main():
         plt.subplot(2, 2, 4)
         plt.plot(ep_range, history['train_f1'], marker='o', color='blue', label='Train F1')
         plt.plot(ep_range, history['val_f1'], marker='s', color='green', label=f'Val({val_label_primary}) F1')
-        if 'test_f1' in history:
-            plt.plot(best_epoch, history['test_f1'], marker='*', markersize=15, color='darkgreen', label='Test F1')
+        if isinstance(history.get('test_f1'), list) and len(history['test_f1']) > 0:
+            plt.plot(ep_range, history['test_f1'], marker='^', color='darkgreen', label='Test F1')
+        elif 'final_test_f1' in history:
+            plt.plot(best_epoch, history['final_test_f1'], marker='*', markersize=15, color='darkgreen', label='Test F1')
         plt.xlabel('Epoch')
         plt.ylabel('F1')
         plt.title('F1: Train vs Validation')
@@ -581,6 +646,7 @@ def main():
     actual_epochs = len(history['train_loss'])
     final_name = (
         f"{args.dataset}_train-{train_lbl}_test-{test_lbl}"
+        f"{ablation_tag}"
         f"_auprc{best_auprc:.4f}_f1{best_f1:.4f}"
         f"_chunk{args.chunk_size}_ep{actual_epochs}"
     )
