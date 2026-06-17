@@ -177,7 +177,7 @@ def warmup_bank(model, loaders, device):
 
 
 @torch.no_grad()
-def evaluate(model, loader, device):
+def evaluate(model, loader, device, return_preds=False):
     """Evaluate model on a dataset. Always uses pos_weight=1.0 (unweighted BCE)
     since val/test may have different class distributions than training."""
     model.eval()
@@ -189,6 +189,8 @@ def evaluate(model, loader, device):
     total_loss = 0.0
     n_chunks = 0
 
+    all_entity_ids = []
+    
     for batch in loader:
         X_c = torch.nan_to_num(batch["X_cont"].to(device), nan=0.0).clamp(-20, 20)
         et = batch["event_type"].to(device)
@@ -210,9 +212,21 @@ def evaluate(model, loader, device):
 
         all_logits.extend(logits.squeeze(0).cpu().tolist())
         all_labels.extend(y.squeeze(0).cpu().tolist())
+        
+        if return_preds:
+            all_entity_ids.append(ent.cpu().numpy())
 
     metrics = compute_metrics(all_logits, all_labels)
     metrics["loss"] = total_loss / max(n_chunks, 1)
+    
+    if return_preds:
+        preds = {
+            "logits": np.array(all_logits, dtype=np.float32),
+            "labels": np.array(all_labels, dtype=np.int64),
+            "entity_ids": np.concatenate(all_entity_ids, axis=0),
+        }
+        return metrics, preds
+    
     return metrics
 
 
@@ -445,7 +459,13 @@ def main():
     logging.info(f"  Warming up bank states with best weights...")
     warmup_bank(model, [train_loader, val_loader], device)
     
-    test_metrics = evaluate(model, test_loader, device)
+    test_metrics, test_preds = evaluate(model, test_loader, device, return_preds=True)
+    
+    # Save predictions for downstream evaluation
+    preds_path = save_dir / 'preds.pt'
+    torch.save(test_preds, preds_path)
+    logging.info(f"  Saved predictions to {preds_path}")
+
     test_loss = test_metrics["loss"]
     test_auprc = test_metrics["auprc"]
     test_f1 = test_metrics["best_f1"]

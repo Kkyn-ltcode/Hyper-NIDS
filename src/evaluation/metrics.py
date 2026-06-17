@@ -200,6 +200,63 @@ def compute_node_level_metrics(
     return metrics
 
 
+def compute_event_level_metrics(
+    scores: np.ndarray,
+    labels: np.ndarray,
+) -> dict[str, float]:
+    """
+    Compute standard detection metrics at the event level.
+    
+    Args:
+        scores: (N,) float array of anomaly scores
+        labels: (N,) int array of binary labels (0 or 1)
+        
+    Returns:
+        Dict with keys: auprc, auroc, best_f1, best_threshold,
+        precision_at_best, recall_at_best, n_events, n_attack_events.
+    """
+    if len(scores) == 0 or labels.sum() == 0:
+        return {
+            "auprc": 0.0, "auroc": 0.0, "best_f1": 0.0,
+            "best_threshold": 0.0, "precision_at_best": 0.0,
+            "recall_at_best": 0.0, "n_events": len(scores),
+            "n_attack_events": 0,
+        }
+    
+    metrics = {}
+    metrics["n_events"] = len(scores)
+    metrics["n_attack_events"] = int(labels.sum())
+    
+    # AUPRC
+    try:
+        metrics["auprc"] = float(average_precision_score(labels, scores))
+    except ValueError:
+        metrics["auprc"] = 0.0
+    
+    # AUROC
+    try:
+        metrics["auroc"] = float(roc_auc_score(labels, scores))
+    except ValueError:
+        metrics["auroc"] = 0.0
+    
+    # Best F1 from PR curve
+    try:
+        prec, rec, thr = precision_recall_curve(labels, scores)
+        f1_all = 2 * prec[:-1] * rec[:-1] / (prec[:-1] + rec[:-1] + 1e-12)
+        best_idx = np.argmax(f1_all)
+        metrics["best_f1"] = float(f1_all[best_idx])
+        metrics["best_threshold"] = float(thr[best_idx])
+        metrics["precision_at_best"] = float(prec[best_idx])
+        metrics["recall_at_best"] = float(rec[best_idx])
+    except ValueError:
+        metrics["best_f1"] = 0.0
+        metrics["best_threshold"] = 0.0
+        metrics["precision_at_best"] = 0.0
+        metrics["recall_at_best"] = 0.0
+    
+    return metrics
+
+
 def compute_pr_curve(
     node_scores: dict[str, float],
     node_labels: dict[str, int],

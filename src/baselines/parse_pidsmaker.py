@@ -336,3 +336,76 @@ def load_pidsmaker_ground_truth(
     logger.info(f"Loaded PIDSMaker ground truth: {len(gt)} entries, "
                 f"{sum(v == 1 for v in gt.values())} malicious")
     return gt
+
+
+def match_pidsmaker_edges_to_our_labels(
+    edge_df: pd.DataFrame,
+    data_root: str | Path,
+    test_shards: list[int],
+    label_type: str = "crossprocess",
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Match PIDSMaker edge losses to our event labels by exact nanosecond timestamp.
+    
+    This allows us to evaluate PIDSMaker baselines at the event-level using
+    our exact ground truth labels, ensuring a 100% fair apples-to-apples
+    comparison on the exact same events.
+    
+    Args:
+        edge_df:     DataFrame from load_edge_losses_from_dir()
+        data_root:   Path to processed dataset (e.g., data/processed/darpa_tc_e3/theia)
+        test_shards: List of test shard IDs (e.g., [8, 9])
+        label_type:  Which of our labels to use (default: 'crossprocess')
+        
+    Returns:
+        (matched_scores, matched_labels) — Parallel 1D numpy arrays.
+    """
+    data_root = Path(data_root)
+    labeled_dir = data_root / "labeled"
+    label_col = f"label_{label_type}"
+    
+    # 1. Load all test events from our parquets
+    logger.info(f"Loading our test events from shards {test_shards}...")
+    our_events_dfs = []
+    for sid in test_shards:
+        parquet_path = labeled_dir / f"labeled_shard{sid}.parquet"
+        df = pd.read_parquet(parquet_path, columns=["timestamp_nanos", label_col])
+        our_events_dfs.append(df)
+        
+    our_df = pd.concat(our_events_dfs, ignore_index=True)
+    # Some timestamps might have multiple events (e.g., hyperedges from the same log).
+    # Group by timestamp and take the max label (if any event at this nanosecond is malicious, the timestamp is malicious)
+    our_ts_labels = our_df.groupby("timestamp_nanos")[label_col].max().to_dict()
+    
+    logger.info(f"  Loaded {len(our_df):,} events, {len(our_ts_labels):,} unique nanosecond timestamps")
+    
+    # 2. Match PIDSMaker edges to our timestamps
+    matched_scores = []
+    matched_labels = []
+    
+    n_unmatched = 0
+    n_edges = len(edge_df)
+    
+    # PIDSMaker 'time' column should be nanoseconds (int)
+    for _, row in edge_df.iterrows():
+        ts_nanos = int(row["time"])
+        score = float(row["loss"])
+        
+        if ts_nanos in our_ts_labels:
+            matched_scores.append(score)
+            matched_labels.append(our_ts_labels[ts_nanos])
+        else:
+            n_unmatched += 1
+            
+    matched_scores_arr = np.array(matched_scores, dtype=np.float32)
+    matched_labels_arr = np.array(matched_labels, dtype=np.int64)
+    
+    match_rate = len(matched_scores) / max(n_edges, 1) * 100
+    logger.info(f"  Matched {len(matched_scores):,} / {n_edges:,} PIDSMaker edges ({match_rate:.1f}%)")
+    
+    if n_unmatched > 0:
+        logger.warning(f"  {n_unmatched:,} PIDSMaker edges could not be matched to our test events by timestamp.")
+        if match_rate < 10.0:
+            logger.error("  Match rate is critically low! Check if PIDSMaker aggregated timestamps or used different test window.")
+            
+    return matched_scores_arr, matched_labels_arr
