@@ -139,10 +139,10 @@ def main():
         total_events += n
 
         print(f"    Broad:  {int(events_df['label_broad'].sum()):,} "
-              f"({100*events_df['label_broad'].sum()/n:.1f}%)")
-        print(f"    XProc:  {n_xproc:,} ({100*n_xproc/n:.3f}%)")
-        print(f"    Narrow: {n_narrow:,} ({100*n_narrow/n:.3f}%)")
-        print(f"    IoC:    {n_ioc:,} ({100*n_ioc/n:.4f}%)")
+              f"({100*events_df['label_broad'].sum()/max(n, 1):.1f}%)")
+        print(f"    XProc:  {n_xproc:,} ({100*n_xproc/max(n, 1):.3f}%)")
+        print(f"    Narrow: {n_narrow:,} ({100*n_narrow/max(n, 1):.3f}%)")
+        print(f"    IoC:    {n_ioc:,} ({100*n_ioc/max(n, 1):.4f}%)")
         print(f"    Time:   {time.time()-t0:.1f}s")
 
         del events_df, narrow, ioc, xproc
@@ -154,11 +154,11 @@ def main():
     print(f"{'='*60}")
     print(f"  Total events: {total_events:,}")
     print(f"  XProc:        {total_xproc:,} "
-          f"({100*total_xproc/total_events:.3f}%)")
+          f"({100*total_xproc/max(total_events, 1):.3f}%)")
     print(f"  Narrow:       {total_narrow:,} "
-          f"({100*total_narrow/total_events:.3f}%)")
+          f"({100*total_narrow/max(total_events, 1):.3f}%)")
     print(f"  IoC:          {total_ioc:,} "
-          f"({100*total_ioc/total_events:.4f}%)")
+          f"({100*total_ioc/max(total_events, 1):.4f}%)")
 
 
 if __name__ == "__main__":
