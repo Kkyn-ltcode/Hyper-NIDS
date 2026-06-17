@@ -35,8 +35,6 @@ def main():
         description="Add narrow/IoC labels to labeled shards")
     parser.add_argument("--dataset", default="theia",
                         choices=["theia", "trace", "trace-1"])
-    parser.add_argument("--force", action="store_true",
-                        help="Force reprocessing even if columns exist")
     args = parser.parse_args()
 
     labeled_dir = DATA_ROOT / args.dataset / "labeled"
@@ -51,7 +49,6 @@ def main():
     print(f"  IoC IPs: {len(gt.attack_ips)}")
     print(f"  Malicious files: {gt.malicious_file_substrings}")
 
-    total_broad = 0
     total_narrow = 0
     total_ioc = 0
     total_xproc = 0
@@ -87,17 +84,15 @@ def main():
         import pyarrow.parquet as pq
         existing_cols = set(pq.read_schema(f).names)
         required_cols = {"label_narrow", "label_ioc", "label_crossprocess"}
-        if required_cols.issubset(existing_cols) and not args.force:
+        if required_cols.issubset(existing_cols):
             # Quick read to report stats without reprocessing
             df_check = pd.read_parquet(
                 f, columns=["label_broad", "label_narrow", "label_ioc",
                              "label_crossprocess"])
             n = len(df_check)
-            n_broad = int(df_check["label_broad"].sum())
             n_narrow = int(df_check["label_narrow"].sum())
             n_ioc = int(df_check["label_ioc"].sum())
             n_xproc = int(df_check["label_crossprocess"].sum())
-            total_broad += n_broad
             total_narrow += n_narrow
             total_ioc += n_ioc
             total_xproc += n_xproc
@@ -122,12 +117,6 @@ def main():
         narrow = (is_attack_sub & touches_ioc_obj).astype(np.int8)
         events_df["label_narrow"] = narrow.values
 
-        # --- Broad labels (any attack subject OR IoC object) ---
-        # CRITICAL FIX: batch_ingest computes broad per-shard, missing subjects
-        # from earlier shards. We fix it globally here.
-        broad = (is_attack_sub | touches_ioc_obj).astype(np.int8)
-        events_df["label_broad"] = broad.values
-
         # --- IoC labels (any event touching IoC object) ---
         ioc = touches_ioc_obj.astype(np.int8)
         events_df["label_ioc"] = ioc.values
@@ -141,17 +130,16 @@ def main():
         events_df.to_parquet(tmp_path, index=False)
         tmp_path.replace(f)
 
-        n_broad = int(broad.sum())
         n_narrow = int(narrow.sum())
         n_ioc = int(ioc.sum())
         n_xproc = int(xproc.sum())
-        total_broad += n_broad
         total_narrow += n_narrow
         total_ioc += n_ioc
         total_xproc += n_xproc
         total_events += n
 
-        print(f"    Broad:  {n_broad:,} ({100*n_broad/max(n, 1):.1f}%)")
+        print(f"    Broad:  {int(events_df['label_broad'].sum()):,} "
+              f"({100*events_df['label_broad'].sum()/max(n, 1):.1f}%)")
         print(f"    XProc:  {n_xproc:,} ({100*n_xproc/max(n, 1):.3f}%)")
         print(f"    Narrow: {n_narrow:,} ({100*n_narrow/max(n, 1):.3f}%)")
         print(f"    IoC:    {n_ioc:,} ({100*n_ioc/max(n, 1):.4f}%)")
@@ -165,8 +153,6 @@ def main():
     print("SUMMARY")
     print(f"{'='*60}")
     print(f"  Total events: {total_events:,}")
-    print(f"  Broad:        {total_broad:,} "
-          f"({100*total_broad/max(total_events, 1):.2f}%)")
     print(f"  XProc:        {total_xproc:,} "
           f"({100*total_xproc/max(total_events, 1):.3f}%)")
     print(f"  Narrow:       {total_narrow:,} "
