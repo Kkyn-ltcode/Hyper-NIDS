@@ -1,6 +1,6 @@
 ========================================================================
 EXPERIMENT 4: COMPUTATIONAL SCALABILITY SUMMARY
-Mode: inference
+Mode: inference | warmup=5 | timed_iters=50
 ========================================================================
 
 --- Parameter Counts (d_model=256) ---
@@ -8,30 +8,30 @@ Mode: inference
        gru_tgn:  1,306,113 trainable params
 
 --- Throughput at Default Config (chunk=4096, d_model=256) ---
-    hypermamba:     36,014 events/sec
-       gru_tgn:     49,705 events/sec
-      overhead: +27.5% (HyperMamba vs GRU-TGN)
+    hypermamba:     40,212 events/sec
+       gru_tgn:     44,871 events/sec
+      overhead: +10.4% (HyperMamba vs GRU-TGN)
       DARPA TC:     10,000 events/sec (reference)
-    HyperMamba: 3.6x DARPA TC ingestion rate
-       GRU-TGN: 5.0x DARPA TC ingestion rate
+    HyperMamba: 4.0x DARPA TC ingestion rate
+       GRU-TGN: 4.5x DARPA TC ingestion rate
 
 --- Throughput vs Chunk Size (d_model=256) ---
      chunk |   HyperMamba |      GRU-TGN |   Overhead
   -------- | ------------ | ------------ | ----------
-       512 |     20,699/s |     21,793/s |     +5.0%
-      1024 |     27,979/s |     28,086/s |     +0.4%
-      2048 |     30,644/s |     35,242/s |    +13.0%
-      4096 |     36,014/s |     49,705/s |    +27.5%
-      8192 |     43,945/s |     52,639/s |    +16.5%
-     16384 |     44,890/s |     52,600/s |    +14.7%
+       512 |     20,810/s |     28,569/s |    +27.2%
+      1024 |     25,651/s |     38,280/s |    +33.0%
+      2048 |     33,784/s |     43,778/s |    +22.8%
+      4096 |     40,212/s |     44,871/s |    +10.4%
+      8192 |     40,794/s |     50,644/s |    +19.4%
+     16384 |     42,281/s |     51,402/s |    +17.7%
 
 --- Throughput vs d_model (chunk_size=4096) ---
    d_model |   HyperMamba |      GRU-TGN |   Overhead
   -------- | ------------ | ------------ | ----------
-        64 |    217,473/s |    226,975/s |     +4.2%
-       128 |    102,547/s |    108,732/s |     +5.7%
-       256 |     41,653/s |     49,617/s |    +16.1%
-       512 |     17,281/s |     18,037/s |     +4.2%
+        64 |    207,430/s |    138,254/s |    -50.0%
+       128 |     76,384/s |    107,569/s |    +29.0%
+       256 |     41,641/s |     49,463/s |    +15.8%
+       512 |     17,324/s |     17,261/s |     -0.4%
 
 --- Entity Bank Memory (theoretical, both models identical) ---
   Both models store an (|E|, d_model) float32 state bank.
@@ -43,7 +43,7 @@ Mode: inference
      5,000,000 |   2441 MB |   4883 MB |   9766 MB |
 
 --- Deployment Viability ---
-  ✓ HyperMamba sustains real-time processing at 3.6x the DARPA TC ingestion rate
+  ✓ HyperMamba sustains real-time processing at 4.0x the DARPA TC ingestion rate
 
   Note: Entity bank memory is O(|E|·d), bounded by entity vocabulary
   size (not event history length). Both architectures share identical

@@ -15,7 +15,16 @@ class ChronoDataset(Dataset):
         y:            (chunk_size,) int64
         entity_ids:   (chunk_size, 3) int64 — [subj, obj, obj2]
         mask:         (chunk_size,) float32 — 1=real
+    
+    Temporal filtering (for PIDSMaker-aligned chronological splits):
+        Pass ts_min_nanos / ts_max_nanos to restrict events to a
+        timestamp window. Events are first loaded from the given shards,
+        then filtered. This is how we align with PIDSMaker's
+        chronological train (April 2-8) / test (April 10+) split.
     """
+    
+    # DARPA TC E3 chronological split boundary: April 10, 2018 00:00:00 UTC
+    APRIL_10_2018_NANOS = 1523318400_000000000
     
     def __init__(
         self,
@@ -25,6 +34,8 @@ class ChronoDataset(Dataset):
         label_type: str = "broad",
         t0_nanos: int | None = None,
         verbose: bool = True,
+        ts_min_nanos: int | None = None,
+        ts_max_nanos: int | None = None,
     ):
         data_root = Path(data_root)
         features_dir = data_root / "features_norm"
@@ -116,10 +127,12 @@ class ChronoDataset(Dataset):
         self.n_cont_features = self.X_cont.shape[1]
         del X_all, etype_onehot; gc.collect()
         
-        # --- Load entity IDs and timestamps ---
+        # --- Load entity IDs, timestamps, and raw UUIDs ---
         if verbose: print(f"  Loading entity IDs and timestamps...")
         ent_parts = []
         ts_parts = []
+        raw_nanos_parts = []
+        uuid_parts = []  # raw UUID strings for node-level metrics
         _t0 = t0_nanos  # Use provided t0, or compute from first shard
         for sid in shard_ids:
             df = pd.read_parquet(
@@ -131,10 +144,14 @@ class ChronoDataset(Dataset):
             obj2 = df["predicate_object2_uuid"].map(uuid_to_id).fillna(-1).astype(np.int64).values
             ent_parts.append(np.stack([sub, obj, obj2], axis=1))
             
+            # Store raw UUID strings for node-level evaluation
+            uuid_parts.append(df[["subject_uuid", "predicate_object_uuid", "predicate_object2_uuid"]].values)
+            
             # Timestamps: relative seconds from a GLOBAL reference point (t0).
             # All splits (train/val/test) MUST share the same t0 so that
             # dt = t_curr - last_seen is valid across the train→val boundary.
             raw_nanos = df["timestamp_nanos"].values.astype(np.int64)
+            raw_nanos_parts.append(raw_nanos)
             if _t0 is None:
                 _t0 = int(raw_nanos[0])
             ts_relative_sec = ((raw_nanos - _t0).astype(np.float64) / 1e9).astype(np.float32)
@@ -144,7 +161,33 @@ class ChronoDataset(Dataset):
         self.t0_nanos = _t0  # Expose so val/test can reuse
         self.entity_ids = np.concatenate(ent_parts)
         self.timestamps = np.concatenate(ts_parts)
-        del ent_parts, ts_parts; gc.collect()
+        self.raw_nanos = np.concatenate(raw_nanos_parts)
+        self.event_uuids = np.concatenate(uuid_parts)  # (N, 3) str array: [sub, obj, obj2]
+        del ent_parts, ts_parts, raw_nanos_parts, uuid_parts; gc.collect()
+        
+        # --- Temporal filtering (for PIDSMaker-aligned chronological splits) ---
+        if ts_min_nanos is not None or ts_max_nanos is not None:
+            mask = np.ones(len(self.raw_nanos), dtype=bool)
+            if ts_min_nanos is not None:
+                mask &= self.raw_nanos >= ts_min_nanos
+            if ts_max_nanos is not None:
+                mask &= self.raw_nanos < ts_max_nanos
+            
+            n_before = len(mask)
+            n_after = int(mask.sum())
+            if verbose:
+                print(f"  Temporal filter: {n_before:,} → {n_after:,} events "
+                      f"({100 * n_after / n_before:.1f}% retained)")
+            
+            # Apply filter to all parallel arrays
+            self.X_cont = self.X_cont[mask]
+            self.event_type = self.event_type[mask]
+            self.y = self.y[mask]
+            self.entity_ids = self.entity_ids[mask]
+            self.timestamps = self.timestamps[mask]
+            self.raw_nanos = self.raw_nanos[mask]
+            self.event_uuids = self.event_uuids[mask]
+            gc.collect()
         
         self.total_events = len(self.X_cont)
         self.num_chunks = self.total_events // self.chunk_size
