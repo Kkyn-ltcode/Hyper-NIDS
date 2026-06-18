@@ -117,7 +117,7 @@ def compute_train_stats(
 
 
 TRAIN_SHARDS = {
-    "theia": [0, 1, 2, 3, 4, 5, 6],
+    "theia": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
     "trace": [0, 1, 2, 3, 4],
     "trace-1": [0],
 }

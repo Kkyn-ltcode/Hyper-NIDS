@@ -37,7 +37,11 @@ DATA_ROOT = Path("data/processed/darpa_tc_e3")
 
 # Dataset-specific shard configuration
 SHARD_CONFIG = {
-    "theia": {"train": list(range(7)), "val": [7], "test": [8, 9]},
+    "theia": {
+        "train": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 
+        "val": [11], 
+        "test": [12, 13, 17, 18, 19, 20, 21, 22, 23, 24, 14, 15, 16]
+    },
     "trace": {"train": list(range(5)), "val": [5], "test": [6]},
 }
 

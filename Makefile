@@ -6,7 +6,7 @@
 
 PYTHON ?= python
 DATASET ?= theia
-TRAIN_SHARDS ?= 0-6
+TRAIN_SHARDS ?= 0-10
 GPUS ?= 4
 
 help:  ## Show this help
