@@ -346,24 +346,24 @@ def main():
 
     # --- Data ---
     if args.dataset == "theia":
-        # PIDSMaker-aligned chronological splits for THEIA
-        APRIL_09_2018_NANOS = 1523232000_000000000
+        # PIDSMaker-aligned chronological splits for THEIA (Test is strict, Train/Val shifted for positives)
+        APRIL_05_2018_NANOS = 1522886400_000000000
         APRIL_10_2018_NANOS = ChronoDataset.APRIL_10_2018_NANOS
         
-        logging.info(f"\nLoading training data (labels={train_lbl}) [Before April 9]...")
+        logging.info(f"\nLoading training data (labels={train_lbl}) [Before April 5]...")
         train_ds = ChronoDataset(
             all_shards, data_root,
             chunk_size=args.chunk_size, label_type=train_lbl,
-            ts_max_nanos=APRIL_09_2018_NANOS)
+            ts_max_nanos=APRIL_05_2018_NANOS)
 
         t0 = train_ds.t0_nanos
         logging.info(f"  Global t0_nanos: {t0} (all splits share this reference)")
 
-        logging.info(f"Loading validation data (labels={train_lbl}) [April 9]...")
+        logging.info(f"Loading validation data (labels={train_lbl}) [April 5 to April 9]...")
         val_ds = ChronoDataset(
             all_shards, data_root,
             chunk_size=args.chunk_size, label_type=train_lbl, t0_nanos=t0,
-            ts_min_nanos=APRIL_09_2018_NANOS, ts_max_nanos=APRIL_10_2018_NANOS)
+            ts_min_nanos=APRIL_05_2018_NANOS, ts_max_nanos=APRIL_10_2018_NANOS)
 
         logging.info(f"Loading testing data (labels={test_lbl}) [April 10+]...")
         test_ds = ChronoDataset(
