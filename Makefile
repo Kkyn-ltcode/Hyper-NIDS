@@ -6,7 +6,7 @@
 
 PYTHON ?= python
 DATASET ?= theia
-TRAIN_SHARDS ?= 0-10
+TRAIN_SHARDS ?= 0-8
 GPUS ?= 4
 
 help:  ## Show this help
@@ -18,7 +18,7 @@ help:  ## Show this help
 # ============================================================
 
 pipeline-theia:  ## Run full pipeline for Theia
-	$(PYTHON) -m src.pipeline.run --dataset theia --train-shards 0-6
+	$(PYTHON) -m src.pipeline.run --dataset theia --train-shards 0-8
 
 pipeline-trace:  ## Run full pipeline for TRACE
 	$(PYTHON) -m src.pipeline.run --dataset trace --train-shards 0-4

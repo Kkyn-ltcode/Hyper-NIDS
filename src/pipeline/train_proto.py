@@ -34,8 +34,14 @@ from src.model.hypermamba_proto import HyperMambaProto
 DATA_ROOT = Path("data/processed/darpa_tc_e3")
 
 # Dataset-specific shard configuration
+# IMPORTANT: Shard IDs must be in CHRONOLOGICAL order for TBPTT!
 SHARD_CONFIG = {
-    "theia": {"train": list(range(7)), "val": [7], "test": [8, 9]},
+    "theia": {
+        "train": [0, 1, 2, 3, 4, 5, 6, 7, 8],           # Apr 3–5
+        "val":   [9, 10],                                   # Apr 5 (late)
+        "test":  [11, 12, 13, 17, 18, 19, 20, 21, 22,      # Apr 9–13
+                  23, 24, 14, 15, 16],                      # (chronological!)
+    },
     "trace": {"train": list(range(5)), "val": [5], "test": [6]},
 }
 

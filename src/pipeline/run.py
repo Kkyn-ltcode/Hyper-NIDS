@@ -65,7 +65,7 @@ STAGE_COMMANDS = {
         sys.executable, "-m", "src.pipeline.normalize",
         "--dataset", args.dataset,
         "--train-shards", args.train_shards or (
-            "0-6" if args.dataset == "theia" else "0-4"),
+            "0-8" if args.dataset == "theia" else "0-4"),
     ],
     "graph": lambda args: [
         sys.executable, "-m", "src.pipeline.build_graph",

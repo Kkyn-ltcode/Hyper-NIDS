@@ -31,17 +31,23 @@ download → ingest → relabel → features → normalize → build_graph → b
 
 ## Data Splits
 
-### Theia (10 shards)
-- **Train**: shards 0–6 (normalized with train statistics)
-- **Validation**: shard 7
-- **Test**: shards 8–9
+### Theia (25 shards, from 4 archives: 1r, 3, 5m, 6r)
+
+**IMPORTANT**: Shard IDs are NOT in chronological order! The parser numbered
+them by archive filename order, not by timestamp.
+
+- **Train**: shards [0–8] — April 3–5 (42M events)
+- **Validation**: shards [9, 10] — April 5 late (3.2M events)
+- **Test**: shards [11, 12, 13, 17, 18, 19, 20, 21, 22, 23, 24, 14, 15, 16] — April 9–13 (60.5M events, **chronological order!**)
+
+Note: April 6–8 have no data in the DARPA TC dataset.
 
 ### TRACE (7 shards)
 - **Train**: shards 0–4
 - **Validation**: shard 5
 - **Test**: shard 6
 
-Splits are defined during normalization (`--train-shards`) and enforced during training via config YAML.
+Splits are defined during normalization (`--train-shards`) and enforced during training via `SHARD_CONFIG`.
 
 ## Label Types
 
