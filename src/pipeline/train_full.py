@@ -35,17 +35,12 @@ from src.model.hypermamba_full import HyperMambaFull
 
 DATA_ROOT = Path("data/processed/darpa_tc_e3")
 
-# Dataset-specific shard configuration
-# IMPORTANT: Shard IDs must be in CHRONOLOGICAL order for TBPTT!
-# For THEIA full (25 shards from 4 archives), the parser numbered shards
-# by archive order (1r→3→5m→6r), NOT by timestamp. Shards 14-16 (from 6r,
-# Apr 12-13) have lower IDs than shards 17-24 (also 6r, Apr 10-12).
 SHARD_CONFIG = {
     "theia": {
         "train": [0, 1, 2, 3, 4, 5, 6, 7, 8],           # Apr 3–5
-        "val":   [9, 10],                                   # Apr 5 (late)
-        "test":  [11, 12, 13, 17, 18, 19, 20, 21, 22,      # Apr 9–13
-                  23, 24, 14, 15, 16],                      # (chronological!)
+        "val":   [9, 10, 11],                           # Apr 5 (positives) + Apr 9 (benign)
+        "test":  [12, 13, 17, 18, 19, 20, 21, 22,       # Apr 10–13
+                  23, 24, 14, 15, 16],                  # (Strictly chronological!)
     },
     "trace": {"train": list(range(5)), "val": [5], "test": [6]},
 }
