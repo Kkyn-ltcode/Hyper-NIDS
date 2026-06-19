@@ -154,9 +154,11 @@ def main():
     # Process each shard
     shard_dir = f'{args.data_dir}/labeled'
     
-    num_shards = 10
+    import glob
+    labeled_files = glob.glob(f"{shard_dir}/labeled_shard*.parquet")
+    all_indices = sorted([int(os.path.basename(f).replace("labeled_shard", "").replace(".parquet", "")) for f in labeled_files])
     
-    for sid in range(num_shards):
+    for sid in all_indices:
         shard_path = f"{shard_dir}/labeled_shard{sid}.parquet"
         if not os.path.exists(shard_path):
             print(f"Skipping {shard_path}, not found.")

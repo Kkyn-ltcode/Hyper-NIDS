@@ -117,7 +117,7 @@ def compute_train_stats(
 
 
 TRAIN_SHARDS = {
-    "theia": [0, 1, 2, 3, 4, 5, 6],
+    "theia": list(range(11)),  # Updated to match the new 0-10 training split
     "trace": [0, 1, 2, 3, 4],
     "trace-1": [0],
 }
@@ -128,7 +128,7 @@ def main():
     parser.add_argument("--dataset", default="theia",
                         choices=["theia", "trace", "trace-1"])
     parser.add_argument("--train-shards", default=None,
-                        help="Shard range for training (e.g., '0-6'). Default is dataset-specific.")
+                        help="Shard range for training (e.g., '0-10'). Default is dataset-specific.")
     args = parser.parse_args()
 
     features_dir = DATA_ROOT / args.dataset / "features"
@@ -136,8 +136,8 @@ def main():
     norm_dir.mkdir(parents=True, exist_ok=True)
 
     # Parse shard ranges
-    all_files = sorted(features_dir.glob("thyne_shard*.npz"))
-    all_indices = [int(f.stem.replace("thyne_shard", "")) for f in all_files]
+    all_files = features_dir.glob("thyne_shard*.npz")
+    all_indices = sorted([int(f.stem.replace("thyne_shard", "")) for f in all_files])
 
     if args.train_shards is not None:
         start, end = map(int, args.train_shards.split("-"))
