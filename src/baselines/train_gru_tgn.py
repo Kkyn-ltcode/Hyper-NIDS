@@ -27,10 +27,9 @@ DATA_ROOT = Path("data/processed/darpa_tc_e3")
 
 SHARD_CONFIG = {
     "theia": {
-        "train": [0, 1, 2, 3, 4, 5, 6, 7, 8],           # Apr 3–5
-        "val":   [9, 10],                                   # Apr 5 (late)
-        "test":  [11, 12, 13, 17, 18, 19, 20, 21, 22,      # Apr 9–13
-                  23, 24, 14, 15, 16],                      # (chronological!)
+        "train": list(range(11)),       # Shards 0-10 (April 3-5)
+        "val":   [11],                  # Shard 11 (April 9)
+        "test":  list(range(12, 25))    # Shards 12-24 (April 10-13)
     },
     "trace": {"train": list(range(5)), "val": [5], "test": [6]},
 }

@@ -35,6 +35,11 @@ from src.model.hypermamba_full import HyperMambaFull
 
 DATA_ROOT = Path("data/processed/darpa_tc_e3")
 
+# Dataset-specific shard configuration
+SHARD_CONFIG = {
+    "theia": {"train": list(range(11)), "val": [11, 12, 13, 14], "test": list(range(15, 25))},
+    "trace": {"train": list(range(5)), "val": [5], "test": [6]},
+}
 
 
 def compute_metrics(all_logits, all_labels):
@@ -326,13 +331,9 @@ def main():
     )
 
     data_root = DATA_ROOT / args.dataset
+    shards = SHARD_CONFIG[args.dataset]
 
-    # Auto-discover all available shards
-    features_dir = data_root / "features_norm"
-    shard_files = list(features_dir.glob("thyne_shard*.npz"))
-    all_shards = sorted([int(f.stem.replace("thyne_shard", "")) for f in shard_files])
-    if not all_shards:
-        raise FileNotFoundError(f"No shards found in {features_dir}")
+
 
     logging.info("=" * 60)
     logging.info(f"  HYPERMAMBA FULL — {args.dataset.upper()}")
@@ -342,58 +343,29 @@ def main():
     logging.info(f"  Train labels: {train_lbl}")
     logging.info(f"  Test labels:  {test_lbl}")
     logging.info(f"  Seed:         {args.seed}")
-    logging.info(f"  Total shards: {len(all_shards)} found")
+    logging.info(f"  Train shards: {shards['train']}")
+    logging.info(f"  Val shards:   {shards['val']}")
 
     # --- Data ---
-    if args.dataset == "theia":
-        # PIDSMaker-aligned chronological splits for THEIA
-        APRIL_09_2018_NANOS = 1523232000_000000000
-        APRIL_10_2018_NANOS = ChronoDataset.APRIL_10_2018_NANOS
-        
-        logging.info(f"\nLoading training data (labels={train_lbl}) [Before April 9]...")
-        train_ds = ChronoDataset(
-            all_shards, data_root,
-            chunk_size=args.chunk_size, label_type=train_lbl,
-            ts_max_nanos=APRIL_09_2018_NANOS)
+    logging.info(f"\nLoading training data (labels={train_lbl})...")
+    train_ds = ChronoDataset(
+        shards["train"], data_root,
+        chunk_size=args.chunk_size, label_type=train_lbl)
 
-        t0 = train_ds.t0_nanos
-        logging.info(f"  Global t0_nanos: {t0} (all splits share this reference)")
+    # All datasets must share the same timestamp reference (t0_nanos)
+    # so that dt = t_curr - last_seen is valid across train→val→test boundaries
+    t0 = train_ds.t0_nanos
+    logging.info(f"  Global t0_nanos: {t0} (all splits share this reference)")
 
-        logging.info(f"Loading validation data (labels={train_lbl}) [April 9]...")
-        val_ds = ChronoDataset(
-            all_shards, data_root,
-            chunk_size=args.chunk_size, label_type=train_lbl, t0_nanos=t0,
-            ts_min_nanos=APRIL_09_2018_NANOS, ts_max_nanos=APRIL_10_2018_NANOS)
+    logging.info(f"Loading validation data (labels={train_lbl})...")
+    val_ds = ChronoDataset(
+        shards["val"], data_root,
+        chunk_size=args.chunk_size, label_type=train_lbl, t0_nanos=t0)
 
-        logging.info(f"Loading testing data (labels={test_lbl}) [April 10+]...")
-        test_ds = ChronoDataset(
-            all_shards, data_root,
-            chunk_size=args.chunk_size, label_type=test_lbl, t0_nanos=t0,
-            ts_min_nanos=APRIL_10_2018_NANOS)
-    else:
-        # Fallback dynamic shard-based split for other datasets (70% train)
-        n_train = max(1, int(len(all_shards) * 0.7))
-        train_shards = all_shards[:n_train]
-        val_shards = [all_shards[n_train]] if n_train < len(all_shards) else train_shards
-        test_shards = all_shards[n_train+1:] if n_train + 1 < len(all_shards) else val_shards
-        
-        logging.info(f"\nLoading training data (labels={train_lbl}) [Shards {train_shards}]...")
-        train_ds = ChronoDataset(
-            train_shards, data_root,
-            chunk_size=args.chunk_size, label_type=train_lbl)
-
-        t0 = train_ds.t0_nanos
-        logging.info(f"  Global t0_nanos: {t0} (all splits share this reference)")
-
-        logging.info(f"Loading validation data (labels={train_lbl}) [Shards {val_shards}]...")
-        val_ds = ChronoDataset(
-            val_shards, data_root,
-            chunk_size=args.chunk_size, label_type=train_lbl, t0_nanos=t0)
-
-        logging.info(f"Loading testing data (labels={test_lbl}) [Shards {test_shards}]...")
-        test_ds = ChronoDataset(
-            test_shards, data_root,
-            chunk_size=args.chunk_size, label_type=test_lbl, t0_nanos=t0)
+    logging.info(f"Loading testing data (labels={test_lbl})...")
+    test_ds = ChronoDataset(
+        shards["test"], data_root,
+        chunk_size=args.chunk_size, label_type=test_lbl, t0_nanos=t0)
 
     # Strict chronological: batch_size=1, shuffle=False, num_workers=0
     train_loader = DataLoader(train_ds, batch_size=1, shuffle=False, num_workers=0)

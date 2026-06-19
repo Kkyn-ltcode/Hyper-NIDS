@@ -33,12 +33,10 @@ download → ingest → relabel → features → normalize → build_graph → b
 
 ### Theia (25 shards, from 4 archives: 1r, 3, 5m, 6r)
 
-**IMPORTANT**: Shard IDs are NOT in chronological order! The parser numbered
-them by archive filename order, not by timestamp.
-
-- **Train**: shards [0–8] — April 3–5 (42M events)
-- **Validation**: shards [9, 10] — April 5 late (3.2M events)
-- **Test**: shards [11, 12, 13, 17, 18, 19, 20, 21, 22, 23, 24, 14, 15, 16] — April 9–13 (60.5M events, **chronological order!**)
+**Chronological Split (Aligned with PIDSMaker):**
+- **Train**: shards 0–10 — April 3–5 (45.4M events, 466K attacks)
+- **Validation**: shard 11 — April 9 (915K events, 0 attacks - benign day)
+- **Test**: shards 12–24 — April 10–13 (59.6M events, 512K attacks)
 
 Note: April 6–8 have no data in the DARPA TC dataset.
 
