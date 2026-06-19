@@ -29,6 +29,7 @@ import json
 import os
 import sys
 import tarfile
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -118,13 +119,24 @@ def extract_tar(data_dir: Path, dataset: str) -> list[Path]:
     return sorted(extracted)
 
 
+def get_shard_sort_key(filepath: Path) -> tuple[int, str, int]:
+    """Extract (group_num, base_name, suffix_num) for correct chronological sorting."""
+    name = filepath.name
+    match = re.search(r'\.json(?:\.(\d+))?$', name)
+    suffix_num = int(match.group(1)) if match and match.group(1) else 0
+    base_name = re.sub(r'\.json.*$', '', name)
+    group_match = re.search(r'-(\d+)[a-zA-Z]*$', base_name)
+    group_num = int(group_match.group(1)) if group_match else 0
+    return (group_num, base_name, suffix_num)
+
+
 def find_json_shards(data_dir: Path) -> list[Path]:
     """Find all extracted JSON shard files (not tar archives)."""
     shards = []
-    for f in sorted(data_dir.iterdir(), key=lambda x: x.name):
+    for f in data_dir.iterdir():
         if f.is_file() and ".json" in f.name and ".tar.gz" not in f.name:
             shards.append(f)
-    return sorted(shards)
+    return sorted(shards, key=get_shard_sort_key)
 
 
 def unwrap_avro_union(value):

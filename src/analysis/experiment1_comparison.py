@@ -1,144 +1,277 @@
+"""
+Experiment 1: Dual-Level End-to-End Detection Comparison.
+
+Generates overlaid PR curves and LaTeX tables comparing HyperMamba
+against PIDSMaker baselines (KAIROS, ThreaTrace, MAGIC) on DARPA TC E3.
+
+Evaluates at TWO levels:
+  1. Event-Level: Apples-to-apples comparison using our timestamp-matched events.
+  2. Node-Level: Apples-to-oranges comparison where each system is evaluated
+     against its own ground truth (PIDSMaker's narrow GT vs Our broad GT),
+     reflecting the fundamental difference in their preprocessing pipelines.
+
+Usage:
+    python -m src.analysis.experiment1_comparison \
+        --hypermamba_preds results/hypermamba/preds.pt \
+        --kairos_dir /path/to/PIDSMaker/kairos/edge_losses/test/model_epoch_0 \
+        --pidsmaker_gt /path/to/PIDSMaker/Ground_Truth/orthrus/E3-THEIA \
+        --dataset theia \
+        --out_dir results/experiment1
+"""
+
 import argparse
-import os
-import glob
-import pickle
+import json
+import logging
+import sys
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import torch
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from sklearn.metrics import precision_recall_curve
 
-from src.evaluation.metrics import aggregate_node_scores, evaluate_node_level
+from src.evaluation.metrics import (
+    compute_node_level_metrics,
+    compute_event_level_metrics,
+    compute_pr_curve,
+    compute_precision_at_fpr,
+    format_metrics_table,
+    format_latex_table,
+)
+from src.evaluation.node_aggregation import (
+    load_entity_vocab,
+    aggregate_to_nodes,
+    load_pidsmaker_gt,
+)
+from src.baselines.parse_pidsmaker import (
+    load_edge_losses_from_dir,
+    aggregate_edge_losses_vectorized,
+    match_pidsmaker_edges_to_our_labels,
+)
 
-def load_ground_truth(gt_dir):
-    """
-    Load ground truth UUIDs from PIDSMaker ground truth CSVs.
-    """
-    gt_files = glob.glob(os.path.join(gt_dir, "**", "*.csv"), recursive=True)
-    malicious_uuids = set()
-    for f in gt_files:
-        try:
-            df = pd.read_csv(f, header=None)
-            # Assuming UUID is the first column
-            uuids = df.iloc[:, 0].astype(str).values
-            malicious_uuids.update(uuids)
-        except Exception as e:
-            print(f"Warning: could not read {f}: {e}")
-    print(f"Loaded {len(malicious_uuids)} malicious UUIDs from {len(gt_files)} files.")
-    return malicious_uuids
 
-def load_hypermamba_scores(preds_path, vocab_path):
-    """
-    Load HyperMamba preds.pt and map integer entity IDs to UUID strings.
-    """
-    print(f"Loading HyperMamba predictions from {preds_path}")
-    preds = torch.load(preds_path, map_location="cpu", weights_only=False)
-    logits = preds["logits"]
-    entity_ids = preds["entity_ids"]
-    
-    print(f"Loading entity vocab from {vocab_path}")
-    vocab = np.load(vocab_path, allow_pickle=True)
-    uuid_mapping = {i: str(u) for i, u in enumerate(vocab["uuids"])}
-    
-    print("Aggregating HyperMamba node scores...")
-    node_scores = aggregate_node_scores(entity_ids, logits, uuid_mapping)
-    return node_scores
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+logger = logging.getLogger(__name__)
 
-def plot_pr_curves(results, out_file):
-    plt.figure(figsize=(10, 8))
-    
+
+# ============================================================
+# Plotting
+# ============================================================
+
+def plot_pr_curves(
+    model_curves: dict[str, tuple[np.ndarray, np.ndarray, float]],
+    out_path: str | Path,
+    title: str,
+):
     colors = {
-        "HyperMamba": "red",
-        "KAIROS": "blue",
-        "ThreaTrace": "green",
-        "MAGIC": "purple",
-        "Flash": "orange"
+        "HyperMamba": "#2563EB",
+        "KAIROS": "#DC2626",
+        "ThreaTrace": "#16A34A",
+        "MAGIC": "#9333EA",
     }
+    default_colors = plt.cm.Set2(np.linspace(0, 1, 8))
     
-    for system, data in results.items():
-        scores = data["scores"]
-        y_true = data["y_true"]
-        if len(y_true) > 0 and sum(y_true) > 0:
-            prec, rec, _ = precision_recall_curve(y_true, scores)
-            color = colors.get(system, "gray")
-            plt.plot(rec, prec, label=f'{system} (AUPRC={data["metrics"]["auprc"]:.3f})', color=color, linewidth=2)
-            
-    plt.xlabel('Recall')
-    plt.ylabel('Precision')
-    plt.title('End-to-End Detection PR Curves (THEIA E3)')
-    plt.legend(loc='upper right')
-    plt.grid(True, alpha=0.3)
+    fig, ax = plt.subplots(figsize=(8, 6))
+    
+    for i, (name, (prec, rec, auprc)) in enumerate(model_curves.items()):
+        color = colors.get(name, default_colors[i % len(default_colors)])
+        ax.plot(rec, prec, color=color, linewidth=2.0,
+                label=f"{name} (AUPRC={auprc:.4f})")
+    
+    ax.set_xlabel("Recall", fontsize=13)
+    ax.set_ylabel("Precision", fontsize=13)
+    ax.set_title(title, fontsize=14, fontweight="bold")
+    ax.set_xlim([-0.02, 1.02])
+    ax.set_ylim([-0.02, 1.02])
+    ax.legend(loc="best", fontsize=11, framealpha=0.9)
+    ax.grid(True, alpha=0.3)
+    ax.set_aspect("equal")
+    
     plt.tight_layout()
-    plt.savefig(out_file, dpi=300)
-    print(f"Saved PR curves to {out_file}")
+    plt.savefig(out_path, dpi=200, bbox_inches="tight")
+    plt.close()
 
-def print_latex_table(results):
-    print("\n" + "="*80)
-    print("LATEX TABLE FOR EXPERIMENT 1")
-    print("="*80)
-    print("\\begin{table}[h]")
-    print("\\centering")
-    print("\\begin{tabular}{l c c c c}")
-    print("\\hline")
-    print("\\textbf{System} & \\textbf{AUPRC} & \\textbf{Best F1} & \\textbf{Prec@0.1\\% FPR} & \\textbf{Prec@0.01\\% FPR} \\\\")
-    print("\\hline")
+
+# ============================================================
+# Main Comparison
+# ============================================================
+
+def run_comparison(args):
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
     
-    for system, data in results.items():
-        m = data["metrics"]
-        print(f"{system} & {m['auprc']:.3f} & {m['best_f1']:.3f} & {m['prec_at_0.1%_fpr']:.3f} & {m['prec_at_0.01%_fpr']:.3f} \\\\")
+    data_root = Path(f"data/processed/darpa_tc_e3/{args.dataset}")
+    shard_config = {"theia": [8, 9], "trace": [6]}
+    test_shards = shard_config[args.dataset]
+    
+    # ── Load Vocab and GT ──
+    id_to_uuid, _ = load_entity_vocab(data_root)
+    
+    # Load PIDSMaker GT
+    if args.pidsmaker_gt:
+        pidsmaker_gt_labels = load_pidsmaker_gt(args.pidsmaker_gt)
+    else:
+        logger.warning("No PIDSMaker GT provided. Node-level evaluation for PIDSMaker will be skipped.")
+        pidsmaker_gt_labels = {}
         
-    print("\\hline")
-    print("\\end{tabular}")
-    print("\\caption{End-to-End Node-Level Detection Performance on THEIA E3}")
-    print("\\label{tab:exp1}")
-    print("\\end{table}")
-    print("="*80 + "\n")
+    # Load Our GT (broad IoC-based)
+    logger.info("Loading HyperMamba broad ground truth...")
+    from src.data.ground_truth import load_ground_truth, build_attack_subject_uuids
+    subjects_df = pd.read_parquet(data_root / "subjects.parquet")
+    our_gt = load_ground_truth(args.dataset)
+    our_attack_uuids = build_attack_subject_uuids(subjects_df, our_gt)
+    our_gt_labels = {str(u): 1 for u in our_attack_uuids}
+    # Note: we don't list all benign UUIDs, the metrics functions assume 0 if not in dict
+    
+    # Storage for results
+    event_scores = {}
+    event_labels = {}
+    node_scores = {}
+    
+    # ── HyperMamba ──
+    if args.hypermamba_preds:
+        logger.info(f"Loading HyperMamba predictions from {args.hypermamba_preds}...")
+        data = torch.load(args.hypermamba_preds, map_location="cpu", weights_only=False)
+        logits = data["logits"]
+        labels = data["labels"]
+        entity_ids = data["entity_ids"]
+        
+        # Sigmoid for scores
+        hm_scores = 1.0 / (1.0 + np.exp(-np.clip(logits, -50, 50)))
+        
+        event_scores["HyperMamba"] = hm_scores
+        event_labels["HyperMamba"] = labels
+        
+        # Aggregate to nodes
+        hm_node_scores = aggregate_to_nodes(
+            hm_scores, entity_ids, id_to_uuid, method=args.aggregation
+        )
+        # To evaluate all test nodes, we must pad the GT dict with 0s for nodes that appeared in test
+        # but aren't in our_gt_labels.
+        test_node_labels = {u: our_gt_labels.get(u, 0) for u in hm_node_scores.keys()}
+        node_scores["HyperMamba"] = (hm_node_scores, test_node_labels)
+    
+    # ── PIDSMaker Baselines ──
+    # Map NID to UUID for PIDSMaker
+    if args.nid_to_uuid:
+        from src.baselines.parse_pidsmaker import load_nid_to_uuid_from_pickle
+        nid_to_uuid = load_nid_to_uuid_from_pickle(args.nid_to_uuid)
+    else:
+        logger.warning("No nid_to_uuid provided, PIDSMaker node aggregation will be skipped.")
+        nid_to_uuid = None
+        
+    for name, losses_dir in [
+        ("KAIROS", args.kairos_dir),
+        ("ThreaTrace", args.threatrace_dir),
+        ("MAGIC", args.magic_dir),
+    ]:
+        if not losses_dir:
+            continue
+            
+        logger.info(f"\nProcessing {name}...")
+        edge_df = load_edge_losses_from_dir(losses_dir)
+        
+        # 1. Event-Level Evaluation (timestamp matching)
+        matched_scores, matched_labels = match_pidsmaker_edges_to_our_labels(
+            edge_df, data_root, test_shards, label_type=args.label_type
+        )
+        if len(matched_scores) > 0:
+            event_scores[name] = matched_scores
+            event_labels[name] = matched_labels
+            
+        # 2. Node-Level Evaluation
+        if nid_to_uuid and pidsmaker_gt_labels:
+            logger.info(f"Aggregating {name} scores to nodes...")
+            pm_node_scores = aggregate_edge_losses_vectorized(
+                edge_df, nid_to_uuid, aggregation=args.aggregation, use_dst_node=True
+            )
+            # Evaluate against ALL mapped nodes. If a node is in pm_node_scores, check if it's in GT
+            pm_test_labels = {u: pidsmaker_gt_labels.get(u, 0) for u in pm_node_scores.keys()}
+            node_scores[name] = (pm_node_scores, pm_test_labels)
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Experiment 1: End-to-End Comparison")
-    parser.add_argument("--hm_preds", type=str, required=True, help="Path to HyperMamba preds.pt")
-    parser.add_argument("--vocab", type=str, required=True, help="Path to entity_vocab.npz")
-    parser.add_argument("--gt_dir", type=str, required=True, help="Directory with Ground Truth CSVs")
-    parser.add_argument("--baseline_scores", type=str, nargs='+', help="Paths to baseline parsed scores pkl (format: Name:path.pkl)")
-    parser.add_argument("--out_plot", type=str, default="experiment1_pr_curve.png", help="Output plot path")
+    # ── Compute Event-Level Metrics ──
+    logger.info(f"\n{'='*60}\n  EVENT-LEVEL COMPARISON\n{'='*60}")
+    event_metrics = {}
+    event_curves = {}
+    
+    for name in event_scores.keys():
+        metrics = compute_event_level_metrics(event_scores[name], event_labels[name])
+        event_metrics[name] = metrics
+        
+        prec, rec, _ = precision_recall_curve(event_labels[name], event_scores[name])
+        event_curves[name] = (prec, rec, metrics["auprc"])
+        
+    table_str = format_metrics_table(event_metrics, metrics_keys=["auprc", "best_f1", "precision_at_best", "recall_at_best"])
+    logger.info(f"\n{table_str}")
+    (out_dir / "event_level_table.txt").write_text(table_str)
+    
+    latex_str = format_latex_table(event_metrics, caption="Event-level detection on DARPA TC E3.")
+    (out_dir / "event_level_table.tex").write_text(latex_str)
+    plot_pr_curves(event_curves, out_dir / "pr_curves_event.png", "Event-Level PR Curves")
+    
+    # ── Compute Node-Level Metrics ──
+    logger.info(f"\n{'='*60}\n  NODE-LEVEL COMPARISON (Model-Specific GT)\n{'='*60}")
+    node_metrics = {}
+    node_curves = {}
+    
+    for name, (n_scores, n_labels) in node_scores.items():
+        metrics = compute_node_level_metrics(n_scores, n_labels)
+        node_metrics[name] = metrics
+        
+        prec, rec, _ = compute_pr_curve(n_scores, n_labels)
+        node_curves[name] = (prec, rec, metrics["auprc"])
+        
+    table_str = format_metrics_table(node_metrics, metrics_keys=["auprc", "best_f1", "precision_at_best", "recall_at_best"])
+    logger.info(f"\n{table_str}")
+    (out_dir / "node_level_table.txt").write_text(table_str)
+    
+    latex_str = format_latex_table(node_metrics, caption="Node-level detection on DARPA TC E3.")
+    (out_dir / "node_level_table.tex").write_text(latex_str)
+    plot_pr_curves(node_curves, out_dir / "pr_curves_node.png", "Node-Level PR Curves")
+
+    # ── Save JSONs ──
+    serializable = {}
+    for name, metrics in event_metrics.items():
+        serializable[f"{name}_Event"] = {k: float(v) for k, v in metrics.items()}
+    for name, metrics in node_metrics.items():
+        serializable[f"{name}_Node"] = {k: float(v) for k, v in metrics.items()}
+        
+    (out_dir / "metrics.json").write_text(json.dumps(serializable, indent=2))
+    logger.info(f"\nComparison complete! Outputs saved to {out_dir}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Dual-Level Comparison")
+    
+    # HyperMamba
+    parser.add_argument("--hypermamba_preds", type=str, default=None)
+    
+    # PIDSMaker
+    parser.add_argument("--kairos_dir", type=str, default=None)
+    parser.add_argument("--threatrace_dir", type=str, default=None)
+    parser.add_argument("--magic_dir", type=str, default=None)
+    parser.add_argument("--nid_to_uuid", type=str, default=None)
+    parser.add_argument("--pidsmaker_gt", type=str, default=None,
+                        help="Path to Ground_Truth/orthrus/E3-THEIA/")
+    
+    # Evaluation settings
+    parser.add_argument("--dataset", type=str, default="theia")
+    parser.add_argument("--label_type", type=str, default="crossprocess")
+    parser.add_argument("--aggregation", type=str, default="max")
+    
+    # Output
+    parser.add_argument("--out_dir", type=str, default="results/experiment1")
+    
     args = parser.parse_args()
     
-    gt_uuids = load_ground_truth(args.gt_dir)
-    
-    all_results = {}
-    
-    # Load HyperMamba
-    hm_scores = load_hypermamba_scores(args.hm_preds, args.vocab)
-    hm_metrics = evaluate_node_level(hm_scores, gt_uuids)
-    all_results["HyperMamba"] = {
-        "node_scores": hm_scores,
-        "metrics": hm_metrics,
-        "scores": np.array([hm_scores[u] for u in hm_scores]),
-        "y_true": np.array([1 if u in gt_uuids else 0 for u in hm_scores])
-    }
-    
-    # Load Baselines
-    if args.baseline_scores:
-        for baseline_arg in args.baseline_scores:
-            if ":" not in baseline_arg:
-                print(f"Skipping invalid baseline argument: {baseline_arg}")
-                continue
-            name, path = baseline_arg.split(":", 1)
-            if not os.path.exists(path):
-                print(f"Baseline file not found: {path}")
-                continue
-                
-            print(f"Loading {name} scores from {path}")
-            with open(path, "rb") as f:
-                baseline_scores = pickle.load(f)
-                
-            b_metrics = evaluate_node_level(baseline_scores, gt_uuids)
-            all_results[name] = {
-                "node_scores": baseline_scores,
-                "metrics": b_metrics,
-                "scores": np.array([baseline_scores[u] for u in baseline_scores]),
-                "y_true": np.array([1 if u in gt_uuids else 0 for u in baseline_scores])
-            }
-            
-    plot_pr_curves(all_results, args.out_plot)
-    print_latex_table(all_results)
+    from sklearn.metrics import precision_recall_curve
+    run_comparison(args)
+
+
+if __name__ == "__main__":
+    main()

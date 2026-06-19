@@ -33,6 +33,7 @@ import gc
 import json
 import sys
 import time
+import re
 import duckdb
 from collections import Counter
 from pathlib import Path
@@ -376,11 +377,21 @@ def main():
                 print(f"\n{name}: NOT FOUND at {path}")
         return
 
+    def get_shard_sort_key(filepath: Path) -> tuple[int, str, int]:
+        name = filepath.name
+        match = re.search(r'\.json(?:\.(\d+))?$', name)
+        suffix_num = int(match.group(1)) if match and match.group(1) else 0
+        base_name = re.sub(r'\.json.*$', '', name)
+        group_match = re.search(r'-(\d+)[a-zA-Z]*$', base_name)
+        group_num = int(group_match.group(1)) if group_match else 0
+        return (group_num, base_name, suffix_num)
+
     # --- Find JSON shards ---
-    all_shards = sorted([
-        f for f in raw_dir.iterdir()
-        if f.is_file() and ".json" in f.name and ".tar.gz" not in f.name
-    ])
+    all_shards = []
+    for f in raw_dir.iterdir():
+        if f.is_file() and ".json" in f.name and ".tar.gz" not in f.name:
+            all_shards.append(f)
+    all_shards = sorted(all_shards, key=get_shard_sort_key)
 
     if not all_shards and not args.merge_only:
         print(f"No JSON shards found in {raw_dir}")
