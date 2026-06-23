@@ -165,6 +165,28 @@ class ChronoDataset(Dataset):
         self.event_uuids = np.concatenate(uuid_parts)  # (N, 3) str array: [sub, obj, obj2]
         del ent_parts, ts_parts, raw_nanos_parts, uuid_parts; gc.collect()
         
+        # --- Timestamp sanity filter ---
+        # THEIA E3 shard 10 contains events with near-epoch (1970-01-01)
+        # timestamps — instrumentation artifacts that produce massive negative
+        # relative timestamps, corrupting the SSM's delta-t calculations and
+        # poisoning entity states in the bank.
+        TIMESTAMP_FLOOR_NANOS = 1514764800_000000000  # January 1, 2018 00:00:00 UTC
+        corrupt_mask = self.raw_nanos < TIMESTAMP_FLOOR_NANOS
+        n_corrupt = int(corrupt_mask.sum())
+        if n_corrupt > 0:
+            if verbose:
+                print(f"  ⚠ Dropping {n_corrupt:,} events with corrupted timestamps "
+                      f"(before 2018-01-01)")
+            valid = ~corrupt_mask
+            self.X_cont = self.X_cont[valid]
+            self.event_type = self.event_type[valid]
+            self.y = self.y[valid]
+            self.entity_ids = self.entity_ids[valid]
+            self.timestamps = self.timestamps[valid]
+            self.raw_nanos = self.raw_nanos[valid]
+            self.event_uuids = self.event_uuids[valid]
+            gc.collect()
+        
         # --- Temporal filtering (for PIDSMaker-aligned chronological splits) ---
         if ts_min_nanos is not None or ts_max_nanos is not None:
             mask = np.ones(len(self.raw_nanos), dtype=bool)

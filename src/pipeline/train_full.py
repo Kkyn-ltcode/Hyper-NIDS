@@ -11,6 +11,10 @@ Usage:
     # Standard training
     python -m src.pipeline.train_full --dataset theia --label_type crossprocess
 
+    # Evaluation regimes (Experiment 1)
+    python -m src.pipeline.train_full --dataset theia --label_type crossprocess --eval_regime B  # Cold detection
+    python -m src.pipeline.train_full --dataset theia --label_type crossprocess --eval_regime C  # Warm detection
+
     # Ablation study (Experiment 2)
     python -m src.pipeline.train_full --dataset theia --label_type crossprocess --ablation full
     python -m src.pipeline.train_full --dataset theia --label_type crossprocess --ablation no_cross_entity
@@ -260,6 +264,13 @@ def main():
     # Legacy boolean flags (kept for backward compatibility)
     parser.add_argument("--no_state", action="store_true", help="Ablation: Disable entity state bank (event features only)")
     parser.add_argument("--no_cross_entity", action="store_true", help="Ablation: Disable cross-entity propagation (self-state only)")
+    # Evaluation regime: controls bank state management during evaluation
+    parser.add_argument("--eval_regime", type=str, default="A",
+                        choices=["A", "B", "C"],
+                        help="Evaluation regime: "
+                             "A=continuation (bank carries from train), "
+                             "B=cold (bank reset before eval), "
+                             "C=warm (warmup pass through prior data before eval)")
     parser.add_argument("--chunk_size", type=int, default=4096)
     parser.add_argument("--d_model", type=int, default=256)
     parser.add_argument("--lr", type=float, default=5e-4)
@@ -318,7 +329,8 @@ def main():
     run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_base = Path("ckpts") / "full_runs"
     ablation_tag = f"_ablation-{ablation_mode}"
-    save_dir = run_base / f"{args.dataset}_{train_lbl}{ablation_tag}_{run_ts}"
+    regime_tag = f"_regime-{args.eval_regime}" if args.eval_regime != "A" else ""
+    save_dir = run_base / f"{args.dataset}_{train_lbl}{ablation_tag}{regime_tag}_{run_ts}"
     save_dir.mkdir(parents=True, exist_ok=True)
 
     logging.basicConfig(
@@ -343,6 +355,7 @@ def main():
     logging.info(f"  Train labels: {train_lbl}")
     logging.info(f"  Test labels:  {test_lbl}")
     logging.info(f"  Seed:         {args.seed}")
+    logging.info(f"  Eval regime:  {args.eval_regime} ({'continuation' if args.eval_regime == 'A' else 'cold' if args.eval_regime == 'B' else 'warm'})")
     logging.info(f"  Train shards: {shards['train']}")
     logging.info(f"  Val shards:   {shards['val']}")
 
@@ -433,6 +446,7 @@ def main():
         'test_f1': [],
         'chunk_loss': [],
         'ablation_mode': ablation_mode,
+        'eval_regime': args.eval_regime,
     }
 
     # Learning rate scheduler — cosine decay to eta_min
@@ -440,7 +454,7 @@ def main():
         optimizer, T_max=args.epochs, eta_min=1e-5)
 
     logging.info(f"\nStarting training ({args.epochs} epochs, patience={patience})...")
-    logging.info(f"  Per-epoch test evaluation: enabled")
+    logging.info(f"  Per-epoch test evaluation: enabled (Regime {args.eval_regime})")
 
     for epoch in range(1, args.epochs + 1):
         logging.info(f"\n--- Epoch {epoch}/{args.epochs} [ablation={ablation_mode}] ---")
@@ -455,13 +469,21 @@ def main():
             model, train_loader, optimizer, device, pos_weight,
             ablation=ablation_mode)
 
-        # Validation (used for early stopping) — bank carries warm state from training
+        # --- Per-epoch evaluation with regime-specific bank handling ---
+        if args.eval_regime == "B":
+            # Regime B (Cold): Reset bank before validation.
+            # Tests pure event-feature quality with no historical context.
+            model.reset_bank()
+        # Regime A: bank carries warm state from training (no action needed)
+        # Regime C: same as A per-epoch (full warmup too expensive every epoch)
+
         val_metrics = evaluate(model, val_loader, device)
 
-        # Per-epoch test evaluation: use the warm bank from val eval.
-        # After evaluate(val_loader), the bank has been warmed through
-        # train+val data in eval mode — we can directly evaluate test
-        # without re-warming. This is Option B from the plan.
+        if args.eval_regime == "B":
+            # Regime B (Cold): Reset bank before test too — independent cold eval
+            model.reset_bank()
+        # Regime A/C: bank carries warm state from train+val
+
         test_metrics_epoch = evaluate(model, test_loader, device)
 
         # Step LR scheduler
@@ -511,15 +533,24 @@ def main():
     logging.info(f"  Checkpoint: {save_dir / 'best.pt'}")
     logging.info(f"{'='*60}")
 
-    logging.info(f"\nEvaluating on Test Set (labels={test_lbl}) with best model...")
+    logging.info(f"\nEvaluating on Test Set (labels={test_lbl}) with best model [Regime {args.eval_regime}]...")
     checkpoint = torch.load(save_dir / 'best.pt')
     model.load_state_dict(checkpoint["model_state"])
-    # state_dict() includes bank buffers, but they were accumulated during
-    # training using mid-epoch weights. We re-warm the bank using the final
-    # best weights in clean eval mode for a stronger, more consistent initialization.
-    logging.info(f"  Warming up bank states with best weights...")
-    warmup_bank(model, [train_loader, val_loader], device)
-    
+
+    if args.eval_regime == "B":
+        # Regime B (Cold detection): Reset bank, evaluate from scratch.
+        # Tests pure event-feature quality with no historical context.
+        # This is the fairest comparison against stateless baselines.
+        logging.info(f"  Regime B: Cold evaluation — resetting bank (no warmup)")
+        model.reset_bank()
+    else:
+        # Regime A/C (Warm detection): Warmup bank through all prior data.
+        # state_dict() includes bank buffers accumulated during training with
+        # mid-epoch weights. Re-warm using the final best weights in clean
+        # eval mode for a stronger, more consistent initialization.
+        logging.info(f"  Regime {args.eval_regime}: Warming up bank states with best weights...")
+        warmup_bank(model, [train_loader, val_loader], device)
+
     test_metrics, test_preds = evaluate(model, test_loader, device, return_preds=True)
     
     # Save predictions for downstream evaluation
@@ -618,7 +649,7 @@ def main():
     actual_epochs = len(history['train_loss'])
     final_name = (
         f"{args.dataset}_train-{train_lbl}_test-{test_lbl}"
-        f"{ablation_tag}"
+        f"{ablation_tag}{regime_tag}"
         f"_auprc{best_auprc:.4f}_f1{best_f1:.4f}"
         f"_chunk{args.chunk_size}_ep{actual_epochs}"
     )
