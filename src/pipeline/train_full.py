@@ -68,6 +68,8 @@ def compute_metrics(all_logits, all_labels, entity_ids=None):
         
     if entity_ids is not None:
         ent = np.array(entity_ids)
+        if ent.ndim > 2:
+            ent = ent.reshape(-1, ent.shape[-1])
         
         valid_mask = (ent >= 0) & (labels[:, None] >= 0)
         valid_nodes = ent[valid_mask]
