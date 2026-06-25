@@ -68,25 +68,23 @@ def compute_metrics(all_logits, all_labels, entity_ids=None):
         
     if entity_ids is not None:
         ent = np.array(entity_ids)
-        # Flatten and align
-        node_ids = ent.flatten()
-        expanded_probs = np.repeat(probs, ent.shape[1])
-        expanded_labels = np.repeat(labels, ent.shape[1])
         
-        valid_nodes = (node_ids >= 0) & (expanded_labels >= 0)
-        node_ids = node_ids[valid_nodes]
-        expanded_probs = expanded_probs[valid_nodes]
-        expanded_labels = expanded_labels[valid_nodes]
+        valid_mask = (ent >= 0) & (labels[:, None] >= 0)
+        valid_nodes = ent[valid_mask]
+        valid_probs = np.broadcast_to(probs[:, None], ent.shape)[valid_mask]
+        valid_labels = np.broadcast_to(labels[:, None], ent.shape)[valid_mask]
         
-        if len(node_ids) > 0:
-            sort_idx = np.argsort(node_ids)
-            sorted_nodes = node_ids[sort_idx]
-            sorted_probs = expanded_probs[sort_idx]
-            sorted_labels = expanded_labels[sort_idx]
+        max_id = valid_nodes.max() if len(valid_nodes) > 0 else -1
+        if max_id >= 0:
+            node_max_probs = np.full(max_id + 1, -1.0)
+            node_max_labels = np.full(max_id + 1, -1.0)
             
-            unique_nodes, unique_indices = np.unique(sorted_nodes, return_index=True)
-            node_probs = np.maximum.reduceat(sorted_probs, unique_indices)
-            node_labels = np.maximum.reduceat(sorted_labels, unique_indices)
+            np.maximum.at(node_max_probs, valid_nodes, valid_probs)
+            np.maximum.at(node_max_labels, valid_nodes, valid_labels)
+            
+            seen = node_max_labels >= 0
+            node_probs = node_max_probs[seen]
+            node_labels = node_max_labels[seen]
             
             try:
                 m["node_auprc"] = float(average_precision_score(node_labels, node_probs))
