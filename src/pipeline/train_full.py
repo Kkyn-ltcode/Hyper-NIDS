@@ -46,25 +46,62 @@ SHARD_CONFIG = {
 }
 
 
-def compute_metrics(all_logits, all_labels):
+def compute_metrics(all_logits, all_labels, entity_ids=None):
     logits_t = torch.tensor(all_logits).clamp(-50, 50)
     probs = torch.sigmoid(logits_t).numpy()
     labels = np.array(all_labels)
 
     valid = labels >= 0
-    probs, labels = probs[valid], labels[valid]
+    valid_probs, valid_labels = probs[valid], labels[valid]
 
     m = {}
     try:
-        m["auprc"] = float(average_precision_score(labels, probs))
+        m["auprc"] = float(average_precision_score(valid_labels, valid_probs))
     except ValueError:
         m["auprc"] = 0.0
     try:
-        prec, rec, thr = precision_recall_curve(labels, probs)
+        prec, rec, thr = precision_recall_curve(valid_labels, valid_probs)
         f1_all = 2 * prec[:-1] * rec[:-1] / (prec[:-1] + rec[:-1] + 1e-12)
         m["best_f1"] = float(f1_all[np.argmax(f1_all)])
     except ValueError:
         m["best_f1"] = 0.0
+        
+    if entity_ids is not None:
+        ent = np.array(entity_ids)
+        # Flatten and align
+        node_ids = ent.flatten()
+        expanded_probs = np.repeat(probs, ent.shape[1])
+        expanded_labels = np.repeat(labels, ent.shape[1])
+        
+        valid_nodes = (node_ids >= 0) & (expanded_labels >= 0)
+        node_ids = node_ids[valid_nodes]
+        expanded_probs = expanded_probs[valid_nodes]
+        expanded_labels = expanded_labels[valid_nodes]
+        
+        if len(node_ids) > 0:
+            sort_idx = np.argsort(node_ids)
+            sorted_nodes = node_ids[sort_idx]
+            sorted_probs = expanded_probs[sort_idx]
+            sorted_labels = expanded_labels[sort_idx]
+            
+            unique_nodes, unique_indices = np.unique(sorted_nodes, return_index=True)
+            node_probs = np.maximum.reduceat(sorted_probs, unique_indices)
+            node_labels = np.maximum.reduceat(sorted_labels, unique_indices)
+            
+            try:
+                m["node_auprc"] = float(average_precision_score(node_labels, node_probs))
+            except ValueError:
+                m["node_auprc"] = 0.0
+            try:
+                prec, rec, thr = precision_recall_curve(node_labels, node_probs)
+                f1_all = 2 * prec[:-1] * rec[:-1] / (prec[:-1] + rec[:-1] + 1e-12)
+                m["node_best_f1"] = float(f1_all[np.argmax(f1_all)])
+            except ValueError:
+                m["node_best_f1"] = 0.0
+        else:
+            m["node_auprc"] = 0.0
+            m["node_best_f1"] = 0.0
+
     return m
 
 
@@ -232,14 +269,19 @@ def evaluate(model, loader, device, return_preds=False):
         if return_preds:
             all_entity_ids.append(ent.cpu().numpy())
 
-    metrics = compute_metrics(all_logits, all_labels)
+    if return_preds:
+        ent_ids = np.concatenate(all_entity_ids, axis=0)
+        metrics = compute_metrics(all_logits, all_labels, entity_ids=ent_ids)
+    else:
+        metrics = compute_metrics(all_logits, all_labels)
+        
     metrics["loss"] = total_loss / max(n_chunks, 1)
     
     if return_preds:
         preds = {
             "logits": np.array(all_logits, dtype=np.float32),
             "labels": np.array(all_labels, dtype=np.int64),
-            "entity_ids": np.concatenate(all_entity_ids, axis=0),
+            "entity_ids": ent_ids,
         }
         return metrics, preds
     
@@ -561,15 +603,21 @@ def main():
     test_loss = test_metrics["loss"]
     test_auprc = test_metrics["auprc"]
     test_f1 = test_metrics["best_f1"]
+    test_node_auprc = test_metrics.get("node_auprc", 0.0)
+    test_node_f1 = test_metrics.get("node_best_f1", 0.0)
     
     logging.info(f"  Test Loss:  {test_loss:.4f}")
-    logging.info(f"  Test AUPRC: {test_auprc:.4f}")
-    logging.info(f"  Test F1:    {test_f1:.4f}")
+    logging.info(f"  Test AUPRC (Event-level): {test_auprc:.4f}")
+    logging.info(f"  Test F1    (Event-level): {test_f1:.4f}")
+    logging.info(f"  Test AUPRC (Node-level):  {test_node_auprc:.4f}")
+    logging.info(f"  Test F1    (Node-level):  {test_node_f1:.4f}")
     logging.info(f"{'='*60}")
 
     history["final_test_loss"] = test_loss
     history["final_test_auprc"] = test_auprc
     history["final_test_f1"] = test_f1
+    history["final_test_node_auprc"] = test_node_auprc
+    history["final_test_node_f1"] = test_node_f1
 
     # Save training history
     torch.save(history, save_dir / "history.pt")
