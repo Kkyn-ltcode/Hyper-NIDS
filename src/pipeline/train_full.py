@@ -70,23 +70,47 @@ def compute_metrics(all_logits, all_labels, entity_ids=None):
         ent = np.array(entity_ids)
         if ent.ndim > 2:
             ent = ent.reshape(-1, ent.shape[-1])
+        # ent shape: (N_events, 3) — columns: [subject, object, object2]
         
-        valid_mask = (ent >= 0) & (labels[:, None] >= 0)
-        valid_nodes = ent[valid_mask]
-        valid_probs = np.broadcast_to(probs[:, None], ent.shape)[valid_mask]
-        valid_labels = np.broadcast_to(labels[:, None], ent.shape)[valid_mask]
+        # --- Node-level label: only the SUBJECT (col 0) inherits the attack label ---
+        # The subject is the acting process in a crossprocess+ event (the one
+        # doing the injection/exploitation). Objects are passive targets/resources.
+        # Labeling all 3 columns as positive would mark benign shared libraries
+        # and system files as "malicious nodes", inflating false negatives.
+        subject_ids = ent[:, 0]  # (N,)
+        subj_valid = (subject_ids >= 0) & (labels >= 0)
+        valid_subj_nodes = subject_ids[subj_valid]
+        valid_subj_labels = labels[subj_valid]
         
-        max_id = valid_nodes.max() if len(valid_nodes) > 0 else -1
+        # --- Node-level probability: aggregate across ALL 3 entity columns ---
+        # Any entity touched by a high-scoring event gets a high node score.
+        # This is the detection signal: if the model thinks an event is
+        # malicious, all participating entities become suspects.
+        all_node_ids = ent.flatten()                                    # (N*3,)
+        all_node_probs = np.repeat(probs, ent.shape[1])                 # (N*3,)
+        prob_valid = (all_node_ids >= 0) & np.repeat(labels >= 0, ent.shape[1])
+        valid_prob_nodes = all_node_ids[prob_valid]
+        valid_prob_vals = all_node_probs[prob_valid]
+        
+        max_id = max(valid_subj_nodes.max() if len(valid_subj_nodes) > 0 else -1,
+                     valid_prob_nodes.max() if len(valid_prob_nodes) > 0 else -1)
+        
         if max_id >= 0:
-            node_max_probs = np.full(max_id + 1, -1.0)
+            # Accumulate max label (only from subjects)
             node_max_labels = np.full(max_id + 1, -1.0)
+            np.maximum.at(node_max_labels, valid_subj_nodes, valid_subj_labels.astype(np.float64))
             
-            np.maximum.at(node_max_probs, valid_nodes, valid_probs)
-            np.maximum.at(node_max_labels, valid_nodes, valid_labels)
+            # Accumulate max probability (from all entity roles)
+            node_max_probs = np.full(max_id + 1, -1.0)
+            np.maximum.at(node_max_probs, valid_prob_nodes, valid_prob_vals)
             
+            # Only evaluate nodes that have a valid label (appeared as subject)
             seen = node_max_labels >= 0
             node_probs = node_max_probs[seen]
             node_labels = node_max_labels[seen]
+            
+            n_pos = int((node_labels > 0).sum())
+            n_neg = int((node_labels == 0).sum())
             
             try:
                 m["node_auprc"] = float(average_precision_score(node_labels, node_probs))
@@ -98,6 +122,8 @@ def compute_metrics(all_logits, all_labels, entity_ids=None):
                 m["node_best_f1"] = float(f1_all[np.argmax(f1_all)])
             except ValueError:
                 m["node_best_f1"] = 0.0
+            m["node_n_pos"] = n_pos
+            m["node_n_neg"] = n_neg
         else:
             m["node_auprc"] = 0.0
             m["node_best_f1"] = 0.0
@@ -605,11 +631,14 @@ def main():
     test_f1 = test_metrics["best_f1"]
     test_node_auprc = test_metrics.get("node_auprc", 0.0)
     test_node_f1 = test_metrics.get("node_best_f1", 0.0)
+    test_node_n_pos = test_metrics.get("node_n_pos", 0)
+    test_node_n_neg = test_metrics.get("node_n_neg", 0)
     
     logging.info(f"  Test Loss:  {test_loss:.4f}")
     logging.info(f"  Test AUPRC (Event-level): {test_auprc:.4f}")
     logging.info(f"  Test F1    (Event-level): {test_f1:.4f}")
-    logging.info(f"  Test AUPRC (Node-level):  {test_node_auprc:.4f}")
+    logging.info(f"  Test AUPRC (Node-level):  {test_node_auprc:.4f}  "
+                 f"({test_node_n_pos:,} pos / {test_node_n_neg:,} neg subjects)")
     logging.info(f"  Test F1    (Node-level):  {test_node_f1:.4f}")
     logging.info(f"{'='*60}")
 
