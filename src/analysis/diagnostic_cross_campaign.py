@@ -16,6 +16,7 @@ from collections import defaultdict
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 
 
 def main():
@@ -56,7 +57,7 @@ def main():
 
     for sid in labeled_shards:
         path = labeled_dir / f"labeled_shard{sid}.parquet"
-        all_cols = pd.read_parquet(path, nrows=0).columns.tolist()
+        all_cols = pq.read_schema(path).names
 
         load_cols = ["timestamp_nanos", "subject_uuid"]
         for lc in ["label_broad", "label_crossprocess", "label_narrow", "label_ioc"]:
@@ -195,7 +196,7 @@ def main():
 
         for sid in camp:
             path = labeled_dir / f"labeled_shard{sid}.parquet"
-            all_cols = pd.read_parquet(path, nrows=0).columns.tolist()
+            all_cols = pq.read_schema(path).names
             load_cols = ["type", "predicate_object_uuid", "label_crossprocess"]
             if "predicate_object2_uuid" in all_cols:
                 load_cols.append("predicate_object2_uuid")
@@ -260,7 +261,7 @@ def main():
     print("-" * 80)
     if labeled_shards:
         path = labeled_dir / f"labeled_shard{labeled_shards[0]}.parquet"
-        cols = pd.read_parquet(path, nrows=0).columns.tolist()
+        cols = pq.read_schema(path).names
         print(f"  Columns ({len(cols)}): {cols}")
     print()
 
