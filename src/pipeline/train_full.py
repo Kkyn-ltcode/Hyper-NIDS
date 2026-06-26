@@ -81,28 +81,19 @@ def compute_metrics(all_logits, all_labels, entity_ids=None):
         subj_valid = (subject_ids >= 0) & (labels >= 0)
         valid_subj_nodes = subject_ids[subj_valid]
         valid_subj_labels = labels[subj_valid]
+        valid_subj_probs = probs[subj_valid]
         
-        # --- Node-level probability: aggregate across ALL 3 entity columns ---
-        # Any entity touched by a high-scoring event gets a high node score.
-        # This is the detection signal: if the model thinks an event is
-        # malicious, all participating entities become suspects.
-        all_node_ids = ent.flatten()                                    # (N*3,)
-        all_node_probs = np.repeat(probs, ent.shape[1])                 # (N*3,)
-        prob_valid = (all_node_ids >= 0) & np.repeat(labels >= 0, ent.shape[1])
-        valid_prob_nodes = all_node_ids[prob_valid]
-        valid_prob_vals = all_node_probs[prob_valid]
-        
-        max_id = max(valid_subj_nodes.max() if len(valid_subj_nodes) > 0 else -1,
-                     valid_prob_nodes.max() if len(valid_prob_nodes) > 0 else -1)
+        max_id = valid_subj_nodes.max() if len(valid_subj_nodes) > 0 else -1
         
         if max_id >= 0:
-            # Accumulate max label (only from subjects)
+            # Accumulate max label and max probability — both subject-only.
+            # A node's anomaly score is based on what IT does (events where it
+            # acts as subject), not on what other entities do to it.
             node_max_labels = np.full(max_id + 1, -1.0)
             np.maximum.at(node_max_labels, valid_subj_nodes, valid_subj_labels.astype(np.float64))
             
-            # Accumulate max probability (from all entity roles)
             node_max_probs = np.full(max_id + 1, -1.0)
-            np.maximum.at(node_max_probs, valid_prob_nodes, valid_prob_vals)
+            np.maximum.at(node_max_probs, valid_subj_nodes, valid_subj_probs)
             
             # Only evaluate nodes that have a valid label (appeared as subject)
             seen = node_max_labels >= 0
