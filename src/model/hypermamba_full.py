@@ -173,7 +173,7 @@ class SelectiveSSMUpdater(nn.Module):
 
 
 class HyperMambaFull(nn.Module):
-    def __init__(self, num_entities, n_cont_features, num_event_types, d_model=128,
+    def __init__(self, num_entities, n_cont_features, num_event_types, num_process_names, d_model=128,
                  use_state=True, cross_entity=True):
         super().__init__()
         self.d_model = d_model
@@ -183,8 +183,12 @@ class HyperMambaFull(nn.Module):
         # Event Encoder
         self.event_emb = nn.Embedding(num_event_types, d_model)
         self.cont_proj = nn.Linear(n_cont_features, d_model)
-        self.input_norm = nn.LayerNorm(d_model * 2)
-        self.d_event = d_model * 2
+        
+        # Process Name Embedding (16-dim is enough for categorical)
+        self.process_emb = nn.Embedding(num_process_names, 16)
+        
+        self.d_event = d_model * 2 + 16
+        self.input_norm = nn.LayerNorm(self.d_event)
         
         # State Bank
         self.bank = EntityStateBank(num_entities, d_model)
@@ -215,22 +219,24 @@ class HyperMambaFull(nn.Module):
     def detach_bank(self):
         self.bank.detach_()
         
-    def forward(self, x_cont, event_type, entity_ids, timestamps):
+    def forward(self, x_cont, event_type, entity_ids, process_ids, timestamps):
         """
         All inputs arrive as (1, C, ...) from DataLoader with batch_size=1.
         We squeeze dim 0, process as (C, ...), and unsqueeze back.
 
         Args:
-            x_cont:     (1, C, n_cont_features)
-            event_type: (1, C)
-            entity_ids: (1, C, 3)
-            timestamps: (1, C)
+            x_cont:      (1, C, n_cont_features)
+            event_type:  (1, C)
+            entity_ids:  (1, C, 3)
+            process_ids: (1, C)
+            timestamps:  (1, C)
         Returns:
             logits: (1, C)
         """
         x_cont = x_cont.squeeze(0)
         event_type = event_type.squeeze(0)
         entity_ids = entity_ids.squeeze(0)
+        process_ids = process_ids.squeeze(0)
         timestamps = timestamps.squeeze(0)
         
         C = x_cont.size(0)
@@ -239,7 +245,8 @@ class HyperMambaFull(nn.Module):
         # 1. Encode event features
         e_emb = self.event_emb(event_type)
         c_emb = self.cont_proj(x_cont)
-        f_e = self.input_norm(torch.cat([e_emb, c_emb], dim=-1))  # (C, d_event)
+        p_emb = self.process_emb(process_ids)
+        f_e = self.input_norm(torch.cat([e_emb, c_emb, p_emb], dim=-1))  # (C, d_event)
         
         # 2. Gather entity states and compute Δt
         safe_ids = entity_ids.clamp(min=0)

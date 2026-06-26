@@ -55,6 +55,15 @@ class ChronoDataset(Dataset):
         uuid_to_id.pop("00000000-0000-0000-0000-000000000000", None)
         self.num_entities = int(vocab["num_entities"])
         
+        # Load process vocabulary for semantic embedding
+        proc_vocab = np.load(graph_dir / "process_vocab.npz", allow_pickle=True)
+        # Note: we extract it slightly differently since we saved it using dict keys/vals
+        uuid_to_process_idx = dict(zip(
+            proc_vocab["uuid_to_idx_keys"], 
+            proc_vocab["uuid_to_idx_vals"]
+        ))
+        self.num_process_names = int(proc_vocab["num_classes"])
+        
         # --- Identify feature columns ---
         feat_names_path = data_root / "features" / "feature_names.txt"
         if not feat_names_path.exists():
@@ -130,6 +139,7 @@ class ChronoDataset(Dataset):
         # --- Load entity IDs, timestamps, and raw UUIDs ---
         if verbose: print(f"  Loading entity IDs and timestamps...")
         ent_parts = []
+        process_parts = []
         ts_parts = []
         raw_nanos_parts = []
         uuid_parts = []  # raw UUID strings for node-level metrics
@@ -143,6 +153,10 @@ class ChronoDataset(Dataset):
             obj = df["predicate_object_uuid"].map(uuid_to_id).fillna(-1).astype(np.int64).values
             obj2 = df["predicate_object2_uuid"].map(uuid_to_id).fillna(-1).astype(np.int64).values
             ent_parts.append(np.stack([sub, obj, obj2], axis=1))
+            
+            # Map subject UUID to process name index (0 = unknown)
+            proc_idx = df["subject_uuid"].map(uuid_to_process_idx).fillna(0).astype(np.int64).values
+            process_parts.append(proc_idx)
             
             # Store raw UUID strings for node-level evaluation
             uuid_parts.append(df[["subject_uuid", "predicate_object_uuid", "predicate_object2_uuid"]].values)
@@ -160,10 +174,11 @@ class ChronoDataset(Dataset):
             
         self.t0_nanos = _t0  # Expose so val/test can reuse
         self.entity_ids = np.concatenate(ent_parts)
+        self.process_ids = np.concatenate(process_parts)
         self.timestamps = np.concatenate(ts_parts)
         self.raw_nanos = np.concatenate(raw_nanos_parts)
         self.event_uuids = np.concatenate(uuid_parts)  # (N, 3) str array: [sub, obj, obj2]
-        del ent_parts, ts_parts, raw_nanos_parts, uuid_parts; gc.collect()
+        del ent_parts, process_parts, ts_parts, raw_nanos_parts, uuid_parts; gc.collect()
         
         # --- Timestamp sanity filter ---
         # THEIA E3 shard 10 contains events with near-epoch (1970-01-01)
@@ -182,6 +197,7 @@ class ChronoDataset(Dataset):
             self.event_type = self.event_type[valid]
             self.y = self.y[valid]
             self.entity_ids = self.entity_ids[valid]
+            self.process_ids = self.process_ids[valid]
             self.timestamps = self.timestamps[valid]
             self.raw_nanos = self.raw_nanos[valid]
             self.event_uuids = self.event_uuids[valid]
@@ -201,11 +217,11 @@ class ChronoDataset(Dataset):
                 print(f"  Temporal filter: {n_before:,} → {n_after:,} events "
                       f"({100 * n_after / n_before:.1f}% retained)")
             
-            # Apply filter to all parallel arrays
             self.X_cont = self.X_cont[mask]
             self.event_type = self.event_type[mask]
             self.y = self.y[mask]
             self.entity_ids = self.entity_ids[mask]
+            self.process_ids = self.process_ids[mask]
             self.timestamps = self.timestamps[mask]
             self.raw_nanos = self.raw_nanos[mask]
             self.event_uuids = self.event_uuids[mask]
@@ -229,6 +245,7 @@ class ChronoDataset(Dataset):
         et = self.event_type[start:end]
         y = self.y[start:end]
         ent = self.entity_ids[start:end]
+        proc = self.process_ids[start:end]
         ts = self.timestamps[start:end]
         mask = np.ones(self.chunk_size, dtype=np.float32)
         
@@ -237,6 +254,7 @@ class ChronoDataset(Dataset):
             "event_type": torch.from_numpy(et.copy()).long(),
             "y": torch.from_numpy(y.copy()).long(),
             "entity_ids": torch.from_numpy(ent.copy()).long(),
+            "process_ids": torch.from_numpy(proc.copy()).long(),
             "timestamp": torch.from_numpy(ts.copy()).float(),
             "mask": torch.from_numpy(mask),
         }

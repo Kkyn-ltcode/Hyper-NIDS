@@ -55,10 +55,10 @@ DATA_ROOT = Path("data/processed/darpa_tc_e3")
 SHARD_CONFIG = {
     "theia": {
         "small": {"train": list(range(7)), "val": [7], "test": [8, 9]},
-        "full":  {"train": list(range(11)) + list(range(15, 21)),
-                  "val": [21, 22], "test": [23, 24]},
-        "cross": {"train": list(range(11)), "val": [11, 12, 13, 14],
-                  "test": list(range(15, 25))},
+        "full":  {"train": list(range(8)) + list(range(12, 20)),
+                  "val": [8, 9, 20, 21], "test": [10, 22, 23, 24]},
+        "cross": {"train": list(range(9)), "val": [9, 10],
+                  "test": list(range(12, 25))},
     },
     "trace": {
         "small": {"train": list(range(5)), "val": [5], "test": [6]},
@@ -164,11 +164,12 @@ def train_epoch(model, loader, optimizer, device, pos_weight, grad_clip=1.0,
         et = batch["event_type"].to(device)
         y = batch["y"].to(device).float()
         ent = batch["entity_ids"].to(device)
+        proc = batch["process_ids"].to(device)
         ts = batch["timestamp"].to(device)
 
         optimizer.zero_grad()
 
-        logits = model(X_c, et, ent, ts)
+        logits = model(X_c, et, ent, proc, ts)
 
         # Clamp logits before loss to prevent overflow
         logits = logits.clamp(-50, 50)
@@ -257,9 +258,10 @@ def warmup_bank(model, loaders, device):
             X_c = torch.nan_to_num(batch["X_cont"].to(device), nan=0.0).clamp(-20, 20)
             et = batch["event_type"].to(device)
             ent = batch["entity_ids"].to(device)
+            proc = batch["process_ids"].to(device)
             ts = batch["timestamp"].to(device)
             
-            _ = model(X_c, et, ent, ts)
+            _ = model(X_c, et, ent, proc, ts)
             model.detach_bank()
             total_events += X_c.size(1)
     
@@ -286,9 +288,10 @@ def evaluate(model, loader, device, return_preds=False):
         et = batch["event_type"].to(device)
         y = batch["y"].to(device).float()
         ent = batch["entity_ids"].to(device)
+        proc = batch["process_ids"].to(device)
         ts = batch["timestamp"].to(device)
 
-        logits = model(X_c, et, ent, ts)
+        logits = model(X_c, et, ent, proc, ts)
         
         logits_clamp = logits.clamp(-50, 50)
         loss = nn.functional.binary_cross_entropy_with_logits(logits_clamp, y)
@@ -476,6 +479,7 @@ def main():
         num_entities=train_ds.num_entities,
         n_cont_features=train_ds.n_cont_features,
         num_event_types=train_ds.num_event_types,
+        num_process_names=train_ds.num_process_names,
         d_model=args.d_model,
         use_state=not args.no_state,
         cross_entity=not args.no_cross_entity
