@@ -11,6 +11,12 @@ Usage:
     # Standard training
     python -m src.pipeline.train_full --dataset theia --label_type crossprocess
 
+    # Full mixed-campaign evaluation
+    python -m src.pipeline.train_full --dataset theia --split full --label_type crossprocess
+
+    # Cross-campaign generalization (hardest setting)
+    python -m src.pipeline.train_full --dataset theia --split cross --label_type crossprocess
+
     # Evaluation regimes (Experiment 1)
     python -m src.pipeline.train_full --dataset theia --label_type crossprocess --eval_regime B  # Cold detection
     python -m src.pipeline.train_full --dataset theia --label_type crossprocess --eval_regime C  # Warm detection
@@ -39,10 +45,24 @@ from src.model.hypermamba_full import HyperMambaFull
 
 DATA_ROOT = Path("data/processed/darpa_tc_e3")
 
-# Dataset-specific shard configuration
+# Dataset-specific shard configurations.
+# Multiple named splits allow different evaluation scenarios:
+#   - "small":  Same-campaign (Campaign 1 only). Fast iteration.
+#   - "full":   Mixed-campaign. Both campaigns in training, last shards held out.
+#               This is the standard PIDS evaluation — matches how baselines are tested.
+#   - "cross":  Cross-campaign generalization. Train Campaign 1, test Campaign 2.
+#               Hardest setting — tests whether supervised detection transfers.
 SHARD_CONFIG = {
-    "theia": {"train": list(range(7)), "val": [7], "test": [8, 9]},
-    "trace": {"train": list(range(5)), "val": [5], "test": [6]},
+    "theia": {
+        "small": {"train": list(range(7)), "val": [7], "test": [8, 9]},
+        "full":  {"train": list(range(11)) + list(range(15, 21)),
+                  "val": [21, 22], "test": [23, 24]},
+        "cross": {"train": list(range(11)), "val": [11, 12, 13, 14],
+                  "test": list(range(15, 25))},
+    },
+    "trace": {
+        "small": {"train": list(range(5)), "val": [5], "test": [6]},
+    },
 }
 
 
@@ -309,6 +329,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Train HyperMamba Full (SSM-Driven Taint Propagation)")
     parser.add_argument("--dataset", default="theia", choices=["theia", "trace"])
+    parser.add_argument("--split", type=str, default="small",
+                        help="Named split: small (same-campaign), full (mixed-campaign), cross (cross-campaign)")
     parser.add_argument("--label_type", type=str, default="crossprocess", choices=["broad", "crossprocess", "l1"])
     parser.add_argument("--train_label_type", type=str, default=None, help="Override label type for training")
     parser.add_argument("--test_label_type", type=str, default=None, help="Override label type for testing")
@@ -388,8 +410,9 @@ def main():
     run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_base = Path("ckpts") / "full_runs"
     ablation_tag = f"_ablation-{ablation_mode}"
+    split_tag = f"_{args.split}"
     regime_tag = f"_regime-{args.eval_regime}" if args.eval_regime != "A" else ""
-    save_dir = run_base / f"{args.dataset}_{train_lbl}{ablation_tag}{regime_tag}_{run_ts}"
+    save_dir = run_base / f"{args.dataset}{split_tag}_{train_lbl}{ablation_tag}{regime_tag}_{run_ts}"
     save_dir.mkdir(parents=True, exist_ok=True)
 
     logging.basicConfig(
@@ -402,14 +425,18 @@ def main():
     )
 
     data_root = DATA_ROOT / args.dataset
-    shards = SHARD_CONFIG[args.dataset]
-
-
+    dataset_splits = SHARD_CONFIG[args.dataset]
+    if args.split not in dataset_splits:
+        available = list(dataset_splits.keys())
+        raise ValueError(f"Split '{args.split}' not found for dataset '{args.dataset}'. "
+                         f"Available splits: {available}")
+    shards = dataset_splits[args.split]
 
     logging.info("=" * 60)
     logging.info(f"  HYPERMAMBA FULL — {args.dataset.upper()}")
     logging.info("=" * 60)
     logging.info(f"  Device:       {device}")
+    logging.info(f"  Split:        {args.split}")
     logging.info(f"  Ablation:     {ablation_mode}")
     logging.info(f"  Train labels: {train_lbl}")
     logging.info(f"  Test labels:  {test_lbl}")
@@ -716,7 +743,7 @@ def main():
     best_f1 = max(history['val_f1']) if history['val_f1'] else 0.0
     actual_epochs = len(history['train_loss'])
     final_name = (
-        f"{args.dataset}_train-{train_lbl}_test-{test_lbl}"
+        f"{args.dataset}{split_tag}_train-{train_lbl}_test-{test_lbl}"
         f"{ablation_tag}{regime_tag}"
         f"_auprc{best_auprc:.4f}_f1{best_f1:.4f}"
         f"_chunk{args.chunk_size}_ep{actual_epochs}"
