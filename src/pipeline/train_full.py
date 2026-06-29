@@ -447,6 +447,7 @@ def main():
     logging.info(f"  Eval regime:  {args.eval_regime} ({'continuation' if args.eval_regime == 'A' else 'cold' if args.eval_regime == 'B' else 'warm'})")
     logging.info(f"  Train shards: {shards['train']}")
     logging.info(f"  Val shards:   {shards['val']}")
+    logging.info(f"  Test shards:  {shards['test']}")
 
     # --- Data ---
     logging.info(f"\nLoading training data (labels={train_lbl})...")
