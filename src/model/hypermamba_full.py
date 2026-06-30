@@ -184,14 +184,26 @@ class HyperMambaFull(nn.Module):
         self.event_emb = nn.Embedding(num_event_types, d_model)
         self.cont_proj = nn.Linear(n_cont_features, d_model)
         
-        # Process Name Embedding — additive residual, NOT concatenated.
-        # Rationale: concatenating a small (16-dim) embedding alongside 2*d_model
-        # features causes LayerNorm to drown out the process signal (it contributes
-        # only 3% of the feature budget). Instead, we project a larger embedding
-        # to d_model and add it to the event type embedding, so the process identity
-        # directly modulates event semantics: "MMAP by pulseaudio" ≠ "MMAP by firefox".
+        # Process Name Embedding — gated additive residual.
+        # The process identity modulates event semantics ("MMAP by pulseaudio"
+        # ≠ "MMAP by firefox"), enabling cross-campaign generalization where
+        # UUIDs don't overlap but process paths do.
+        #
+        # CRITICAL: Without a gate, the process signal enters at 100% strength
+        # from step 0, letting the model learn a per-process bias that floods
+        # ALL events from a known-malicious process with high scores — even
+        # the vast majority that are benign. This collapses event-level AUPRC
+        # while leaving node-level intact (a node's label IS 1, so flooding
+        # high scores still produces a correct max).
+        #
+        # The fix mirrors the "start closed, learn to open" discipline used by
+        # gate_proj (bias=-3.0) and proj_delta (bias=-2.0) elsewhere: a scalar
+        # learnable gate initialized at sigmoid(-2) ≈ 0.12, ensuring event-type
+        # and continuous features get first claim on early gradient signal.
         self.process_emb = nn.Embedding(num_process_names, 64)
         self.process_proj = nn.Linear(64, d_model)
+        self.process_gate = nn.Parameter(torch.tensor(-2.0))  # sigmoid(-2) ≈ 0.12
+        self.process_drop_rate = 0.3  # fraction of events blinded to process identity
         
         self.d_event = d_model * 2
         self.input_norm = nn.LayerNorm(self.d_event)
@@ -250,10 +262,20 @@ class HyperMambaFull(nn.Module):
         
         # 1. Encode event features
         e_emb = self.event_emb(event_type)                       # (C, d_model)
+        
+        # Process identity: gated to prevent shortcut memorization.
+        # During training, randomly blind 30% of events to process identity
+        # (replace with <unknown> idx 0), forcing the model to maintain a
+        # working fallback from event-type and continuous features alone.
+        if self.training:
+            drop = torch.rand(process_ids.shape, device=device) < self.process_drop_rate
+            process_ids = process_ids.masked_fill(drop, 0)
         p_emb = self.process_proj(self.process_emb(process_ids)) # (C, d_model)
+        gate = torch.sigmoid(self.process_gate)                  # scalar in (0, 1)
+        
         c_emb = self.cont_proj(x_cont)                           # (C, d_model)
-        # Additive residual: process identity modulates event semantics
-        f_e = self.input_norm(torch.cat([e_emb + p_emb, c_emb], dim=-1))  # (C, d_event)
+        # Gated additive residual: process identity modulates event semantics
+        f_e = self.input_norm(torch.cat([e_emb + gate * p_emb, c_emb], dim=-1))  # (C, d_event)
         
         # 2. Gather entity states and compute Δt
         safe_ids = entity_ids.clamp(min=0)

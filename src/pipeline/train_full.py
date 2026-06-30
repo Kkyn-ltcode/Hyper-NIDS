@@ -66,16 +66,20 @@ SHARD_CONFIG = {
 }
 
 
-def _compute_full_metrics(valid_probs, valid_labels, prefix=""):
+def _compute_full_metrics(valid_probs, valid_labels, prefix="", threshold=None):
     """Compute comprehensive metrics matching PIDSMaker competitors.
     
     Returns dict with AUPRC, AUROC, best_f1, precision, recall, FPR, accuracy.
-    All threshold-dependent metrics use the optimal F1 threshold from the PR curve.
+    
+    If threshold is None (default), threshold-dependent metrics use the optimal
+    F1 threshold from the PR curve on this data. If threshold is provided (e.g.,
+    from validation), that fixed threshold is applied — this avoids the test-set
+    threshold leakage warned against by Arp et al. (2022) and cited by KAIROS.
     """
     m = {}
     p = prefix
     
-    # --- Threshold-free metrics ---
+    # --- Threshold-free metrics (always valid, rank-based) ---
     try:
         m[f"{p}auprc"] = float(average_precision_score(valid_labels, valid_probs))
     except ValueError:
@@ -85,41 +89,80 @@ def _compute_full_metrics(valid_probs, valid_labels, prefix=""):
     except ValueError:
         m[f"{p}auroc"] = 0.0
         
-    # --- Threshold-dependent metrics (at optimal F1 point) ---
+    # --- Threshold-dependent metrics ---
     try:
         prec_curve, rec_curve, thr = precision_recall_curve(valid_labels, valid_probs)
         f1_all = 2 * prec_curve[:-1] * rec_curve[:-1] / (prec_curve[:-1] + rec_curve[:-1] + 1e-12)
-        best_idx = np.argmax(f1_all)
-        best_threshold = thr[best_idx]
         
-        m[f"{p}best_f1"] = float(f1_all[best_idx])
-        m[f"{p}precision"] = float(prec_curve[best_idx])
-        m[f"{p}recall"] = float(rec_curve[best_idx])
+        if threshold is None:
+            # Self-optimal: pick the best F1 on this data (ok for val, leaky for test)
+            best_idx = np.argmax(f1_all)
+            threshold = float(thr[best_idx])
+            m[f"{p}best_f1"] = float(f1_all[best_idx])
         
-        # Compute FPR and accuracy at the same optimal threshold
-        preds = (valid_probs >= best_threshold).astype(int)
+        # Apply the (possibly externally provided) threshold
+        preds = (valid_probs >= threshold).astype(int)
         tp = int(((preds == 1) & (valid_labels == 1)).sum())
         fp = int(((preds == 1) & (valid_labels == 0)).sum())
         tn = int(((preds == 0) & (valid_labels == 0)).sum())
         fn = int(((preds == 0) & (valid_labels == 1)).sum())
         
+        prec = tp / max(tp + fp, 1)
+        rec = tp / max(tp + fn, 1)
+        f1 = 2 * prec * rec / max(prec + rec, 1e-12)
+        
+        m[f"{p}precision"] = prec
+        m[f"{p}recall"] = rec
+        m[f"{p}f1"] = f1
+        if f"{p}best_f1" not in m:
+            m[f"{p}best_f1"] = f1  # when threshold is provided, f1 = applied f1
         m[f"{p}fpr"] = fp / max(fp + tn, 1)
         m[f"{p}accuracy"] = (tp + tn) / max(tp + tn + fp + fn, 1)
         m[f"{p}tp"] = tp
         m[f"{p}fp"] = fp
         m[f"{p}tn"] = tn
         m[f"{p}fn"] = fn
+        m[f"{p}threshold"] = threshold
     except ValueError:
         m[f"{p}best_f1"] = 0.0
         m[f"{p}precision"] = 0.0
         m[f"{p}recall"] = 0.0
+        m[f"{p}f1"] = 0.0
         m[f"{p}fpr"] = 0.0
         m[f"{p}accuracy"] = 0.0
         
     return m
 
+
+def select_threshold(all_logits, all_labels):
+    """Select optimal F1 threshold from validation predictions.
+    
+    Returns the threshold that maximizes F1 on the provided (validation) data.
+    This threshold should then be passed to compute_metrics for test evaluation
+    to avoid threshold selection leakage.
+    """
+    logits_t = torch.tensor(all_logits).clamp(-50, 50)
+    probs = torch.sigmoid(logits_t).numpy()
+    labels = np.array(all_labels)
+    valid = labels >= 0
+    valid_probs, valid_labels = probs[valid], labels[valid]
+    
+    try:
+        prec_curve, rec_curve, thr = precision_recall_curve(valid_labels, valid_probs)
+        f1_all = 2 * prec_curve[:-1] * rec_curve[:-1] / (prec_curve[:-1] + rec_curve[:-1] + 1e-12)
+        return float(thr[np.argmax(f1_all)])
+    except ValueError:
+        return 0.5
+
         
-def compute_metrics(all_logits, all_labels, entity_ids=None):
+def compute_metrics(all_logits, all_labels, entity_ids=None, threshold=None):
+    """Compute event-level and node-level metrics.
+    
+    Args:
+        threshold: If provided, threshold-dependent metrics (F1, Prec, Rec, FPR)
+                   use this fixed threshold instead of optimizing on the test data.
+                   Pass the output of select_threshold() on validation predictions.
+    """
     logits_t = torch.tensor(all_logits).clamp(-50, 50)
     probs = torch.sigmoid(logits_t).numpy()
     labels = np.array(all_labels)
@@ -128,7 +171,7 @@ def compute_metrics(all_logits, all_labels, entity_ids=None):
     valid_probs, valid_labels = probs[valid], labels[valid]
 
     # Event-level metrics
-    m = _compute_full_metrics(valid_probs, valid_labels)
+    m = _compute_full_metrics(valid_probs, valid_labels, threshold=threshold)
         
     if entity_ids is not None:
         ent = np.array(entity_ids)
@@ -167,7 +210,8 @@ def compute_metrics(all_logits, all_labels, entity_ids=None):
             n_pos = int((node_labels > 0).sum())
             n_neg = int((node_labels == 0).sum())
             
-            # Node-level metrics using the same comprehensive function
+            # Node-level metrics (no threshold forwarding — node-level threshold
+            # is structurally different from event-level)
             node_m = _compute_full_metrics(node_probs, node_labels, prefix="node_")
             m.update(node_m)
             m["node_n_pos"] = n_pos
@@ -306,9 +350,14 @@ def warmup_bank(model, loaders, device):
 
 
 @torch.no_grad()
-def evaluate(model, loader, device, return_preds=False):
+def evaluate(model, loader, device, return_preds=False, threshold=None):
     """Evaluate model on a dataset. Always uses pos_weight=1.0 (unweighted BCE)
-    since val/test may have different class distributions than training."""
+    since val/test may have different class distributions than training.
+    
+    Args:
+        threshold: If provided, threshold-dependent metrics use this fixed
+                   threshold (from validation) rather than self-optimizing.
+    """
     model.eval()
     # DO NOT reset the bank here! We want to carry the warm states
     # from the end of the training shards into the validation shards.
@@ -348,9 +397,10 @@ def evaluate(model, loader, device, return_preds=False):
 
     if return_preds:
         ent_ids = np.concatenate(all_entity_ids, axis=0)
-        metrics = compute_metrics(all_logits, all_labels, entity_ids=ent_ids)
+        metrics = compute_metrics(all_logits, all_labels, entity_ids=ent_ids,
+                                  threshold=threshold)
     else:
-        metrics = compute_metrics(all_logits, all_labels)
+        metrics = compute_metrics(all_logits, all_labels, threshold=threshold)
         
     metrics["loss"] = total_loss / max(n_chunks, 1)
     
@@ -487,7 +537,7 @@ def main():
     logging.info(f"  Test shards:  {shards['test']}")
 
     # --- Data ---
-    logging.info(f"\nLoading training data (labels={train_lbl})...")
+    logging.info(f"Loading training data (labels={train_lbl})...")
     train_ds = ChronoDataset(
         shards["train"], data_root,
         chunk_size=args.chunk_size, label_type=train_lbl)
@@ -545,7 +595,7 @@ def main():
                     param.requires_grad = False
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    logging.info(f"\nTrainable parameters: {n_params:,}")
+    logging.info(f"Trainable parameters: {n_params:,}")
 
     optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr, weight_decay=1e-4)
 
@@ -581,11 +631,11 @@ def main():
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=args.epochs, eta_min=1e-5)
 
-    logging.info(f"\nStarting training ({args.epochs} epochs, patience={patience})...")
+    logging.info(f"Starting training ({args.epochs} epochs, patience={patience})...")
     logging.info(f"  Per-epoch test evaluation: enabled (Regime {args.eval_regime})")
 
     for epoch in range(1, args.epochs + 1):
-        logging.info(f"\n--- Epoch {epoch}/{args.epochs} [ablation={ablation_mode}] ---")
+        logging.info(f"--- Epoch {epoch}/{args.epochs} [ablation={ablation_mode}] ---")
 
         # CRITICAL: Reset the bank at the start of each epoch!
         # Otherwise, epoch 2 starts training on shard 0 using the future
@@ -656,12 +706,12 @@ def main():
                 logging.info(f"  Early stop at epoch {epoch} (best={best_epoch})")
                 break
 
-    logging.info(f"\n{'='*60}")
+    logging.info(f"{'='*60}")
     logging.info(f"  DONE — Best Val({val_label_primary}) AUPRC: {best_auprc:.4f} (epoch {best_epoch})")
     logging.info(f"  Checkpoint: {save_dir / 'best.pt'}")
     logging.info(f"{'='*60}")
 
-    logging.info(f"\nEvaluating on Test Set (labels={test_lbl}) with best model [Regime {args.eval_regime}]...")
+    logging.info(f"Evaluating on Test Set (labels={test_lbl}) with best model [Regime {args.eval_regime}]...")
     checkpoint = torch.load(save_dir / 'best.pt')
     model.load_state_dict(checkpoint["model_state"])
 
@@ -679,7 +729,26 @@ def main():
         logging.info(f"  Regime {args.eval_regime}: Warming up bank states with best weights...")
         warmup_bank(model, [train_loader, val_loader], device)
 
-    test_metrics, test_preds = evaluate(model, test_loader, device, return_preds=True)
+    # --- Select threshold from validation (Arp et al., 2022) ---
+    # Pick the optimal F1 threshold using ONLY validation predictions,
+    # then apply that fixed threshold to test. This avoids the test-set
+    # threshold selection leakage that Arp et al. and KAIROS warn against.
+    logging.info("  Selecting threshold from validation predictions...")
+    if args.eval_regime == "B":
+        model.reset_bank()
+    val_metrics_final = evaluate(model, val_loader, device)
+    val_threshold = val_metrics_final.get("threshold", 0.5)
+    logging.info(f"  Val threshold (F1-optimal): {val_threshold:.6f}")
+    
+    # Reset bank state for test evaluation depending on regime
+    if args.eval_regime == "B":
+        model.reset_bank()
+    elif args.eval_regime != "B":
+        # Re-warmup since val evaluation consumed the val loader
+        warmup_bank(model, [train_loader, val_loader], device)
+
+    test_metrics, test_preds = evaluate(model, test_loader, device,
+                                        return_preds=True, threshold=val_threshold)
     
     # Save predictions for downstream evaluation
     preds_path = save_dir / 'preds.pt'
