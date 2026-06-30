@@ -184,10 +184,16 @@ class HyperMambaFull(nn.Module):
         self.event_emb = nn.Embedding(num_event_types, d_model)
         self.cont_proj = nn.Linear(n_cont_features, d_model)
         
-        # Process Name Embedding (16-dim is enough for categorical)
-        self.process_emb = nn.Embedding(num_process_names, 16)
+        # Process Name Embedding — additive residual, NOT concatenated.
+        # Rationale: concatenating a small (16-dim) embedding alongside 2*d_model
+        # features causes LayerNorm to drown out the process signal (it contributes
+        # only 3% of the feature budget). Instead, we project a larger embedding
+        # to d_model and add it to the event type embedding, so the process identity
+        # directly modulates event semantics: "MMAP by pulseaudio" ≠ "MMAP by firefox".
+        self.process_emb = nn.Embedding(num_process_names, 64)
+        self.process_proj = nn.Linear(64, d_model)
         
-        self.d_event = d_model * 2 + 16
+        self.d_event = d_model * 2
         self.input_norm = nn.LayerNorm(self.d_event)
         
         # State Bank
@@ -243,10 +249,11 @@ class HyperMambaFull(nn.Module):
         device = x_cont.device
         
         # 1. Encode event features
-        e_emb = self.event_emb(event_type)
-        c_emb = self.cont_proj(x_cont)
-        p_emb = self.process_emb(process_ids)
-        f_e = self.input_norm(torch.cat([e_emb, c_emb, p_emb], dim=-1))  # (C, d_event)
+        e_emb = self.event_emb(event_type)                       # (C, d_model)
+        p_emb = self.process_proj(self.process_emb(process_ids)) # (C, d_model)
+        c_emb = self.cont_proj(x_cont)                           # (C, d_model)
+        # Additive residual: process identity modulates event semantics
+        f_e = self.input_norm(torch.cat([e_emb + p_emb, c_emb], dim=-1))  # (C, d_event)
         
         # 2. Gather entity states and compute Δt
         safe_ids = entity_ids.clamp(min=0)

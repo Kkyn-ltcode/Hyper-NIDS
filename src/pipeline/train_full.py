@@ -38,7 +38,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from sklearn.metrics import average_precision_score, precision_recall_curve
+from sklearn.metrics import average_precision_score, precision_recall_curve, roc_auc_score
 
 from src.data.chrono_dataset import ChronoDataset
 from src.model.hypermamba_full import HyperMambaFull
@@ -66,6 +66,59 @@ SHARD_CONFIG = {
 }
 
 
+def _compute_full_metrics(valid_probs, valid_labels, prefix=""):
+    """Compute comprehensive metrics matching PIDSMaker competitors.
+    
+    Returns dict with AUPRC, AUROC, best_f1, precision, recall, FPR, accuracy.
+    All threshold-dependent metrics use the optimal F1 threshold from the PR curve.
+    """
+    m = {}
+    p = prefix
+    
+    # --- Threshold-free metrics ---
+    try:
+        m[f"{p}auprc"] = float(average_precision_score(valid_labels, valid_probs))
+    except ValueError:
+        m[f"{p}auprc"] = 0.0
+    try:
+        m[f"{p}auroc"] = float(roc_auc_score(valid_labels, valid_probs))
+    except ValueError:
+        m[f"{p}auroc"] = 0.0
+        
+    # --- Threshold-dependent metrics (at optimal F1 point) ---
+    try:
+        prec_curve, rec_curve, thr = precision_recall_curve(valid_labels, valid_probs)
+        f1_all = 2 * prec_curve[:-1] * rec_curve[:-1] / (prec_curve[:-1] + rec_curve[:-1] + 1e-12)
+        best_idx = np.argmax(f1_all)
+        best_threshold = thr[best_idx]
+        
+        m[f"{p}best_f1"] = float(f1_all[best_idx])
+        m[f"{p}precision"] = float(prec_curve[best_idx])
+        m[f"{p}recall"] = float(rec_curve[best_idx])
+        
+        # Compute FPR and accuracy at the same optimal threshold
+        preds = (valid_probs >= best_threshold).astype(int)
+        tp = int(((preds == 1) & (valid_labels == 1)).sum())
+        fp = int(((preds == 1) & (valid_labels == 0)).sum())
+        tn = int(((preds == 0) & (valid_labels == 0)).sum())
+        fn = int(((preds == 0) & (valid_labels == 1)).sum())
+        
+        m[f"{p}fpr"] = fp / max(fp + tn, 1)
+        m[f"{p}accuracy"] = (tp + tn) / max(tp + tn + fp + fn, 1)
+        m[f"{p}tp"] = tp
+        m[f"{p}fp"] = fp
+        m[f"{p}tn"] = tn
+        m[f"{p}fn"] = fn
+    except ValueError:
+        m[f"{p}best_f1"] = 0.0
+        m[f"{p}precision"] = 0.0
+        m[f"{p}recall"] = 0.0
+        m[f"{p}fpr"] = 0.0
+        m[f"{p}accuracy"] = 0.0
+        
+    return m
+
+        
 def compute_metrics(all_logits, all_labels, entity_ids=None):
     logits_t = torch.tensor(all_logits).clamp(-50, 50)
     probs = torch.sigmoid(logits_t).numpy()
@@ -74,17 +127,8 @@ def compute_metrics(all_logits, all_labels, entity_ids=None):
     valid = labels >= 0
     valid_probs, valid_labels = probs[valid], labels[valid]
 
-    m = {}
-    try:
-        m["auprc"] = float(average_precision_score(valid_labels, valid_probs))
-    except ValueError:
-        m["auprc"] = 0.0
-    try:
-        prec, rec, thr = precision_recall_curve(valid_labels, valid_probs)
-        f1_all = 2 * prec[:-1] * rec[:-1] / (prec[:-1] + rec[:-1] + 1e-12)
-        m["best_f1"] = float(f1_all[np.argmax(f1_all)])
-    except ValueError:
-        m["best_f1"] = 0.0
+    # Event-level metrics
+    m = _compute_full_metrics(valid_probs, valid_labels)
         
     if entity_ids is not None:
         ent = np.array(entity_ids)
@@ -123,16 +167,9 @@ def compute_metrics(all_logits, all_labels, entity_ids=None):
             n_pos = int((node_labels > 0).sum())
             n_neg = int((node_labels == 0).sum())
             
-            try:
-                m["node_auprc"] = float(average_precision_score(node_labels, node_probs))
-            except ValueError:
-                m["node_auprc"] = 0.0
-            try:
-                prec, rec, thr = precision_recall_curve(node_labels, node_probs)
-                f1_all = 2 * prec[:-1] * rec[:-1] / (prec[:-1] + rec[:-1] + 1e-12)
-                m["node_best_f1"] = float(f1_all[np.argmax(f1_all)])
-            except ValueError:
-                m["node_best_f1"] = 0.0
+            # Node-level metrics using the same comprehensive function
+            node_m = _compute_full_metrics(node_probs, node_labels, prefix="node_")
+            m.update(node_m)
             m["node_n_pos"] = n_pos
             m["node_n_neg"] = n_neg
         else:
@@ -651,25 +688,44 @@ def main():
 
     test_loss = test_metrics["loss"]
     test_auprc = test_metrics["auprc"]
+    test_auroc = test_metrics.get("auroc", 0.0)
     test_f1 = test_metrics["best_f1"]
+    test_prec = test_metrics.get("precision", 0.0)
+    test_rec = test_metrics.get("recall", 0.0)
+    test_fpr = test_metrics.get("fpr", 0.0)
     test_node_auprc = test_metrics.get("node_auprc", 0.0)
+    test_node_auroc = test_metrics.get("node_auroc", 0.0)
     test_node_f1 = test_metrics.get("node_best_f1", 0.0)
+    test_node_prec = test_metrics.get("node_precision", 0.0)
+    test_node_rec = test_metrics.get("node_recall", 0.0)
+    test_node_fpr = test_metrics.get("node_fpr", 0.0)
     test_node_n_pos = test_metrics.get("node_n_pos", 0)
     test_node_n_neg = test_metrics.get("node_n_neg", 0)
     
     logging.info(f"  Test Loss:  {test_loss:.4f}")
-    logging.info(f"  Test AUPRC (Event-level): {test_auprc:.4f}")
-    logging.info(f"  Test F1    (Event-level): {test_f1:.4f}")
-    logging.info(f"  Test AUPRC (Node-level):  {test_node_auprc:.4f}  "
-                 f"({test_node_n_pos:,} pos / {test_node_n_neg:,} neg subjects)")
-    logging.info(f"  Test F1    (Node-level):  {test_node_f1:.4f}")
+    logging.info(f"  --- Event-level ---")
+    logging.info(f"  AUPRC: {test_auprc:.4f}  |  AUROC: {test_auroc:.4f}")
+    logging.info(f"  Prec:  {test_prec:.4f}  |  Rec:   {test_rec:.4f}  |  F1: {test_f1:.4f}")
+    logging.info(f"  FPR:   {test_fpr:.6f}")
+    logging.info(f"  --- Node-level ({test_node_n_pos:,} pos / {test_node_n_neg:,} neg subjects) ---")
+    logging.info(f"  AUPRC: {test_node_auprc:.4f}  |  AUROC: {test_node_auroc:.4f}")
+    logging.info(f"  Prec:  {test_node_prec:.4f}  |  Rec:   {test_node_rec:.4f}  |  F1: {test_node_f1:.4f}")
+    logging.info(f"  FPR:   {test_node_fpr:.6f}")
     logging.info(f"{'='*60}")
 
     history["final_test_loss"] = test_loss
     history["final_test_auprc"] = test_auprc
+    history["final_test_auroc"] = test_auroc
     history["final_test_f1"] = test_f1
+    history["final_test_precision"] = test_prec
+    history["final_test_recall"] = test_rec
+    history["final_test_fpr"] = test_fpr
     history["final_test_node_auprc"] = test_node_auprc
+    history["final_test_node_auroc"] = test_node_auroc
     history["final_test_node_f1"] = test_node_f1
+    history["final_test_node_precision"] = test_node_prec
+    history["final_test_node_recall"] = test_node_rec
+    history["final_test_node_fpr"] = test_node_fpr
 
     # Save training history
     torch.save(history, save_dir / "history.pt")

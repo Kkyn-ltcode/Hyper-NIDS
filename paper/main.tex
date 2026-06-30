@@ -1,0 +1,125 @@
+\documentclass[conference]{IEEEtran}
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{hyperref}
+
+\begin{document}
+
+\title{Catching Campaigns, Not Connections: Coordination-Aware Hypergraph Networks for Multi-Stage Intrusion Detection}
+
+\author{\IEEEauthorblockN{Anonymous Authors}}
+\maketitle
+
+\section{Threat Model and Problem Formalization}
+
+\subsection{Background: Provenance as Hypergraphs}
+\label{sec:hypergraph}
+
+To accurately model the complex, multi-entity interactions inherent in modern operating systems, we formalize system provenance as a temporal hypergraph.
+
+\textbf{Definition 1 (Provenance Hypergraph).}
+A provenance trace is a temporal hypergraph $\mathcal{H} = (\mathcal{V}, \mathcal{E}, \mathcal{T})$ where:
+\begin{itemize}
+    \item $\mathcal{V}$ is the set of system entities (e.g., processes, files, network sockets, memory regions).
+    \item $\mathcal{E}$ is the set of hyperedges, where each $e \in \mathcal{E}$ corresponds to exactly one system event. A hyperedge connects either two or three nodes corresponding to the event's \texttt{subject}, \texttt{primary object}, and optionally a \texttt{secondary object} (e.g., a memory region accessed via \texttt{EVENT\_MMAP} or an IPC channel via \texttt{EVENT\_SHM}).
+    \item $\mathcal{T} : \mathcal{E} \to \mathbb{R}^+$ assigns a strictly monotonically increasing nanosecond timestamp to each hyperedge.
+\end{itemize}
+
+\textbf{Empirical Grounding.} Across 44 million events in the DARPA TC Theia dataset, 97.2\% are size-2 (subject and primary object). However, 2.8\% (1.22 million events) are genuine size-3 hyperedges, where the secondary object represents a distinct memory region or IPC channel. 
+
+Crucially, \textbf{attack events are 3.0$\times$ more likely} to involve genuine 3-entity interactions than benign events (5.6\% versus 1.9\%). This enrichment is predominantly driven by \texttt{EVENT\_MMAP}---a system call heavily weaponized for code injection, shared library loading, and process hollowing. 
+
+When a pairwise graph representation decomposes a 3-entity \texttt{EVENT\_MMAP} into two independent edges---(process, file) and (process, memory region)---the critical semantic fact that the process mapped \textit{this specific file} into \textit{that specific memory region} simultaneously is structurally lost.
+
+\textbf{Concrete Example:} Consider two \texttt{EVENT\_MMAP} events. Both share a (subject, object) interaction structure but critically diverge in their secondary object.
+\begin{itemize}
+    \item \textbf{Malicious \texttt{EVENT\_MMAP} (Attack Stage):}
+    \begin{itemize}
+        \item Subject: \texttt{bash (PID 1024)}
+        \item Primary Object: \texttt{/tmp/malicious.so}
+        \item Secondary Object: \texttt{Memory Region [0x4000-0x8000]} (Executable Segment)
+    \end{itemize}
+    \item \textbf{Benign \texttt{EVENT\_MMAP} (Background Activity):}
+    \begin{itemize}
+        \item Subject: \texttt{bash (PID 1024)}
+        \item Primary Object: \texttt{/lib/x86\_64-linux-gnu/libc.so.6}
+        \item Secondary Object: \texttt{Memory Region [0x7f00-0x7fff]} (Standard Shared Memory)
+    \end{itemize}
+\end{itemize}
+In a pairwise graph, the edges between the subject and the file would appear identical in structure. Only a native hyperedge representation natively preserves the discriminative 3-entity joint context.
+
+\subsection{Threat Model \& Stealth Coordinated Attacks}
+\label{sec:threat_model}
+
+We consider a sophisticated adversary executing an Advanced Persistent Threat (APT) campaign. The attacker's objective is to compromise the host, establish command-and-control (C2), escalate privileges, and exfiltrate data, all while evading detection by host-based intrusion detection systems (HIDS). We assume the HIDS securely collects provenance logs from the kernel (e.g., via eBPF or auditd), and the attacker cannot directly spoof or delete these logs. However, the attacker is unconstrained in their use of legitimate system APIs to achieve their goals.
+
+To evade detection, the adversary employs \textbf{Stealth Coordinated Attacks (SCAs)}. An SCA is a multi-stage attack carefully engineered such that each individual system event, when viewed in isolation or in a stateless pairwise context, appears statistically indistinguishable from benign background activity.
+
+Formally, let $x_i$ be the features of a single system event $e_i$. An attack sequence $A = \{e_1, e_2, \dots, e_k\}$ is perfectly stealthy to a stateless detector if for all $e_i \in A$:
+\begin{equation}
+    P(x_i \mid \text{attack}) \approx P(x_i \mid \text{benign})
+\end{equation}
+Because the marginal distributions of the pairwise features overlap almost completely, detecting SCAs requires modeling the \textit{joint} distribution of multi-entity interactions over long temporal horizons. The attacker relies on the detection system losing track of this joint state (e.g., due to pairwise fragmentation or short-term memory constraints) to successfully execute the campaign.
+
+\section{The HyperMamba Architecture}
+
+To detect SCAs, we propose \textbf{HyperMamba}, an architecture that combines the structural fidelity of hypergraphs with the continuous, $O(1)$-memory sequence modeling of State Space Models (SSMs). 
+
+\subsection{Continuous Entity State Bank and Scalability}
+Instead of constructing static windowed graphs, HyperMamba processes events in a continuous, chronological stream. To maintain temporal coherence, we introduce the \texttt{EntityStateBank}, which stores an evolving state vector $\mathbf{s}_v(t) \in \mathbb{R}^{d}$ for every entity $v \in \mathcal{V}$.
+
+Because the number of entities is bounded ($|\mathcal{V}| \approx 7.1 \times 10^6$ in the full Theia dataset), the memory complexity is strictly bounded to $\mathcal{O}(|\mathcal{V}| \times d)$. For $d=256$, this requires less than 8GB of VRAM, allowing the model to track millions of entities indefinitely without the quadratic memory blowup of attention mechanisms. 
+
+\textbf{Eviction Strategy for Enterprise Scalability:} In large-scale enterprise deployments where hundreds of millions of ephemeral entities (e.g., short-lived temporary files or sockets) are created over weeks, keeping all entities in GPU memory is infeasible. HyperMamba implements a Least Recently Used (LRU) state-decay eviction strategy. If an entity's elapsed time since last seen ($\Delta t$) exceeds a predefined threshold (e.g., 7 days), its state is flushed from VRAM to disk, or discarded entirely if deemed permanently dormant. This bounds the active state bank size to the working set of the system, bulletproofing the architecture for indefinite continuous operation.
+
+\subsection{Hyperedge Aggregation}
+For an incoming hyperedge $e$ connecting a set of entities $V_e = \{v_1, \dots, v_k\}$ (where $k \in \{2, 3\}$), HyperMamba first aggregates their states conditioned on the semantic event payload $\mathbf{f}_e$ (which encodes event type, numerical features, and process name). 
+
+We employ an attention mechanism where the event features act as the query, and the concatenated entity states, role embeddings $\mathbf{r}_v$ (e.g., Subject, Primary Object), and elapsed time $\Delta t$ act as keys and values:
+\begin{align}
+    \mathbf{q} &= \mathbf{W}_q \mathbf{f}_e \\
+    \mathbf{k}_v &= \mathbf{W}_k [\mathbf{s}_v(t) \parallel \mathbf{r}_v \parallel \log(1 + \Delta t)] \\
+    \mathbf{v}_v &= \mathbf{W}_v [\mathbf{s}_v(t) \parallel \mathbf{r}_v \parallel \log(1 + \Delta t)]
+\end{align}
+The attention scores and final hyperedge representation $\mathbf{x}_e \in \mathbb{R}^d$ are computed as:
+\begin{align}
+    \alpha_v &= \text{softmax}\left(\frac{\mathbf{q} \cdot \mathbf{k}_v^T}{\sqrt{d}}\right) \\
+    \mathbf{x}_e &= \mathbf{W}_{out} \sum_{v \in V_e} \alpha_v \mathbf{v}_v
+\end{align}
+This fuses the hypergraph topology with the semantic payload into a unified representation.
+
+\subsection{Selective SSM State Update}
+Once $\mathbf{x}_e$ is computed, we selectively update the state of the participating entities using a Mamba-inspired State Space Model. To ensure stable long-range memory, the state decay matrix $A \in \mathbb{R}^d$ uses a HiPPO-style initialization (log-spaced from -1 to -$d$).
+
+For each participating entity $v \in V_e$, we explicitly model the elapsed time $\Delta t$. We compute an input-dependent discretization step $\Delta_i$ scaled by a gentle logarithmic time factor to prevent massive gradient spikes during long periods of inactivity:
+\begin{equation}
+    \Delta_i = \text{softplus}(\mathbf{W}_\Delta [\mathbf{x}_e \parallel \mathbf{r}_v]) \odot (1 + \lambda \log(1 + \Delta t))
+\end{equation}
+where $\lambda = 0.1$. The role embedding $\mathbf{r}_v$ is concatenated to ensure that subjects and objects receive asymmetric updates, preserving the directed structural semantics of the event.
+
+The discretized SSM parameters are:
+\begin{align}
+    \bar{A} &= \exp(\Delta_i A) \\
+    \bar{B} &= \Delta_i \odot \mathbf{W}_B [\mathbf{x}_e \parallel \mathbf{r}_v]
+\end{align}
+The raw SSM update is then:
+\begin{equation}
+    \tilde{\mathbf{s}}_v(t+1) = \bar{A} \odot \mathbf{s}_v(t) + \bar{B} \odot \mathbf{x}_e
+\end{equation}
+
+To prevent catastrophic over-smoothing during rapid event bursts, we employ a learned gating mechanism $g$ to compute a residual blend between the new SSM state and the old state:
+\begin{align}
+    g &= \sigma(\mathbf{W}_g [\mathbf{x}_e \parallel \mathbf{r}_v]) \\
+    \mathbf{s}_v(t+1) &= g \odot \tilde{\mathbf{s}}_v(t+1) + (1 - g) \odot \mathbf{s}_v(t)
+\end{align}
+
+\subsection{Model Training and Evaluation}
+HyperMamba is trained using Truncated Backpropagation Through Time (TBPTT). Entity states persist across event chunks within an epoch but are detached from the computational graph at chunk boundaries.
+
+For deployment-realistic testing, we employ a \textbf{Continuous Warm-Start Evaluation} strategy. Instead of resetting the state bank before evaluating on the test set, the model first processes historical training and validation data in a forward-only pass. This populates the Entity State Bank, mirroring a real-world continuous deployment and avoiding artificial "cold start" penalties.
+
+\end{document}
