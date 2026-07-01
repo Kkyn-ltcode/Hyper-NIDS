@@ -33,6 +33,7 @@ def main():
     parser.add_argument("--chunk_size", type=int, default=4096)
     parser.add_argument("--label_type", type=str, default="crossprocess")
     parser.add_argument("--regime", type=str, default="A", choices=["A", "B"])
+    parser.add_argument("--d_model", type=int, default=256)
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -53,7 +54,7 @@ def main():
         n_cont_features=train_ds.n_cont_features,
         num_event_types=train_ds.num_event_types,
         num_process_names=train_ds.num_process_names,
-        d_model=128,
+        d_model=args.d_model,
     ).to(device)
     
     # Load checkpoint
