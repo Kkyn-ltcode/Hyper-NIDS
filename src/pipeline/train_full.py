@@ -329,7 +329,15 @@ def warmup_bank(model, loaders, device):
     the training + val shards in forward-pass-only mode to build up the
     entity state bank. No gradients, no metric collection — just state
     accumulation.
+    
+    NOTE: For the no_state ablation (use_state=False), warmup is skipped
+    because the model feeds zeros to the classifier regardless of bank content.
     """
+    if not model.use_state:
+        logging.info("  Skipping warmup: no_state ablation (use_state=False)")
+        model.reset_bank()
+        return
+    
     model.eval()
     model.reset_bank()
     
@@ -461,11 +469,11 @@ def main():
             args.no_cross_entity = True
             args.no_state = False
         elif ablation_mode == "no_state":
-            # no_state ablation: full architecture, but reset bank every chunk.
-            # The model uses use_state=True, cross_entity=True — the ablation
-            # is purely a training-loop change (reset vs detach at boundaries).
+            # no_state ablation: model uses use_state=False, which feeds zeros
+            # to the classifier instead of accumulated entity state. This is
+            # the clean ablation: the model CANNOT use state, period.
             args.no_cross_entity = False
-            args.no_state = False  # Model sees use_state=True
+            args.no_state = True  # Model sees use_state=False
         else:  # "full"
             args.no_cross_entity = False
             args.no_state = False

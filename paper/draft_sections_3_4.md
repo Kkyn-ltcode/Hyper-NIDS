@@ -8,33 +8,34 @@ A provenance trace is a temporal hypergraph $\mathcal{H} = (\mathcal{V}, \mathca
 - Each hyperedge $e \in \mathcal{E}$ corresponds to exactly one CDM event. It connects 2 or 3 nodes: the `subject`, the `predicateObject` (primary object), and optionally the `predicateObject2` (secondary object, e.g., memory region via `EVENT_MMAP`, shared memory via `EVENT_SHM`).
 - $\mathcal{T} : \mathcal{E} \to \mathbb{R}^+$ assigns a nanosecond timestamp to each hyperedge.
 
-**Empirical Grounding:** Across 44M Theia events, 97.2% are size‑2 (subject + object) and 2.8% (1.22M events) are genuine size‑3, where the secondary object is a distinct memory region or IPC channel. 
+**Empirical Grounding:** Across 44M Theia events, the vast majority are size-2 (subject + primary object). However, over 1.2M events are genuine size-3 hyperedges, where the secondary object represents a distinct memory region or IPC channel. 
 
-**Observation 1 (Attack Enrichment in 3‑Entity Hyperedges).**  
-Attack events are **3.0× more likely** to involve genuine 3‑entity interactions than benign events (5.6% vs 1.9%). The secondary entity is almost exclusively a memory region linked via `EVENT_MMAP`—a system call heavily used in code injection, shared library loading, and process hollowing. When a pairwise graph decomposes an `EVENT_MMAP` into two edges—(process, file) and (process, memory region)—the critical fact that the process mapped *this specific file* into *that specific memory region* simultaneously is structurally lost.
+**Observation 1 (Preserving Joint Interaction Semantics).**  
+We model the native 3-ary structure of provenance audit events rather than decomposing them into pairwise edges, preserving their joint contextual relationships. The secondary entity is frequently a memory region linked via `EVENT_MMAP`—a system call heavily used in code injection, shared library loading, and process hollowing. When a pairwise graph decomposes an `EVENT_MMAP` into two independent edges—(process, file) and (process, memory region)—the critical fact that the process mapped *this specific file* into *that specific memory region* simultaneously is structurally lost.
 
 **Concrete Example (from DARPA TC Theia data):**  
 Consider two `EVENT_MMAP` events from the dataset. Both share a (subject, object) interaction structure but critically diverge in their `predicateObject2` (memory region).
 
 * Malicious `EVENT_MMAP` (Label: Attack Stage):
-  * Subject UUID: `B50E061A-0000-0000-0000-000000000020`
-  * Object UUID: `B50E00F0-FF5B-6B7F-0000-000000000050`
-  * Object2 UUID: `12000000-3242-0000-0000-000000000000` (Malicious Executable Memory Region)
+  * Subject UUID: `B50E061A...` (e.g., bash)
+  * Object UUID: `B50E00F0...` (e.g., /tmp/malicious.so)
+  * Object2 UUID: `12000000...` (Malicious Executable Memory Region)
 
 * Benign `EVENT_MMAP` (Label: Background):
-  * Subject UUID: `0F0DAC11-0000-0000-0000-000000000020`
-  * Object UUID: `0F0D00D0-9FF2-1E7F-0000-000000000050`
-  * Object2 UUID: `0100D00F-A66C-1800-0000-00003423B213` (Normal Shared Memory Segment)
+  * Subject UUID: `0F0DAC11...`
+  * Object UUID: `0F0D00D0...`
+  * Object2 UUID: `0100D00F...` (Normal Shared Memory Segment)
 
-Pairwise representations would yield identical edge types for the subject-object pairs, forcing the model to infer the context probabilistically. A native hyperedge maintains the discriminative 3-entity joint context natively.
+Pairwise representations would yield identical edge types for the subject-object pairs, forcing the model to infer the context probabilistically. A native hyperedge maintains the discriminative 3-entity joint context explicitly.
 
 ---
 
 # Section 4: The THyN Architecture
 
 ## 4.1 Continuous Entity State Bank
-Instead of constructing static windowed graphs, THyN processes events in a continuous, chronological stream. To maintain temporal coherence across millions of events, we introduce the `EntityStateBank`, which stores an evolving state $s_v(t) \in \mathbb{R}^{d}$ for every entity $v \in \mathcal{V}$. 
-Because the number of entities is bounded ($|\mathcal{V}| \approx 2.7M$ in Theia), the memory complexity is strictly bounded to $\mathcal{O}(|\mathcal{V}| \times d)$, requiring less than 3GB of VRAM in practice.
+Instead of constructing static windowed graphs, THyN processes events in a continuous, chronological stream. To maintain temporal coherence across millions of events, we introduce the `EntityStateBank`, which stores a persistent, evolving state $s_v(t) \in \mathbb{R}^{d}$ for every entity $v \in \mathcal{V}$. 
+
+The bank is represented as a fixed-size continuous tensor updated in-place. Because the number of unique entities is bounded ($|\mathcal{V}| \approx 1.6M$ valid entities in Theia), the memory complexity is strictly $\mathcal{O}(|\mathcal{V}| \times d)$. For a dimension $d=256$, this equates to roughly 1.6 billion `float32` values, requiring about 6.4 GB of VRAM. This linear $\mathcal{O}(|\mathcal{V}|)$ scaling is a major architectural advantage compared to full-graph attention mechanisms that scale quadratically $\mathcal{O}(|\mathcal{V}|^2)$, allowing THyN to maintain global system context indefinitely on single-GPU hardware.
 
 ## 4.2 Hyperedge Aggregation (AllSetAggregator)
 For an incoming hyperedge $e$ connecting entities $V_e = \{v_1, v_2, v_3\}$ (subject, object, object2), we first dynamically aggregate their states. The aggregation is conditioned on the semantic event features (event type, continuous features like size, and the process name).
