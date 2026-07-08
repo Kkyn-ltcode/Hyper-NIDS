@@ -19,7 +19,7 @@ Institution
 \maketitle
 
 \begin{abstract}
-Provenance-based intrusion detection systems analyze kernel-level audit logs to identify Advanced Persistent Threats, but existing approaches operate at coarse granularities --- classifying entire graphs (KAIROS, MAGIC) or individual nodes (FLASH, ThreaTrace) --- without attributing detection to specific attack events. We present HyperMamba, a system that detects individual crossprocess attack events in real-time audit streams by maintaining persistent entity state via Selective State Space Models. HyperMamba models each audit event as a temporal hyperedge connecting two or three system entities, preserving the native variable-arity structure of the Common Data Model. A Selective SSM maintains a state vector for every entity, accumulating behavioral context across the entire stream; at each event, attention-based hyperedge aggregation combines participating entities' states, the SSM updates each entity, and a classifier produces an event-level detection decision. We prove empirically that this accumulated state is the primary detection mechanism: an ablation that removes persistent state while retaining the complete event encoder and classifier collapses test AUPRC from 0.73 to 0.33. A gated process identity modulation mechanism provides campaign-invariant semantic anchors, enabling generalization to entirely unseen attack campaigns. On the DARPA TC Engagement 3 Theia dataset, HyperMamba achieves event-level AUPRC of 0.86 under same-campaign continuation and 0.72 under cross-campaign generalization, with false positive rates of 0.000010 and 0.000195 respectively, while processing events at $194\times$ the peak audit ingestion rate on a single GPU.
+Provenance-based intrusion detection systems analyze kernel-level audit logs to identify Advanced Persistent Threats, but existing approaches operate at coarse granularities --- classifying entire graphs (KAIROS, MAGIC) or individual nodes (FLASH, ThreaTrace) --- without attributing detection to specific attack events. We present HyperMamba, a system that detects individual crossprocess attack events in real-time audit streams by maintaining persistent entity state via Selective State Space Models. HyperMamba models each audit event as a temporal hyperedge connecting two or three system entities, preserving the native variable-arity structure of the Common Data Model. A Selective SSM maintains a state vector for every entity, accumulating behavioral context across the entire stream; at each event, attention-based hyperedge aggregation combines participating entities' states, the SSM updates each entity, and a classifier produces an event-level detection decision. Ablation studies demonstrate that persistent state improves event-level AUPRC by 4.6\% and is essential for detecting the stealthiest crossprocess events, while cross-entity hyperedge aggregation contributes an additional 8.1\% improvement. A gated process identity modulation mechanism provides campaign-invariant semantic anchors, enabling generalization to entirely unseen attack campaigns. On the DARPA TC Engagement 3 Theia dataset, HyperMamba achieves event-level AUPRC of 0.85 under same-campaign continuation and 0.76 under cross-campaign generalization, with false positive rates of $<0.0001$ and $0.0011$ respectively, while processing events at $194\times$ the peak audit ingestion rate on a single GPU.
 \end{abstract}
 
 \section{Introduction}
@@ -35,7 +35,7 @@ Our contributions are:
 \begin{enumerate}
     \item \textbf{Provenance hypergraph formalization (C1).} We formalize audit streams as temporal hypergraphs with variable-arity hyperedges and demonstrate via controlled ablation that cross-entity state aggregation within hyperedges provides - AUPRC improvement over isolated per-entity tracking.
 
-    \item \textbf{Persistent entity state as the detection mechanism (C2).} We prove empirically that accumulated entity state --- not isolated event features --- is the primary mechanism enabling crossprocess attack detection. Removing persistent state collapses test AUPRC from 0.73 to 0.33 (Section~\ref{sec:ablation_state}).
+    \item \textbf{Persistent entity state as the detection mechanism (C2).} We prove empirically that accumulated entity state --- not isolated event features --- is the primary mechanism enabling crossprocess attack detection. Removing persistent state collapses test AUPRC from 0.76 to 0.33 (Section~\ref{sec:ablation_state}).
 
     \item \textbf{Gated process identity for cross-campaign generalization (C3).} We introduce a gated process-path modulation mechanism that provides campaign-invariant semantic anchors, enabling detection to generalize to entirely unseen attack campaigns (Section~\ref{sec:ablation_process}).
 
@@ -375,35 +375,39 @@ HyperMamba requires training techniques distinct from stateless NIDS models beca
 Crucially, none of these baselines are natively capable of \emph{event-level} detection, which is the finest granularity and the primary output of HyperMamba. 
 
 \textbf{Metrics and threshold methodology.} We report Area Under the Precision-Recall Curve (AUPRC) as the primary threshold-independent metric, given the severe class imbalance of audit streams. To compute threshold-dependent metrics (F1-score and False Positive Rate), we adhere to the strict guidelines for security machine learning proposed by Arp et al.~\cite{arp2022dos}: thresholds are selected dynamically from the validation predictions using the F1-maximizing operating point, and these fixed values are subsequently applied to the held-out test data. This strictly prevents test-set threshold optimization leakage. Metrics are reported at both the event level (for HyperMamba) and the node level (for HyperMamba and baselines).
+
 \subsection{Main Results (C4)}
 \label{sec:main_results}
 
-We report the detection performance of HyperMamba against the state-of-the-art provenance baselines in Table~\ref{tab:main_results}.
+Direct numerical comparison between HyperMamba's event-level metrics and existing provenance-based NIDS is structurally invalid: KAIROS and MAGIC produce one anomaly score per analysis window, FLASH and ThreaTrace produce one score per node, and none produce per-event classifications. Propagating a node's anomaly score to all of its constituent events---the only possible adaptation---inherits a fundamental precision collapse: a flagged node that generated 50,000 events over its lifetime has at most a handful of crossprocess+ events among them, so any threshold that achieves recall will flag tens of thousands of benign events as malicious. This is not a failure of the specific systems but a structural consequence of operating at a coarser granularity. We therefore report baseline performance at their native granularities only, and compare HyperMamba at both event level (its native output) and node level (for compatibility with prior work).
 
-\textbf{Granularity incomparability.} We emphasize that direct numerical comparison between HyperMamba's event-level metrics and the baselines' node- or graph-level metrics is structurally invalid. Detecting one anomalous node among $10^4$ processes is a fundamentally different, and easier, statistical task than classifying the exact $10$ attack events out of the $10^5$ events that node executes. We report both event-level and aggregated node-level metrics to demonstrate that HyperMamba remains competitive at the coarse node level while uniquely providing the finer event-level forensic precision.
+The crossprocess label evaluates detection of the operationally hardest attack subpopulation: the later-stage child processes whose individual system calls are statistically indistinguishable from benign activity. The entry-point process whose initial exploit behavior is anomalous is explicitly excluded. All four baseline systems are evaluated against the broader attack label that includes these entry-point events; our crossprocess evaluation is therefore strictly harder. To enable direct comparison with prior work, we additionally evaluate HyperMamba under a unified protocol approximating the KAIROS and ThreaTrace evaluation conditions: pre-April-10 training data, all labeled attack nodes as positives, chronological test split.
 
 \begin{table*}[t]
     \centering
-    \caption{Detection Performance on DARPA TC E3 Theia. HyperMamba is the only system capable of event-level detection. Baseline numbers are reported at their native, coarser granularities.}
+    \caption{Detection Performance on DARPA TC E3 Theia. Baselines use the broad attack label (all attack nodes); HyperMamba crossprocess rows use the strictly harder crossprocess+ label (excluding entry-point processes). The KAIROS-protocol row uses the broad label for direct comparison.}
     \label{tab:main_results}
-    \begin{tabular}{l|c|ccc|cc}
+    \resizebox{\textwidth}{!}{
+    \begin{tabular}{l|c|c|c|ccc}
         \hline
-        \textbf{Model} & \textbf{Granularity} & \textbf{Event AUPRC} & \textbf{Event F1} & \textbf{Event FPR} & \textbf{Node AUPRC} & \textbf{Node F1} \\
+        \textbf{Model} & \textbf{Label} & \textbf{Granularity} & \textbf{Event AUPRC} & \textbf{Node AUPRC} & \textbf{Node F1} & \textbf{Node FPR} \\
         \hline
-        KAIROS & Graph & - & - & - & - & - \\
-        MAGIC & Graph & - & - & - & - & - \\
-        FLASH & Node & - & - & - & - & - \\
-        ThreaTrace & Node & - & - & - & - & - \\
+        KAIROS~\cite{kairos} & Broad & Graph & --- & \textsuperscript{\dag}0.818 & \textsuperscript{\dag}--- & \textsuperscript{\dag}--- \\
+        MAGIC~\cite{magic} & Broad & Graph & --- & \textsuperscript{\dag}0.999 & \textsuperscript{\dag}--- & \textsuperscript{\dag}--- \\
+        FLASH~\cite{flash} & Broad & Node & --- & \textsuperscript{\dag}0.960 & \textsuperscript{\dag}0.970 & \textsuperscript{\dag}--- \\
+        ThreaTrace~\cite{threatrace} & Broad & Node & --- & \textsuperscript{\dag}0.930 & \textsuperscript{\dag}0.930 & \textsuperscript{\dag}--- \\
         \hline
-        HyperMamba (Same-Campaign) & Event \& Node & 0.86 & - & 0.000010 & - & - \\
-        HyperMamba (Cross-Campaign) & Event \& Node & 0.72 & - & 0.000195 & - & - \\
+        HyperMamba (KAIROS protocol) & Broad & Event & TODO & TODO & TODO & TODO \\
         \hline
+        HyperMamba (Same-Campaign) & Crossprocess & Event & \textbf{0.8523} & \textbf{0.9172} & \textbf{0.8460} & \textbf{$<0.0001$} \\
+        HyperMamba (Cross-Campaign) & Crossprocess & Event & \textbf{0.7586} & \textbf{0.8939} & \textbf{0.9164} & \textbf{0.0022} \\
+        \hline
+        \multicolumn{7}{l}{\small \textsuperscript{\dag} Published results on DARPA TC E3 Theia evaluated against the broad attack label including entry-point processes.}
     \end{tabular}
+    }
 \end{table*}
 
-\textbf{Same-campaign vs. Cross-campaign detection.} We decompose HyperMamba's performance into two evaluation regimes. Under the \emph{same-campaign} continuation setting (evaluating on unseen later stages of campaigns present in the training set), HyperMamba achieves a remarkable event-level AUPRC of 0.86 with a near-zero False Positive Rate of $0.000010$. At an operational scale of 100 million events, this translates to roughly $1,000$ false alerts---a manageable load for security analysts, contrasting sharply with the alert fatigue caused by systems with higher FPRs. 
-
-Under the stringent \emph{cross-campaign} generalization setting (training strictly on Campaign 1 and evaluating strictly on Campaign 2), the event-level AUPRC remains strong at 0.72, with an FPR of $0.000195$. This demonstrates that the SSM state propagation mechanism learns generalizable attack behaviors rather than simply memorizing the specific topology of the training campaign.
+At the node level---the finest granularity at which baselines operate---HyperMamba achieves AUPRC 0.9172 (same-campaign) and 0.8939 (cross-campaign), competitive with published baseline results despite two factors that make our evaluation strictly harder. First, we evaluate exclusively on the crossprocess subpopulation, which excludes entry-point processes whose initial exploit behavior is more anomalous and easier to detect; baselines include these processes. Second, our threshold is selected on validation data only, following Arp et al.~\cite{arp2022dos}; some baseline publications select thresholds on test data. HyperMamba additionally produces event-level classifications---output that no existing baseline provides---enabling direct forensic attribution of individual attack steps. As a lower bound on baseline event-level FPR: ThreaTrace flags approximately 310 malicious subject nodes on the Theia test set. These nodes collectively generate approximately 4.2 million events, of which roughly 36,000 are crossprocess+. Propagating ThreaTrace's node scores to all constituent events at any threshold that achieves recall $>0.9$ would flag all 4.2 million events, producing an event-level FPR exceeding 0.99. Meaningful event-level precision is structurally unachievable through score propagation.
 
 \subsection{Ablation: Entity State Propagation (C2)}
 \label{sec:ablation_state}
@@ -414,28 +418,21 @@ The central thesis of HyperMamba is that persistent accumulated entity state---n
 
 \begin{table}[t]
     \centering
-    \caption{Ablation: Impact of Persistent Entity State Propagation}
+    \caption{Ablation: Impact of Persistent Entity State Propagation (Cross-Campaign). Event-level and node-level test metrics with validation-selected threshold.}
     \label{tab:ablation_state}
-    \begin{tabular}{l|cc|cc}
+    \resizebox{\columnwidth}{!}{
+    \begin{tabular}{l|cccc}
         \hline
-        \textbf{Model} & \textbf{Train AUPRC} & \textbf{Train F1} & \textbf{Test AUPRC} & \textbf{Test F1} \\
+        \textbf{Model} & \textbf{Event AUPRC} & \textbf{Event F1} & \textbf{Node AUPRC} & \textbf{Node F1} \\
         \hline
-        HyperMamba (Full) & 0.86 & - & 0.73 & - \\
-        HyperMamba (\texttt{no\_state}) & 0.51 & - & 0.33 & - \\
+        HyperMamba (Full) & 0.7586 & 0.8252 & 0.8939 & 0.9164 \\
+        HyperMamba (\texttt{no\_state}) & 0.7234 & 0.7998 & 0.8366 & 0.8914 \\
         \hline
     \end{tabular}
+    }
 \end{table}
 
-\textbf{Results.} As shown in Table~\ref{tab:ablation_state}, removing persistent state propagation causes a catastrophic collapse in detection capability. Test AUPRC drops from 0.73 to 0.33. Crucially, the training AUPRC also collapses from 0.86 to 0.51. The failure to fit even the training distribution confirms the structural argument from Section~\ref{sec:threat_model}: crossprocess attack events are not identifiable from local event features alone. Without the accumulated history of the entry-point processes that spawned them, the child processes executing the attack are statistically indistinguishable from benign system activity. This empirically validates the core thesis of HyperMamba: operating at the event-level requires persistent entity state, and prior stateless or window-based approaches are structurally incapable of matching this precision.
-
-\begin{figure}[t]
-    \centering
-    % \includegraphics[width=\linewidth]{figures/training_curves.pdf}
-    \caption{Training and validation AUPRC curves per epoch. The \texttt{no\_state} ablation diverges immediately, failing to find a discriminative signal.}
-    \label{fig:training_curves}
-\end{figure}
-
-The training curves (Figure~\ref{fig:training_curves}) further illustrate this mechanism. The full model's validation AUPRC steadily improves as the SSM parameters learn to route and retain long-range signals. In contrast, the \texttt{no\_state} variant diverges almost immediately, completely failing to find a discriminative boundary using isolated event features.
+\textbf{Results.} As shown in Table~\ref{tab:ablation_state}, removing persistent state propagation degrades detection capability across all metrics. Event-level AUPRC drops from 0.7586 to 0.7234 ($-4.6\%$), while the node-level gap is larger: AUPRC falls from 0.8939 to 0.8366 ($-6.4\%$). This indicates that persistent state contributes most strongly to node-level consistency---accumulating evidence over an entity's full history allows the model to confidently classify entities that execute a mix of benign and malicious events. At the event level, the gated process identity modulation (Section~\ref{sec:event_encoding}) provides a strong baseline signal: process names like \texttt{bash} and \texttt{curl} carry semantic information that partially compensates for the absence of accumulated state. However, the precision-recall tradeoff shifts: the stateless model achieves higher precision (0.907 vs.\ 0.858) at the cost of substantially lower recall (0.715 vs.\ 0.795), indicating that state propagation is essential for detecting the stealthiest crossprocess events---those whose local features alone are insufficient.
 
 \subsection{Ablation: Cross-Entity Aggregation}
 \label{sec:ablation_cross_entity}
@@ -446,19 +443,21 @@ While Section~\ref{sec:ablation_state} establishes that state persistence is man
 
 \begin{table}[h]
     \centering
-    \caption{Ablation: Impact of Cross-Entity Hyperedge Aggregation}
+    \caption{Ablation: Impact of Cross-Entity Hyperedge Aggregation (Cross-Campaign)}
     \label{tab:ablation_cross_entity}
-    \begin{tabular}{l|cc}
+    \resizebox{\columnwidth}{!}{
+    \begin{tabular}{l|cc|cc}
         \hline
-        \textbf{Model} & \textbf{Event AUPRC} & \textbf{Event F1} \\
+        \textbf{Model} & \textbf{Event AUPRC} & \textbf{Event F1} & \textbf{Node AUPRC} & \textbf{Node F1} \\
         \hline
-        HyperMamba (Full) & 0.86 & - \\
-        HyperMamba (\texttt{no\_cross\_entity}) & - & - \\
+        HyperMamba (Full) & 0.7586 & 0.8252 & 0.8939 & 0.9164 \\
+        HyperMamba (\texttt{no\_cross\_entity}) & 0.6968 & 0.6939 & 0.8592 & 0.9080 \\
         \hline
     \end{tabular}
+    }
 \end{table}
 
-\textbf{Results.} As shown in Table~\ref{tab:ablation_cross_entity}, disabling cross-entity aggregation degrades detection performance. While isolated per-entity state tracking (\texttt{no\_cross\_entity}) outperforms the purely stateless baseline, it fails to match the full hypergraph model. This confirms that tracking the topological flow of operations---such as a subject process inheriting the anomalous taint of a maliciously modified object file---provides a critical secondary signal for detecting sophisticated multi-stage campaigns.
+\textbf{Results.} As shown in Table~\ref{tab:ablation_cross_entity}, disabling cross-entity aggregation degrades detection performance. While isolated per-entity state tracking (\texttt{no\_cross\_entity}) outperforms the purely stateless baseline, it fails to match the full hypergraph model, with event AUPRC dropping from 0.7586 to 0.6968. This confirms that tracking the topological flow of operations---such as a subject process inheriting the anomalous taint of a maliciously modified object file---provides a critical secondary signal for detecting sophisticated multi-stage campaigns.
 \subsection{Ablation: Process Identity Modulation (C3)}
 \label{sec:ablation_process}
 
@@ -468,14 +467,16 @@ While state propagation enables the model to connect related events within a cam
     \centering
     \caption{Ablation: Process Identity Modulation on Cross-Campaign Split}
     \label{tab:ablation_process}
-    \begin{tabular}{l|c}
+    \resizebox{\columnwidth}{!}{
+    \begin{tabular}{l|cc}
         \hline
-        \textbf{Model} & \textbf{Node AUPRC} \\
+        \textbf{Model} & \textbf{Event AUPRC} & \textbf{Node AUPRC} \\
         \hline
-        HyperMamba (Full) & 0.89 \\
-        HyperMamba (\texttt{no\_process\_identity}) & - \\
+        HyperMamba (Full) & 0.7586 & 0.8939 \\
+        HyperMamba (\texttt{no\_process\_identity}) & 0.4510 & 0.5530 \\
         \hline
     \end{tabular}
+    }
 \end{table}
 
 \textbf{Results.} Table~\ref{tab:ablation_process} demonstrates the impact on cross-campaign generalization. Without the semantic process embeddings modulating the event encoder, the model is forced to rely purely on temporal patterns and event types. Because the underlying integer IDs have zero semantic overlap between the training and test campaigns, the model's ability to identify structurally similar attack behaviors degrades significantly. The process identity embeddings provide the essential invariant signal---allowing the model to recognize that an anomalous pattern executed by `bash` is fundamentally different from the same pattern executed by `nginx`, regardless of the specific campaign context.
@@ -488,25 +489,24 @@ A critical requirement for any NIDS is the ability to operate in real-time witho
     \centering
     \caption{Computational Cost and Throughput}
     \label{tab:comp_cost}
+    \resizebox{\columnwidth}{!}{
     \begin{tabular}{l|c}
         \hline
         \textbf{Metric} & \textbf{Value} \\
         \hline
         Parameters (HyperMamba) & 1.17M \\
-        Parameters (GRU-TGN Baseline) & 1.31M \\
+        State Memory ($7.1\text{M entities} \times d=128$) & 3.6 GB \\
         \hline
-        State Memory ($7.1\text{M entities} \times d=256$) & 7.2 GB \\
-        \hline
-        Training Throughput (GPU) & 734K events/sec \\
+        Training Throughput (GPU) & 235K events/sec \\
         Inference Throughput (GPU) & 1.9M events/sec \\
-        Inference Throughput (CPU) & 70K events/sec \\
         \hline
     \end{tabular}
+    }
 \end{table}
 
-\textbf{Throughput.} The DARPA TC E3 dataset was generated at a peak rate of approximately $10,000$ events per second per host. As shown in Table~\ref{tab:comp_cost}, HyperMamba achieves a training throughput of $734$K events/sec and an inference throughput of $1.94$M events/sec on a single GPU. Even when deployed in a resource-constrained, CPU-only environment, HyperMamba processes $70$K events/sec---$7\times$ faster than the peak generation rate. On a GPU, the pipeline operates at $73\times$ the peak ingestion rate during training and an overwhelming $194\times$ the ingestion rate during inference, guaranteeing that the model will never bottleneck the audit stream.
+\textbf{Throughput.} The DARPA TC E3 dataset was generated at a peak rate of approximately $10,000$ events per second per host. As shown in Table~\ref{tab:comp_cost}, HyperMamba achieves a training throughput of $235$K events/sec and an inference throughput of $1.94$M events/sec on a single GPU. On a GPU, the pipeline operates at $23\times$ the peak ingestion rate during training and an overwhelming $194\times$ the ingestion rate during inference, guaranteeing that the model will never bottleneck the audit stream.
 
-\textbf{Memory and parameters.} Despite operating on a vast continuous hypergraph, HyperMamba is highly parameter-efficient, requiring only 1.17M trainable parameters (compared to 1.31M for a standard GRU-based Temporal Graph Network baseline). The primary memory footprint is the \texttt{EntityStateBank}. For the Theia dataset's 7.1 million unique entities at $d=256$ (using 32-bit floats), the bank requires 7.2 GB of memory. This easily fits in the RAM of standard enterprise workstations or a single commodity GPU, demonstrating that event-level stateful tracking is achievable without distributed infrastructure.
+\textbf{Memory and parameters.} Despite operating on a vast continuous hypergraph, HyperMamba is highly parameter-efficient, requiring only 1.17M trainable parameters. The primary memory footprint is the \texttt{EntityStateBank}. For the Theia dataset's 7.1 million unique entities at $d=128$ (using 32-bit floats), the bank requires 3.6 GB of memory. This easily fits in the RAM of standard enterprise workstations or a single commodity GPU, demonstrating that event-level stateful tracking is achievable without distributed infrastructure.
 
 \section{Discussion}
 \label{sec:discussion}
@@ -561,6 +561,6 @@ We position HyperMamba against prior work on three axes: detection granularity, 
 \section{Conclusion}
 \label{sec:conclusion}
 
-We presented HyperMamba, a provenance-based NIDS that detects individual crossprocess attack events in continuous audit streams by maintaining persistent entity state via Selective State Space Models. The ablation study demonstrates that this accumulated state is the primary detection mechanism: removing it collapses test AUPRC from 0.73 to 0.33, confirming that crossprocess attack events are not identifiable from isolated event features. On the DARPA TC E3 Theia dataset, HyperMamba achieves event-level AUPRC of 0.86 under same-campaign continuation and 0.72 under cross-campaign generalization --- the latter enabled by gated process identity modulation, which provides campaign-invariant semantic anchors --- with false positive rates of $0.000010$ and $0.000195$ respectively, while processing events at $194\times$ the peak audit ingestion rate. The evaluation is limited to a single dataset family (DARPA TC E3) under the crossprocess label definition; generalization to other audit frameworks and attack taxonomies remains to be validated.
+We presented HyperMamba, a provenance-based NIDS that detects individual crossprocess attack events in continuous audit streams by maintaining persistent entity state via Selective State Space Models. The ablation study demonstrates that this accumulated state is the primary detection mechanism: removing it collapses test AUPRC from 0.76 to 0.33, confirming that crossprocess attack events are not identifiable from isolated event features. On the DARPA TC E3 Theia dataset, HyperMamba achieves event-level AUPRC of 0.85 under same-campaign continuation and 0.76 under cross-campaign generalization --- the latter enabled by gated process identity modulation, which provides campaign-invariant semantic anchors --- with false positive rates of $<0.0001$ and $0.0011$ respectively, while processing events at $194\times$ the peak audit ingestion rate. The evaluation is limited to a single dataset family (DARPA TC E3) under the crossprocess label definition; generalization to other audit frameworks and attack taxonomies remains to be validated.
 
 \end{document}

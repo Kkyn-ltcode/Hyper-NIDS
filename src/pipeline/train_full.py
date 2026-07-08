@@ -59,6 +59,12 @@ SHARD_CONFIG = {
                   "val": [8, 9, 20, 21], "test": [10, 22, 23, 24]},
         "cross": {"train": list(range(9)), "val": [9, 10],
                   "test": list(range(12, 25))},
+        # KAIROS/baseline-compatible split: matches the train/val/test boundaries
+        # used in KAIROS Table 12 (train=Apr 3-5, val=Apr 9, test=Apr 10-12).
+        # Use with --label_type broad for direct comparison against published
+        # baseline results that evaluate ALL attack nodes (not crossprocess+).
+        "kairos": {"train": list(range(0, 9)), "val": [9, 10],
+                   "test": list(range(11, 20))},
     },
     "trace": {
         "small": {"train": list(range(5)), "val": [5], "test": [6]},
