@@ -444,8 +444,10 @@ def main():
     
     # Ablation: unified flag (preferred for Experiment 2)
     parser.add_argument("--ablation", type=str, default=None,
-                        choices=["full", "no_cross_entity", "no_state", "no_process", "event_only"],
-                        help="Ablation variant: full (default), no_cross_entity, no_state, no_process, event_only (both state+cross disabled)")
+                        choices=["full", "no_cross_entity", "no_state", "no_process",
+                                 "no_state_no_process", "event_only"],
+                        help="Ablation variant: full (default), no_cross_entity, no_state, "
+                             "no_process, no_state_no_process, event_only")
     # Legacy boolean flags (kept for backward compatibility)
     parser.add_argument("--no_state", action="store_true", help="Ablation: Disable entity state bank (event features only)")
     parser.add_argument("--no_cross_entity", action="store_true", help="Ablation: Disable cross-entity propagation (self-state only)")
@@ -496,6 +498,14 @@ def main():
             args.no_cross_entity = True
             args.no_state = True
             args.no_process = False
+        elif ablation_mode == "no_state_no_process":
+            # Combined ablation: both state AND process identity removed.
+            # Isolates contribution of event type + continuous features alone.
+            # If cross-campaign no_state (0.72) was propped up by process
+            # identity, this should show a much larger collapse.
+            args.no_cross_entity = False
+            args.no_state = True
+            args.no_process = True
         else:  # "full"
             args.no_cross_entity = False
             args.no_state = False

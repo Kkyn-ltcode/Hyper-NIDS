@@ -149,7 +149,7 @@ HyperMamba processes audit events in strict chronological order as a continuous 
 \subsection{Overview}
 \label{sec:overview}
 
-Let $e_t$ denote the audit event arriving at discrete step $t$, with participating entities $V_{e_t} \subseteq \mathcal{V}$, where $|V_{e_t}| \in \{2, 3\}$. We denote the three entity slots as $v_{\text{subj}}$ (subject process), $v_{\text{obj}}$ (primary object), and $v_{\text{obj2}}$ (secondary object, absent for size-2 events). Each entity $v \in \mathcal{V}$ maintains a persistent state vector $\mathbf{s}_v \in \mathbb{R}^d$ in the \texttt{EntityStateBank}, where $d = 128$ throughout this paper.
+Let $e_t$ denote the audit event arriving at discrete step $t$, with participating entities $V_{e_t} \subseteq \mathcal{V}$, where $|V_{e_t}| \in \{2, 3\}$. We denote the three entity slots as $v_{\text{subj}}$ (subject process), $v_{\text{obj}}$ (primary object), and $v_{\text{obj2}}$ (secondary object, absent for size-2 events). Each entity $v \in \mathcal{V}$ maintains a persistent state vector $\mathbf{s}_v \in \mathbb{R}^d$ in the \texttt{EntityStateBank}, where $d = 256$ throughout this paper.
 
 HyperMamba processes $e_t$ in five stages:
 
@@ -206,7 +206,7 @@ where $\|$ denotes concatenation. The event type (modulated by process identity)
 
 The \texttt{EntityStateBank} stores two tensors as registered buffers (not learnable parameters): a state matrix $\mathbf{S} \in \mathbb{R}^{|\mathcal{V}| \times d}$, where row $\mathbf{S}[v]$ holds the current state $\mathbf{s}_v$ of entity $v$, and a last-seen timestamp vector $\boldsymbol{\tau} \in \mathbb{R}^{|\mathcal{V}|}$, where $\boldsymbol{\tau}[v]$ records the most recent time entity $v$ participated in any event. Both tensors are initialized to zero (states) and $-1$ (timestamps, indicating unseen) at the start of each training epoch and persist across event chunks within the epoch. Resetting at epoch boundaries prevents the model from overfitting to the specific state trajectory accumulated in earlier epochs, while intra-epoch persistence provides the long-range context required by the thesis.
 
-\textbf{Memory bound.} The bank requires $|\mathcal{V}| \times (d + 1)$ floating-point values. For the Theia dataset ($|\mathcal{V}| \approx 7.1 \times 10^6$, $d = 128$), this amounts to 3.6 GB in \texttt{float32}, fitting within a single GPU.
+\textbf{Memory bound.} The bank requires $|\mathcal{V}| \times (d + 1)$ floating-point values. For the Theia dataset ($|\mathcal{V}| \approx 7.1 \times 10^6$, $d = 256$), this amounts to 6.8 GB in \texttt{float32}, fitting within a single commodity GPU.
 
 \textbf{State retrieval and elapsed time.} For an incoming event $e_t$ with entity slots $(v_{\text{subj}}, v_{\text{obj}}, v_{\text{obj2}})$, the model gathers a state tensor $\mathbf{S}_e \in \mathbb{R}^{3 \times d}$ by indexing into $\mathbf{S}$. A validity mask $\mathbf{m} \in \{0, 1\}^3$ is set to 0 for absent entities: size-2 hyperedges store $v_{\text{obj2}} = -1$, which is clamped to index 0 during retrieval. The mask ensures that the spuriously read state at index 0 contributes zero to both the aggregation computation and the write-back path, preventing corruption of entity 0's state.
 
@@ -456,7 +456,7 @@ A critical requirement for any NIDS is the ability to operate in real-time witho
         \textbf{Metric} & \textbf{Value} \\
         \hline
         Parameters (HyperMamba) & 1.17M \\
-        State Memory ($7.1\text{M entities} \times d=128$) & 3.6 GB \\
+        State Memory ($7.1\text{M entities} \times d=256$) & 6.8 GB \\
         \hline
         Training Throughput (GPU) & 235K events/sec \\
         Inference Throughput (GPU) & 1.9M events/sec \\
@@ -467,7 +467,7 @@ A critical requirement for any NIDS is the ability to operate in real-time witho
 
 \textbf{Throughput.} The DARPA TC E3 dataset was generated at a peak rate of approximately $10,000$ events per second per host. As shown in Table~\ref{tab:comp_cost}, HyperMamba achieves a training throughput of $235$K events/sec and an inference throughput of $1.94$M events/sec on a single GPU. On a GPU, the pipeline operates at $23\times$ the peak ingestion rate during training and an overwhelming $194\times$ the ingestion rate during inference, guaranteeing that the model will never bottleneck the audit stream.
 
-\textbf{Memory and parameters.} Despite operating on a vast continuous hypergraph, HyperMamba is highly parameter-efficient, requiring only 1.17M trainable parameters. The primary memory footprint is the \texttt{EntityStateBank}. For the Theia dataset's 7.1 million unique entities at $d=128$ (using 32-bit floats), the bank requires 3.6 GB of memory. This easily fits in the RAM of standard enterprise workstations or a single commodity GPU, demonstrating that event-level stateful tracking is achievable without distributed infrastructure.
+\textbf{Memory and parameters.} Despite operating on a vast continuous hypergraph, HyperMamba is highly parameter-efficient, requiring only 1.17M trainable parameters. The primary memory footprint is the \texttt{EntityStateBank}. For the Theia dataset's 7.1 million unique entities at $d=256$ (using 32-bit floats), the bank requires 6.8 GB of memory. This fits within the memory of a single commodity GPU (e.g., NVIDIA A100 40GB), demonstrating that event-level stateful tracking is achievable without distributed infrastructure.
 
 \section{Discussion}
 \label{sec:discussion}
@@ -478,7 +478,7 @@ We state the limitations of this work as factual constraints of the current eval
 
 \textbf{Label coverage.} The crossprocess label captures multi-stage child-process attack chains but does not cover all attack types. Data-only attacks that never spawn new processes (e.g., exploits that corrupt in-memory data structures without executing new binaries) fall outside this label definition and are not addressed by the current evaluation.
 
-\textbf{Entity churn and LRU eviction.} The \texttt{EntityStateBank} architecture supports LRU eviction to bound memory under sustained entity churn. However, this eviction mechanism is not stress-tested in this evaluation. The Theia dataset's 7.1 million unique entities fit comfortably in the bank at $d=256$; deployments with significantly larger entity populations may require eviction, and the impact of eviction on detection performance is unknown.
+\textbf{Entity population scaling.} The \texttt{EntityStateBank} allocates a fixed-size state vector for every unique entity observed during preprocessing. For the Theia dataset's 7.1 million unique entities at $d=256$, this requires 6.8~GB. Deployments with entity populations substantially larger than the Theia dataset may require approximation strategies such as entity clustering or state compression; the impact on detection performance is not evaluated in this work.
 
 \textbf{Adversarial robustness.} The primary evaluation assumes a black-box attacker (Section~\ref{sec:attacker_model}). A white-box adversary who understands the SSM state propagation mechanism could potentially craft evasion strategies --- for example, injecting sequences of benign events to dilute a compromised entity's accumulated state before executing attack operations. The robustness of HyperMamba against such targeted state-dilution attacks is not evaluated.
 
