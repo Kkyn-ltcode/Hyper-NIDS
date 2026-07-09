@@ -444,8 +444,8 @@ def main():
     
     # Ablation: unified flag (preferred for Experiment 2)
     parser.add_argument("--ablation", type=str, default=None,
-                        choices=["full", "no_cross_entity", "no_state"],
-                        help="Ablation variant: full (default), no_cross_entity, no_state")
+                        choices=["full", "no_cross_entity", "no_state", "no_process", "event_only"],
+                        help="Ablation variant: full (default), no_cross_entity, no_state, no_process, event_only (both state+cross disabled)")
     # Legacy boolean flags (kept for backward compatibility)
     parser.add_argument("--no_state", action="store_true", help="Ablation: Disable entity state bank (event features only)")
     parser.add_argument("--no_cross_entity", action="store_true", help="Ablation: Disable cross-entity propagation (self-state only)")
@@ -474,21 +474,40 @@ def main():
         if ablation_mode == "no_cross_entity":
             args.no_cross_entity = True
             args.no_state = False
+            args.no_process = False
         elif ablation_mode == "no_state":
             # no_state ablation: model uses use_state=False, which feeds zeros
             # to the classifier instead of accumulated entity state. This is
             # the clean ablation: the model CANNOT use state, period.
             args.no_cross_entity = False
             args.no_state = True  # Model sees use_state=False
+            args.no_process = False
+        elif ablation_mode == "no_process":
+            # no_process ablation: process identity embeddings zeroed out.
+            # Tests whether cross-campaign generalization relies on process
+            # name semantics or purely on temporal/structural patterns.
+            args.no_cross_entity = False
+            args.no_state = False
+            args.no_process = True
+        elif ablation_mode == "event_only":
+            # Combined ablation: both state AND cross-entity disabled.
+            # Pure event-feature classification baseline. Shows total
+            # contribution of state + hyperedge aggregation together.
+            args.no_cross_entity = True
+            args.no_state = True
+            args.no_process = False
         else:  # "full"
             args.no_cross_entity = False
             args.no_state = False
+            args.no_process = False
     else:
         # Derive ablation_mode from legacy flags
         if args.no_state:
             ablation_mode = "no_state"
         elif args.no_cross_entity:
             ablation_mode = "no_cross_entity"
+        elif getattr(args, 'no_process', False):
+            ablation_mode = "no_process"
         else:
             ablation_mode = "full"
 
@@ -584,7 +603,8 @@ def main():
         num_process_names=train_ds.num_process_names,
         d_model=args.d_model,
         use_state=not args.no_state,
-        cross_entity=not args.no_cross_entity
+        cross_entity=not args.no_cross_entity,
+        use_process_identity=not getattr(args, 'no_process', False)
     ).to(device)
 
     if args.finetune_from:

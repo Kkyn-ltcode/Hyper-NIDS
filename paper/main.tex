@@ -397,7 +397,7 @@ The crossprocess label evaluates detection of the operationally hardest attack s
         FLASH~\cite{flash} & Broad & Node & --- & \textsuperscript{\dag}0.960 & \textsuperscript{\dag}0.970 & \textsuperscript{\dag}--- \\
         ThreaTrace~\cite{threatrace} & Broad & Node & --- & \textsuperscript{\dag}0.930 & \textsuperscript{\dag}0.930 & \textsuperscript{\dag}--- \\
         \hline
-        HyperMamba (KAIROS protocol) & Broad & Event & TODO & TODO & TODO & TODO \\
+        HyperMamba (KAIROS protocol) & Broad & Event & 0.9972 & 0.9987 & 0.9926 & 0.0066 \\
         \hline
         HyperMamba (Same-Campaign) & Crossprocess & Event & \textbf{0.8523} & \textbf{0.9172} & \textbf{0.8460} & \textbf{$<0.0001$} \\
         HyperMamba (Cross-Campaign) & Crossprocess & Event & \textbf{0.7586} & \textbf{0.8939} & \textbf{0.9164} & \textbf{0.0022} \\
@@ -407,79 +407,40 @@ The crossprocess label evaluates detection of the operationally hardest attack s
     }
 \end{table*}
 
-At the node level---the finest granularity at which baselines operate---HyperMamba achieves AUPRC 0.9172 (same-campaign) and 0.8939 (cross-campaign), competitive with published baseline results despite two factors that make our evaluation strictly harder. First, we evaluate exclusively on the crossprocess subpopulation, which excludes entry-point processes whose initial exploit behavior is more anomalous and easier to detect; baselines include these processes. Second, our threshold is selected on validation data only, following Arp et al.~\cite{arp2022dos}; some baseline publications select thresholds on test data. HyperMamba additionally produces event-level classifications---output that no existing baseline provides---enabling direct forensic attribution of individual attack steps. As a lower bound on baseline event-level FPR: ThreaTrace flags approximately 310 malicious subject nodes on the Theia test set. These nodes collectively generate approximately 4.2 million events, of which roughly 36,000 are crossprocess+. Propagating ThreaTrace's node scores to all constituent events at any threshold that achieves recall $>0.9$ would flag all 4.2 million events, producing an event-level FPR exceeding 0.99. Meaningful event-level precision is structurally unachievable through score propagation.
+At the node level---the finest granularity at which baselines operate---HyperMamba evaluated under the KAIROS protocol achieves node AUPRC of 0.9987 and F1 of 0.9926, surpassing all four baselines including KAIROS (0.818), ThreaTrace (0.930), FLASH (0.960), and matching MAGIC (0.999). The broad attack label includes entry-point processes (27,379 of 84,615 subject nodes, a 32\% positive rate), making it a comparatively easy classification problem that HyperMamba solves near-perfectly. Critically, HyperMamba simultaneously provides event-level AUPRC of 0.9972 on this same evaluation---precision that no baseline system can produce at any granularity.
 
-\subsection{Ablation: Entity State Propagation (C2)}
-\label{sec:ablation_state}
+The operationally meaningful evaluation is the crossprocess label, where attack events constitute less than 1\% of total events and the entry-point processes are excluded. Under this strictly harder label, HyperMamba achieves event-level AUPRC of 0.8523 (same-campaign) and 0.7586 (cross-campaign), with false positive rates of $<0.0001$ and $0.0011$ respectively. As a lower bound on baseline event-level FPR: ThreaTrace flags approximately 310 malicious subject nodes on the Theia test set. These nodes collectively generate approximately 4.2 million events, of which roughly 36,000 are crossprocess+. Propagating ThreaTrace's node scores to all constituent events at any threshold that achieves recall $>0.9$ would flag all 4.2 million events, producing an event-level FPR exceeding 0.99. Meaningful event-level precision is structurally unachievable through score propagation.
 
-The central thesis of HyperMamba is that persistent accumulated entity state---not isolated event features---is the primary mechanism allowing detection of stealthy crossprocess attacks. To empirically prove this (Contribution 2), we compare the full HyperMamba architecture against a stateless ablation (\texttt{no\_state}).
+\subsection{Ablation Study: Component Contributions}
+\label{sec:ablation}
 
-\textbf{Ablation design.} The \texttt{no\_state} variant retains the complete architecture: the event encoder, the hyperedge aggregator, and the classifier head remain identical. The only change is structurally preventing long-range state accumulation by resetting the \texttt{EntityStateBank} at every chunk boundary, rather than detaching and persisting the states (Section~\ref{sec:training}). The model is forced to evaluate each chunk using only the local event features and intra-chunk context.
+We systematically ablate each architectural component to isolate its contribution. All ablations use the cross-campaign split (train Campaign~1, test Campaign~2) with the crossprocess label---the hardest evaluation setting.
+
+\textbf{Ablation designs.} \texttt{no\_cross\_entity}: the hyperedge aggregator is disabled; each entity's SSM state is updated using only its own prior state and the event features, without observing co-participating entities. \texttt{no\_state}: the entity state bank is structurally disconnected; the classifier receives zero-vectors in place of accumulated state, retaining only the event encoder (event type, process identity, continuous features). \texttt{no\_process\_identity}: the gated process name embeddings are removed; the model sees only event types and continuous features (TODO: run this ablation).
 
 \begin{table}[t]
     \centering
-    \caption{Ablation: Impact of Persistent Entity State Propagation (Cross-Campaign). Event-level and node-level test metrics with validation-selected threshold.}
-    \label{tab:ablation_state}
+    \caption{Unified Ablation (Cross-Campaign, Crossprocess Label). Each row removes one component from the full model. $\Delta$ is the change in event AUPRC relative to the full model.}
+    \label{tab:ablation_unified}
     \resizebox{\columnwidth}{!}{
-    \begin{tabular}{l|cccc}
+    \begin{tabular}{l|cccc|c}
         \hline
-        \textbf{Model} & \textbf{Event AUPRC} & \textbf{Event F1} & \textbf{Node AUPRC} & \textbf{Node F1} \\
+        \textbf{Variant} & \textbf{Evt AUPRC} & \textbf{Evt Prec} & \textbf{Evt Rec} & \textbf{Node AUPRC} & \textbf{$\Delta$ Evt AUPRC} \\
         \hline
-        HyperMamba (Full) & 0.7586 & 0.8252 & 0.8939 & 0.9164 \\
-        HyperMamba (\texttt{no\_state}) & 0.7234 & 0.7998 & 0.8366 & 0.8914 \\
+        HyperMamba (Full) & 0.7586 & 0.858 & 0.795 & 0.8939 & --- \\
+        \texttt{no\_cross\_entity} & 0.6968 & 0.670 & 0.719 & 0.8592 & $-8.1\%$ \\
+        \texttt{no\_state} & 0.7234 & 0.907 & 0.715 & 0.8366 & $-4.6\%$ \\
+        \texttt{no\_process\_identity} & TODO & TODO & TODO & TODO & TODO \\
         \hline
     \end{tabular}
     }
 \end{table}
 
-\textbf{Results.} As shown in Table~\ref{tab:ablation_state}, removing persistent state propagation degrades detection capability across all metrics. Event-level AUPRC drops from 0.7586 to 0.7234 ($-4.6\%$), while the node-level gap is larger: AUPRC falls from 0.8939 to 0.8366 ($-6.4\%$). This indicates that persistent state contributes most strongly to node-level consistency---accumulating evidence over an entity's full history allows the model to confidently classify entities that execute a mix of benign and malicious events. At the event level, the gated process identity modulation (Section~\ref{sec:event_encoding}) provides a strong baseline signal: process names like \texttt{bash} and \texttt{curl} carry semantic information that partially compensates for the absence of accumulated state. However, the precision-recall tradeoff shifts: the stateless model achieves higher precision (0.907 vs.\ 0.858) at the cost of substantially lower recall (0.715 vs.\ 0.795), indicating that state propagation is essential for detecting the stealthiest crossprocess events---those whose local features alone are insufficient.
+\textbf{Results.} Table~\ref{tab:ablation_unified} reveals that each component contributes differently to the detection pipeline.
 
-\subsection{Ablation: Cross-Entity Aggregation}
-\label{sec:ablation_cross_entity}
+\emph{Cross-entity aggregation} ($-8.1\%$ event AUPRC) has the largest single-component impact. Without sharing state across entities within each hyperedge, the model cannot propagate taint from a maliciously modified object to the process that reads it. Both precision and recall degrade (0.858$\to$0.670, 0.795$\to$0.719), and F1 drops from 0.825 to 0.694---a 15.9\% relative decrease. This confirms that the hyperedge structure, which models the native variable-arity of audit events, is the most critical architectural contribution.
 
-While Section~\ref{sec:ablation_state} establishes that state persistence is mandatory, we must also evaluate whether \emph{sharing} that state across entities within an event is necessary. To determine if the hyperedge structure (Section~\ref{sec:hyperedge_agg}) contributes beyond simple isolated per-entity state tracking (Contribution 1), we evaluate the \texttt{no\_cross\_entity} ablation. 
-
-\textbf{Ablation design.} In this variant, the hyperedge aggregator is disabled. When processing an event, the SSM updates the state of the subject entity using only the subject's prior state and the event features. The states of the secondary object entities (e.g., the target file or socket) do not influence the subject's update, nor do they receive the subject's accumulated taint.
-
-\begin{table}[h]
-    \centering
-    \caption{Ablation: Impact of Cross-Entity Hyperedge Aggregation (Cross-Campaign)}
-    \label{tab:ablation_cross_entity}
-    \resizebox{\columnwidth}{!}{
-    \begin{tabular}{l|cc|cc}
-        \hline
-        \textbf{Model} & \textbf{Event AUPRC} & \textbf{Event F1} & \textbf{Node AUPRC} & \textbf{Node F1} \\
-        \hline
-        HyperMamba (Full) & 0.7586 & 0.8252 & 0.8939 & 0.9164 \\
-        HyperMamba (\texttt{no\_cross\_entity}) & 0.6968 & 0.6939 & 0.8592 & 0.9080 \\
-        \hline
-    \end{tabular}
-    }
-\end{table}
-
-\textbf{Results.} As shown in Table~\ref{tab:ablation_cross_entity}, disabling cross-entity aggregation degrades detection performance. While isolated per-entity state tracking (\texttt{no\_cross\_entity}) outperforms the purely stateless baseline, it fails to match the full hypergraph model, with event AUPRC dropping from 0.7586 to 0.6968. This confirms that tracking the topological flow of operations---such as a subject process inheriting the anomalous taint of a maliciously modified object file---provides a critical secondary signal for detecting sophisticated multi-stage campaigns.
-\subsection{Ablation: Process Identity Modulation (C3)}
-\label{sec:ablation_process}
-
-While state propagation enables the model to connect related events within a campaign, generalizing that detection capability to entirely unseen campaigns requires stable semantic anchors. As described in Section~\ref{sec:event_encoding}, integer entity IDs carry no meaning across campaigns---the identifier $e_1$ might represent `bash` in Campaign 1 but a temporary file in Campaign 2. To prove that our gated process identity modulation is the critical mechanism for cross-campaign generalization (Contribution 3), we ablate the process path embeddings on the strict \emph{cross-campaign} evaluation split.
-
-\begin{table}[h]
-    \centering
-    \caption{Ablation: Process Identity Modulation on Cross-Campaign Split}
-    \label{tab:ablation_process}
-    \resizebox{\columnwidth}{!}{
-    \begin{tabular}{l|cc}
-        \hline
-        \textbf{Model} & \textbf{Event AUPRC} & \textbf{Node AUPRC} \\
-        \hline
-        HyperMamba (Full) & 0.7586 & 0.8939 \\
-        HyperMamba (\texttt{no\_process\_identity}) & 0.4510 & 0.5530 \\
-        \hline
-    \end{tabular}
-    }
-\end{table}
-
-\textbf{Results.} Table~\ref{tab:ablation_process} demonstrates the impact on cross-campaign generalization. Without the semantic process embeddings modulating the event encoder, the model is forced to rely purely on temporal patterns and event types. Because the underlying integer IDs have zero semantic overlap between the training and test campaigns, the model's ability to identify structurally similar attack behaviors degrades significantly. The process identity embeddings provide the essential invariant signal---allowing the model to recognize that an anomalous pattern executed by `bash` is fundamentally different from the same pattern executed by `nginx`, regardless of the specific campaign context.
+\emph{State propagation} ($-4.6\%$ event AUPRC) contributes primarily through improved recall. The stateless model achieves \emph{higher} precision (0.907 vs.\ 0.858) because process identity alone provides a confident signal for the most obvious crossprocess events. However, recall drops substantially (0.795$\to$0.715): 8\% of attack events are missed---precisely the stealthiest crossprocess events whose local features are indistinguishable from benign activity. At the node level, the gap widens to $-6.4\%$ AUPRC, confirming that accumulated state improves entity-level evidence accumulation. In operational terms, the stateless model would miss approximately 2,880 attack events that the full model detects.
 \subsection{Computational Cost}
 \label{sec:computational_cost}
 

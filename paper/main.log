@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.29 (TeX Live 2026) (preloaded format=pdflatex 2026.3.1)  7 JUL 2026 15:33
+This is pdfTeX, Version 3.141592653-2.6-1.40.29 (TeX Live 2026) (preloaded format=pdflatex 2026.3.1)  8 JUL 2026 13:57
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -461,6 +461,10 @@ usr/local/texlive/2026basic/texmf-dist/fonts/enc/dvips/base/8r.enc}
 
 ]
 
+LaTeX Warning: Reference `sec:ablation_process' on page 2 undefined on input li
+ne 40.
+
+
 LaTeX Warning: Citation `kairos' on page 2 undefined on input line 69.
 
 
@@ -510,10 +514,13 @@ Underfull \hbox (badness 6380) in paragraph at lines 176--177
 LaTeX Warning: Reference `sec:setup' on page 4 undefined on input line 178.
 
 [4]
+
+LaTeX Warning: Reference `sec:ablation_process' on page 5 undefined on input li
+ne 185.
+
 LaTeX Font Info:    Trying to load font information for OML+cmtt on input line 
 192.
 LaTeX Font Info:    No file OMLcmtt.fd. on input line 192.
-
 
 LaTeX Font Warning: Font shape `OML/cmtt/m/n' undefined
 (Font)              using `OML/cmm/m/it' instead
@@ -576,77 +583,79 @@ LaTeX Warning: Citation `threatrace' on page 8 undefined on input line 373.
 
 LaTeX Warning: Citation `arp2022dos' on page 8 undefined on input line 377.
 
-
-LaTeX Warning: Citation `arp2022dos' on page 8 undefined on input line 384.
-
 [8]
 
-LaTeX Warning: Citation `kairos' on page 9 undefined on input line 406.
+LaTeX Warning: Citation `kairos' on page 9 undefined on input line 407.
 
 
-LaTeX Warning: Citation `magic' on page 9 undefined on input line 406.
+LaTeX Warning: Citation `magic' on page 9 undefined on input line 407.
 
 
-LaTeX Warning: Citation `flash' on page 9 undefined on input line 406.
+LaTeX Warning: Citation `flash' on page 9 undefined on input line 407.
 
 
-LaTeX Warning: Citation `threatrace' on page 9 undefined on input line 406.
+LaTeX Warning: Citation `threatrace' on page 9 undefined on input line 407.
+
+
+LaTeX Warning: Citation `arp2022dos' on page 9 undefined on input line 410.
 
 
 LaTeX Warning: Reference `sec:hyperedge_agg' on page 9 undefined on input line 
-450.
+440.
 
 
 LaTeX Warning: `h' float specifier changed to `ht'.
 
 
-Underfull \hbox (badness 1406) in paragraph at lines 471--471
+Underfull \hbox (badness 1406) in paragraph at lines 461--461
 []\OT1/ptm/b/n/12 (+20) Ablation: Pro-cess Iden-tity Mod-u-la-tion
  []
 
-[9]
-Underfull \hbox (badness 1400) in paragraph at lines 492--493
-[]\OT1/ptm/b/n/10 (+20) Results. \OT1/ptm/m/n/10 (+20) Ta-ble [][]4[][] demon-s
-trates the im-pact on cross-
- []
 
+LaTeX Warning: `h' float specifier changed to `ht'.
+
+
+LaTeX Warning: Reference `tab:ablation_process' on page 9 undefined on input li
+ne 482.
+
+[9]
 
 LaTeX Warning: `h' float specifier changed to `ht'.
 
 [10]
-Overfull \hbox (15.28703pt too wide) in paragraph at lines 547--559
+Overfull \hbox (15.28703pt too wide) in paragraph at lines 537--549
  [][] 
  []
 
 
-LaTeX Warning: Citation `kairos' on page 11 undefined on input line 561.
+LaTeX Warning: Citation `kairos' on page 11 undefined on input line 551.
 
 
-LaTeX Warning: Citation `magic' on page 11 undefined on input line 561.
+LaTeX Warning: Citation `magic' on page 11 undefined on input line 551.
 
 
-LaTeX Warning: Citation `flash' on page 11 undefined on input line 561.
+LaTeX Warning: Citation `flash' on page 11 undefined on input line 551.
 
 
-LaTeX Warning: Citation `threatrace' on page 11 undefined on input line 561.
+LaTeX Warning: Citation `threatrace' on page 11 undefined on input line 551.
 
 
-LaTeX Warning: Citation `loha' on page 11 undefined on input line 567.
+LaTeX Warning: Citation `loha' on page 11 undefined on input line 557.
 
 
-LaTeX Warning: Citation `hypergat' on page 11 undefined on input line 567.
+LaTeX Warning: Citation `hypergat' on page 11 undefined on input line 557.
 
 
-LaTeX Warning: Citation `hrnn' on page 11 undefined on input line 567.
+LaTeX Warning: Citation `hrnn' on page 11 undefined on input line 557.
 
 
-LaTeX Warning: Citation `mamba' on page 11 undefined on input line 569.
+LaTeX Warning: Citation `mamba' on page 11 undefined on input line 559.
 
 
-LaTeX Warning: Citation `s4' on page 11 undefined on input line 569.
+LaTeX Warning: Citation `s4' on page 11 undefined on input line 559.
 
 
-LaTeX Warning: Citation `s6' on page 11 undefined on input line 569.
+LaTeX Warning: Citation `s6' on page 11 undefined on input line 559.
 
 [11] [12
 
@@ -665,17 +674,23 @@ LaTeX Warning: There were undefined references.
 
 LaTeX Warning: Label(s) may have changed. Rerun to get cross-references right.
 
-Package rerunfilecheck Info: File `main.out' has not changed.
-(rerunfilecheck)             Checksum: 43F7285589B7AABCABC30FC3A7018CAA;4944.
+
+Package rerunfilecheck Warning: File `main.out' has changed.
+(rerunfilecheck)                Rerun to get outlines right
+(rerunfilecheck)                or use package `bookmark'.
+
+Package rerunfilecheck Info: Checksums for `main.out':
+(rerunfilecheck)             Before: 12F4FEBBCEAC1644A8217B683182C17B;4486
+(rerunfilecheck)             After:  43F7285589B7AABCABC30FC3A7018CAA;4944.
  ) 
 Here is how much of TeX's memory you used:
- 13059 strings out of 469006
- 201229 string characters out of 5454814
- 663204 words of memory out of 5000000
- 41186 multiletter control sequences out of 15000+600000
- 667645 words of font info for 292 fonts, out of 8000000 for 9000
+ 13105 strings out of 469006
+ 201752 string characters out of 5454814
+ 664449 words of memory out of 5000000
+ 41205 multiletter control sequences out of 15000+600000
+ 673683 words of font info for 315 fonts, out of 8000000 for 9000
  319 hyphenation exceptions out of 8191
- 90i,13n,93p,1733b,560s stack positions out of 10000i,1000n,20000p,200000b,200000s
+ 90i,13n,93p,1749b,560s stack positions out of 10000i,1000n,20000p,200000b,200000s
 </usr/local/texlive/2026basic/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx1
 0.pfb></usr/local/texlive/2026basic/texmf-dist/fonts/type1/public/amsfonts/cm/c
 mbx7.pfb></usr/local/texlive/2026basic/texmf-dist/fonts/type1/public/amsfonts/c
@@ -693,10 +708,10 @@ t/fonts/type1/public/amsfonts/cm/cmtt10.pfb></usr/local/texlive/2026basic/texmf
 sic/texmf-dist/fonts/type1/urw/times/utmb8a.pfb></usr/local/texlive/2026basic/t
 exmf-dist/fonts/type1/urw/times/utmr8a.pfb></usr/local/texlive/2026basic/texmf-
 dist/fonts/type1/urw/times/utmri8a.pfb>
-Output written on main.pdf (12 pages, 262937 bytes).
+Output written on main.pdf (12 pages, 262975 bytes).
 PDF statistics:
- 379 PDF objects out of 1000 (max. 8388607)
- 329 compressed objects within 4 object streams
- 91 named destinations out of 1000 (max. 500000)
- 52961 words of extra memory for PDF output out of 61914 (max. 10000000)
+ 367 PDF objects out of 1000 (max. 8388607)
+ 317 compressed objects within 4 object streams
+ 90 named destinations out of 1000 (max. 500000)
+ 66265 words of extra memory for PDF output out of 74296 (max. 10000000)
 

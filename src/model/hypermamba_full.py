@@ -174,11 +174,12 @@ class SelectiveSSMUpdater(nn.Module):
 
 class HyperMambaFull(nn.Module):
     def __init__(self, num_entities, n_cont_features, num_event_types, num_process_names, d_model=128,
-                 use_state=True, cross_entity=True):
+                 use_state=True, cross_entity=True, use_process_identity=True):
         super().__init__()
         self.d_model = d_model
         self.use_state = use_state
         self.cross_entity = cross_entity
+        self.use_process_identity = use_process_identity
         
         # Event Encoder
         self.event_emb = nn.Embedding(num_event_types, d_model)
@@ -267,11 +268,16 @@ class HyperMambaFull(nn.Module):
         # During training, randomly blind 30% of events to process identity
         # (replace with <unknown> idx 0), forcing the model to maintain a
         # working fallback from event-type and continuous features alone.
-        if self.training:
-            drop = torch.rand(process_ids.shape, device=device) < self.process_drop_rate
-            process_ids = process_ids.masked_fill(drop, 0)
-        p_emb = self.process_proj(self.process_emb(process_ids)) # (C, d_model)
-        gate = torch.sigmoid(self.process_gate)                  # scalar in (0, 1)
+        if self.use_process_identity:
+            if self.training:
+                drop = torch.rand(process_ids.shape, device=device) < self.process_drop_rate
+                process_ids = process_ids.masked_fill(drop, 0)
+            p_emb = self.process_proj(self.process_emb(process_ids)) # (C, d_model)
+            gate = torch.sigmoid(self.process_gate)                  # scalar in (0, 1)
+        else:
+            # Ablation: zero out process identity contribution entirely
+            p_emb = torch.zeros(C, self.d_model, device=device)
+            gate = 0.0
         
         c_emb = self.cont_proj(x_cont)                           # (C, d_model)
         # Gated additive residual: process identity modulates event semantics
