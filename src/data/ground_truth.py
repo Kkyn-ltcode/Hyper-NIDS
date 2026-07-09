@@ -155,8 +155,15 @@ def _build_children_map(subjects_df: pd.DataFrame) -> dict:
         return {}   # or raise a clear error
     children = {}
     mask = subjects_df["parent_uuid"].notna() & (subjects_df["parent_uuid"] != NIL_UUID)
-    for _, row in subjects_df[mask][["uuid", "parent_uuid"]].iterrows():
-        children.setdefault(row["parent_uuid"], []).append(row["uuid"])
+    
+    parent_uuids = subjects_df.loc[mask, "parent_uuid"].values
+    child_uuids = subjects_df.loc[mask, "uuid"].values
+    
+    for p, c in zip(parent_uuids, child_uuids):
+        if p not in children:
+            children[p] = []
+        children[p].append(c)
+        
     return children
 
 def _bfs_descendants(start_uuids: set, children_map: dict) -> set:
