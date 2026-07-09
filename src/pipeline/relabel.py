@@ -54,10 +54,18 @@ def main():
     total_xproc = 0
     total_events = 0
 
-    subjects_df = pd.read_parquet(DATA_ROOT / args.dataset / "subjects.parquet")
-    objects_df  = pd.read_parquet(DATA_ROOT / args.dataset / "objects.parquet")
-    print(f"  Global subjects: {len(subjects_df):,}")
-    print(f"  Global objects:  {len(objects_df):,}")
+    # Only load the columns needed for ground truth evaluation to save memory
+    import pyarrow.parquet as pq
+    sub_schema = pq.read_schema(DATA_ROOT / args.dataset / "subjects.parquet").names
+    obj_schema = pq.read_schema(DATA_ROOT / args.dataset / "objects.parquet").names
+
+    sub_cols = [c for c in ["uuid", "process_path", "cmd_line", "parent_uuid"] if c in sub_schema]
+    obj_cols = [c for c in ["uuid", "filename", "remote_address", "local_address"] if c in obj_schema]
+
+    subjects_df = pd.read_parquet(DATA_ROOT / args.dataset / "subjects.parquet", columns=sub_cols)
+    objects_df  = pd.read_parquet(DATA_ROOT / args.dataset / "objects.parquet", columns=obj_cols)
+    print(f"  Global subjects: {len(subjects_df):,} (loaded {len(sub_cols)} cols)")
+    print(f"  Global objects:  {len(objects_df):,} (loaded {len(obj_cols)} cols)")
 
     # Pre-compute attack UUID sets ONCE (not 3x per shard)
     from src.data.ground_truth import (
@@ -74,6 +82,10 @@ def main():
     print(f"    Attack objects:  {len(attack_obj_uuids):,}")
     print(f"    Child subjects:  {len(child_sub_uuids):,}")
     print(f"    Time: {time.time()-t_pre:.1f}s")
+
+    # Free the massive dataframes before we start processing shards
+    del subjects_df, objects_df
+    gc.collect()
 
     for fi, f in enumerate(shard_files):
         shard_name = f.stem
