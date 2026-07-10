@@ -415,7 +415,7 @@ def evaluate(model, loader, device, return_preds=False, threshold=None):
 def main():
     parser = argparse.ArgumentParser(
         description="Train HyperMamba Full (SSM-Driven Taint Propagation)")
-    parser.add_argument("--dataset", default="theia", choices=["theia", "trace"])
+    parser.add_argument("--dataset", default="theia", choices=["theia", "trace", "cadets", "trace-1"])
     parser.add_argument("--split", type=str, default="small",
                         help="Named split: small (same-campaign), full (mixed-campaign), cross (cross-campaign)")
     parser.add_argument("--label_type", type=str, default="crossprocess", choices=["broad", "crossprocess", "l1"])
