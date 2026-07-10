@@ -29,10 +29,34 @@ def build_process_vocab(data_root: str | Path, top_k: int = 50) -> dict:
     if not subj_path.exists():
         raise FileNotFoundError(f"subjects.parquet not found at {subj_path}")
     
-    subj = pd.read_parquet(subj_path, columns=["uuid", "process_path"])
+    # Read the schema first to see what columns we have
+    import pyarrow.parquet as pq
+    schema = pq.read_schema(subj_path).names
+    
+    cols_to_load = ["uuid"]
+    has_proc_path = "process_path" in schema
+    has_cmd_line = "cmd_line" in schema
+    
+    if has_proc_path: cols_to_load.append("process_path")
+    if has_cmd_line: cols_to_load.append("cmd_line")
+        
+    subj = pd.read_parquet(subj_path, columns=cols_to_load)
+    
+    # Extract effective process paths
+    effective_paths = []
+    if has_proc_path and subj["process_path"].notna().any():
+        effective_paths = subj["process_path"].fillna("").values
+    elif has_cmd_line:
+        # Extract the first token (executable) from cmd_line
+        cmds = subj["cmd_line"].fillna("").values
+        effective_paths = [cmd.strip().split(" ", 1)[0] if cmd else "" for cmd in cmds]
+    else:
+        effective_paths = [""] * len(subj)
+        
+    subj["effective_path"] = effective_paths
     
     # Count process paths
-    path_counts = Counter(subj["process_path"].dropna().values)
+    path_counts = Counter(p for p in effective_paths if p)
     top_paths = [p for p, _ in path_counts.most_common(top_k)]
     
     # Build index: 0 = unknown/padding, 1..top_k = top paths, top_k+1 = other
@@ -45,8 +69,8 @@ def build_process_vocab(data_root: str | Path, top_k: int = 50) -> dict:
     
     # Map each subject UUID to its process name index
     uuid_to_idx = {}
-    for uuid, path in zip(subj["uuid"], subj["process_path"]):
-        if pd.isna(path):
+    for uuid, path in zip(subj["uuid"], subj["effective_path"]):
+        if not path:
             uuid_to_idx[str(uuid)] = unknown_idx
         else:
             uuid_to_idx[str(uuid)] = path_to_idx.get(path, other_idx)
