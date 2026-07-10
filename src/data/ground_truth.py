@@ -104,15 +104,27 @@ _TRACE_1_GT = GroundTruth(
 _CADETS_GT = GroundTruth(
     dataset="cadets",
     attack_ips={
-        # TODO: Add CADETS attack IPs
+        # From 3.1
+        "81.49.200.166", "78.205.235.65", "200.36.109.214",
+        "139.123.0.113", "152.111.159.139", "154.145.113.18", "61.167.39.128",
+        # From 3.8
+        "25.159.96.207", "76.56.184.25", "155.162.39.48", "198.115.236.119",
+        # From 3.13
+        "53.158.101.118", "98.15.44.232", "192.113.144.28",
+        # From 3.14
+        "128.55.12.73"
     },
     malicious_file_substrings=[
-        # TODO: Add CADETS malicious files
+        "vUgefal", "vUGefai", "devc", "grain", "tmux-1002", "minions",
+        "minion", "font", "XIM", "netlog", "pEja72mA", "eWq10bVcx",
+        "memhelp.so", "eraseme", "done.so", "/var/log/sendmail", "/var/log/test", "/var/log/main"
     ],
     malicious_process_basenames={
-        # TODO: Add CADETS malicious processes
+        "vUgefal", "vUGefai", "devc", "grain", "tmux-1002", "minions",
+        "minion", "font", "XIM", "netlog", "pEja72mA", "eWq10bVcx",
+        "memhelp.so", "eraseme", "done.so"
     },
-    attack_entry_process="", # TODO: Add entry process
+    attack_entry_process="nginx", 
 )
 
 def load_ground_truth(dataset: str = "theia") -> GroundTruth:

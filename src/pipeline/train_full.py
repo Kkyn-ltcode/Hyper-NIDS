@@ -52,24 +52,7 @@ DATA_ROOT = Path("data/processed/darpa_tc_e3")
 #               This is the standard PIDS evaluation — matches how baselines are tested.
 #   - "cross":  Cross-campaign generalization. Train Campaign 1, test Campaign 2.
 #               Hardest setting — tests whether supervised detection transfers.
-SHARD_CONFIG = {
-    "theia": {
-        "small": {"train": list(range(7)), "val": [7], "test": [8, 9]},
-        "full":  {"train": list(range(8)) + list(range(12, 20)),
-                  "val": [8, 9, 20, 21], "test": [10, 22, 23, 24]},
-        "cross": {"train": list(range(9)), "val": [9, 10],
-                  "test": list(range(12, 25))},
-        # KAIROS/baseline-compatible split: matches the train/val/test boundaries
-        # used in KAIROS Table 12 (train=Apr 3-5, val=Apr 9, test=Apr 10-12).
-        # Use with --label_type broad for direct comparison against published
-        # baseline results that evaluate ALL attack nodes (not crossprocess+).
-        "kairos": {"train": list(range(0, 9)), "val": [9, 10],
-                   "test": list(range(11, 20))},
-    },
-    "trace": {
-        "small": {"train": list(range(5)), "val": [5], "test": [6]},
-    },
-}
+from src.config.dataset_config import DATASET_CONFIG
 
 
 def _compute_full_metrics(valid_probs, valid_labels, prefix="", threshold=None):
@@ -558,7 +541,7 @@ def main():
     )
 
     data_root = DATA_ROOT / args.dataset
-    dataset_splits = SHARD_CONFIG[args.dataset]
+    dataset_splits = DATASET_CONFIG.get(args.dataset, {}).get("splits", {})
     if args.split not in dataset_splits:
         available = list(dataset_splits.keys())
         raise ValueError(f"Split '{args.split}' not found for dataset '{args.dataset}'. "

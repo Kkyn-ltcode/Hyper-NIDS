@@ -116,12 +116,7 @@ def compute_train_stats(
     return mean.astype(np.float32), std.astype(np.float32)
 
 
-TRAIN_SHARDS = {
-    "theia": list(range(11)),  # Updated to match the new 0-10 training split
-    "trace": [0, 1, 2, 3, 4],
-    "trace-1": [0],
-    "cadets": [0, 1, 2, 3], # Placeholder, adjust based on dataset
-}
+from src.config.dataset_config import DATASET_CONFIG
 
 def main():
     parser = argparse.ArgumentParser(
@@ -144,7 +139,7 @@ def main():
         start, end = map(int, args.train_shards.split("-"))
         train_indices = [i for i in all_indices if start <= i <= end]
     else:
-        train_indices = TRAIN_SHARDS.get(args.dataset, all_indices)
+        train_indices = DATASET_CONFIG.get(args.dataset, {}).get("norm_train_shards", all_indices)
 
     test_indices = [i for i in all_indices if i not in train_indices]
 
