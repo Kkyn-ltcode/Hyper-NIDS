@@ -31,6 +31,17 @@ def analyze_dataset(dataset_name: str, dataset_path: Path):
         print(f"  [!] Path does not exist: {dataset_path}")
         return
 
+    # --- Summary ---
+    summary_path = dataset_path / "summary.json"
+    if summary_path.exists():
+        with open(summary_path) as f:
+            summary = json.load(f)
+        print(f"\n--- INGEST SUMMARY ---")
+        for k, v in summary.items():
+            print(f"  {k:<20}: {v}")
+    else:
+        print("  [!] summary.json not found")
+
     # Directories
     labeled_dir = dataset_path / "labeled"
     features_dir = dataset_path / "features_norm"
@@ -121,7 +132,7 @@ def analyze_dataset(dataset_name: str, dataset_path: Path):
         print("  No major time gaps (> 6 hours) found between consecutive shards.")
 
     # --- Entities ---
-    print("\n--- ENTITY VOCABULARY ---")
+    print("\n--- ENTITY VOCABULARY & GRAPH ---")
     vocab_path = dataset_path / "graph" / "entity_vocab.npz"
     if vocab_path.exists():
         vocab = np.load(vocab_path, allow_pickle=True)
@@ -133,6 +144,19 @@ def analyze_dataset(dataset_name: str, dataset_path: Path):
                  print(f"    {t:<15}: {c:>10,}")
     else:
         print("  [!] entity_vocab.npz not found.")
+
+    incidence_path = dataset_path / "graph" / "incidence.npz"
+    if incidence_path.exists():
+        from scipy import sparse
+        try:
+            H = sparse.load_npz(incidence_path)
+            print(f"\n  Incidence Matrix (H):")
+            print(f"    Shape:      {H.shape[0]:,} nodes x {H.shape[1]:,} hyperedges")
+            print(f"    Non-zeros:  {H.nnz:,}")
+            density = H.nnz / max(1, (H.shape[0] * H.shape[1]))
+            print(f"    Density:    {density:.2e}")
+        except Exception as e:
+            print(f"  [!] Could not load incidence.npz: {e}")
 
     # --- Metadata Files ---
     print("\n--- METADATA FILES ---")
