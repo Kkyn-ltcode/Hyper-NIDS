@@ -120,43 +120,18 @@ def main():
     sub_df = pd.read_parquet(f'{args.data_dir}/subjects.parquet', columns=['uuid', 'process_path'])
     obj_df = pd.read_parquet(f'{args.data_dir}/objects.parquet', columns=['uuid', 'object_type', 'filename', 'remote_address', 'remote_port'])
     
-    # We will need dictionaries for fast lookup
-    print("Building metadata lookups...")
+    # Map string object types to numeric codes for fast access
+    type_map = {'FILE': TYPE_FILE, 'MEMORY': TYPE_MEMORY, 'NETFLOW': TYPE_NETFLOW}
+    obj_df['type_code'] = obj_df['object_type'].map(type_map).fillna(TYPE_FILE).astype(int)
     
-    # Subjects (always PROCESS)
-    # Map UUID -> { 'path': path }
-    sub_dict = {}
-    for row in tqdm(sub_df.itertuples(), total=len(sub_df)):
-        sub_dict[row.uuid] = {
-            'path': row.process_path
-        }
-        
-    # Objects (can be FILE, MEMORY, NETFLOW)
-    obj_dict = {}
-    for row in tqdm(obj_df.itertuples(), total=len(obj_df)):
-        # Determine object type code
-        if row.object_type == 'FILE':
-            type_code = TYPE_FILE
-        elif row.object_type == 'MEMORY':
-            type_code = TYPE_MEMORY
-        elif row.object_type == 'NETFLOW':
-            type_code = TYPE_NETFLOW
-        else:
-            type_code = TYPE_FILE # fallback
-            
-        obj_dict[row.uuid] = {
-            'type_code': type_code,
-            'path': row.filename,
-            'remote_address': row.remote_address,
-            'remote_port': row.remote_port
-        }
-        
     # Process each shard
     shard_dir = f'{args.data_dir}/labeled'
     
     import glob
     labeled_files = glob.glob(f"{shard_dir}/labeled_shard*.parquet")
     all_indices = sorted([int(os.path.basename(f).replace("labeled_shard", "").replace(".parquet", "")) for f in labeled_files])
+    
+    null_uuid = "00000000-0000-0000-0000-000000000000"
     
     for sid in all_indices:
         shard_path = f"{shard_dir}/labeled_shard{sid}.parquet"
@@ -167,73 +142,96 @@ def main():
         print(f"Processing shard {sid}...")
         df = pd.read_parquet(shard_path, columns=['subject_uuid', 'predicate_object_uuid', 'predicate_object2_uuid'])
         
-        N = len(df)
+        # Merge sub_df
+        df = df.merge(sub_df, left_on='subject_uuid', right_on='uuid', how='left')
+        df.rename(columns={'process_path': 'sub_path'}, inplace=True)
+        df.drop(columns=['uuid'], inplace=True)
         
-        # Dimensions:
-        # Group 1: 3 roles * 4 object types = 12 dims
-        # Group 1b: Subject path zone = 4 dims
-        # Group 2: 2 roles (obj, obj2) * 4 zones = 8 dims
-        # Group 3: 2 roles (obj, obj2) * 16 HFH buckets = 32 dims
-        # Group 4: network features = 6 dims
-        # Total = 12 + 4 + 8 + 32 + 6 = 62 dims
+        # Merge obj_df (predicate_object_uuid)
+        df = df.merge(obj_df, left_on='predicate_object_uuid', right_on='uuid', how='left')
+        df.rename(columns={'type_code': 'obj_type_code', 'filename': 'obj_path', 'remote_address': 'obj_ip', 'remote_port': 'obj_port'}, inplace=True)
+        df.drop(columns=['uuid', 'object_type'], inplace=True)
+        
+        # If obj_type_code is NaN, maybe it's a subject?
+        df = df.merge(sub_df, left_on='predicate_object_uuid', right_on='uuid', how='left')
+        # If it was a subject, uuid will not be null
+        df['obj_is_sub'] = df['uuid'].notna()
+        df.drop(columns=['uuid', 'process_path'], inplace=True)
+        
+        # Merge obj_df (predicate_object2_uuid)
+        df = df.merge(obj_df, left_on='predicate_object2_uuid', right_on='uuid', how='left')
+        df.rename(columns={'type_code': 'obj2_type_code', 'filename': 'obj2_path', 'remote_address': 'obj2_ip', 'remote_port': 'obj2_port'}, inplace=True)
+        df.drop(columns=['uuid', 'object_type'], inplace=True)
+        
+        df = df.merge(sub_df, left_on='predicate_object2_uuid', right_on='uuid', how='left')
+        df['obj2_is_sub'] = df['uuid'].notna()
+        df.drop(columns=['uuid', 'process_path'], inplace=True)
+
+        N = len(df)
         out_features = np.zeros((N, 62), dtype=np.float32)
         
-        # We will iterate and build the features
-        # Vectorizing this perfectly is hard due to lookups, but we can do it efficiently
-        
-        # Get raw UUIDs
         sub_uuids = df['subject_uuid'].values
         obj_uuids = df['predicate_object_uuid'].values
         obj2_uuids = df['predicate_object2_uuid'].values
         
-        # Null UUID
-        null_uuid = "00000000-0000-0000-0000-000000000000"
+        sub_paths = df['sub_path'].values
         
-        for i in tqdm(range(N)):
-            # Subject is always PROCESS
-            sub_id = sub_uuids[i]
-            obj_id = obj_uuids[i]
-            obj2_id = obj2_uuids[i]
+        obj_type_codes = df['obj_type_code'].values
+        obj_paths = df['obj_path'].values
+        obj_ips = df['obj_ip'].values
+        obj_ports = df['obj_port'].values
+        obj_is_subs = df['obj_is_sub'].values
+        
+        obj2_type_codes = df['obj2_type_code'].values
+        obj2_paths = df['obj2_path'].values
+        obj2_ips = df['obj2_ip'].values
+        obj2_ports = df['obj2_port'].values
+        obj2_is_subs = df['obj2_is_sub'].values
+        
+        # Using a raw loop over zip is much faster than itertuples!
+        from tqdm import tqdm
+        for i, (su, ou, o2u, sp, otc, op, oip, oport, osub, o2tc, o2p, o2ip, o2port, o2sub) in tqdm(enumerate(zip(
+            sub_uuids, obj_uuids, obj2_uuids, sub_paths, 
+            obj_type_codes, obj_paths, obj_ips, obj_ports, obj_is_subs,
+            obj2_type_codes, obj2_paths, obj2_ips, obj2_ports, obj2_is_subs
+        )), total=N):
             
-            # --- Group 1: Object Types (Cols 0-11) ---
-            # Subject type
-            if sub_id != null_uuid:
-                out_features[i, TYPE_PROCESS] = 1.0 # 0..3
-            
-            # Object type — fall back to sub_dict for clone/exec events
-            if obj_id != null_uuid:
-                if obj_id in obj_dict:
-                    out_features[i, 4 + obj_dict[obj_id]['type_code']] = 1.0 # 4..7
-                elif obj_id in sub_dict:
-                    out_features[i, 4 + TYPE_PROCESS] = 1.0  # child process in clone/exec
-            
-            # Object2 type — same fallback
-            if obj2_id != null_uuid:
-                if obj2_id in obj_dict:
-                    out_features[i, 8 + obj_dict[obj2_id]['type_code']] = 1.0 # 8..11
-                elif obj2_id in sub_dict:
-                    out_features[i, 8 + TYPE_PROCESS] = 1.0
+            # Sub type
+            if su != null_uuid:
+                out_features[i, TYPE_PROCESS] = 1.0
                 
-            # --- Group 1b: Subject Path Zone (Cols 12-15) ---
-            if sub_id != null_uuid and sub_id in sub_dict:
-                zone = classify_path_zone(sub_dict[sub_id]['path'])
+            # Obj type
+            if ou != null_uuid:
+                if not np.isnan(otc):
+                    out_features[i, 4 + int(otc)] = 1.0
+                elif osub:
+                    out_features[i, 4 + TYPE_PROCESS] = 1.0
+                    
+            # Obj2 type
+            if o2u != null_uuid:
+                if not np.isnan(o2tc):
+                    out_features[i, 8 + int(o2tc)] = 1.0
+                elif o2sub:
+                    out_features[i, 8 + TYPE_PROCESS] = 1.0
+                    
+            # Sub zone
+            if su != null_uuid and not pd.isna(sp):
+                zone = classify_path_zone(sp)
                 out_features[i, 12 + zone] = 1.0
                 
-            # --- Group 2: Object Path Zones (Cols 16-23) ---
-            # Obj Zone (16-19) — only for FILE objects
-            if obj_id != null_uuid and obj_id in obj_dict and obj_dict[obj_id]['type_code'] == TYPE_FILE:
-                zone = classify_path_zone(obj_dict[obj_id]['path'])
+            # Obj zone
+            if ou != null_uuid and not np.isnan(otc) and int(otc) == TYPE_FILE and not pd.isna(op):
+                zone = classify_path_zone(op)
                 out_features[i, 16 + zone] = 1.0
-            
-            # Obj2 Zone (20-23) — only for FILE objects
-            if obj2_id != null_uuid and obj2_id in obj_dict and obj_dict[obj2_id]['type_code'] == TYPE_FILE:
-                zone = classify_path_zone(obj_dict[obj2_id]['path'])
+                
+            # Obj2 zone
+            if o2u != null_uuid and not np.isnan(o2tc) and int(o2tc) == TYPE_FILE and not pd.isna(o2p):
+                zone = classify_path_zone(o2p)
                 out_features[i, 20 + zone] = 1.0
                 
-            # --- Group 3: HFH (Cols 24-55) ---
-            # Obj HFH (24-39) — only for FILE objects
-            if obj_id != null_uuid and obj_id in obj_dict and obj_dict[obj_id]['type_code'] == TYPE_FILE:
-                buckets = get_hfh_buckets(obj_dict[obj_id]['path'])
+            # Obj HFH
+            if ou != null_uuid and not np.isnan(otc) and int(otc) == TYPE_FILE and not pd.isna(op):
+                buckets = get_hfh_buckets(op)
                 for b in buckets:
                     out_features[i, 24 + b] += 1.0
                 
@@ -241,9 +239,9 @@ def main():
                 if hfh_norm > 0:
                     out_features[i, 24:40] /= hfh_norm
                     
-            # Obj2 HFH (40-55) — only for FILE objects
-            if obj2_id != null_uuid and obj2_id in obj_dict and obj_dict[obj2_id]['type_code'] == TYPE_FILE:
-                buckets = get_hfh_buckets(obj_dict[obj2_id]['path'])
+            # Obj2 HFH
+            if o2u != null_uuid and not np.isnan(o2tc) and int(o2tc) == TYPE_FILE and not pd.isna(o2p):
+                buckets = get_hfh_buckets(o2p)
                 for b in buckets:
                     out_features[i, 40 + b] += 1.0
                     
@@ -251,18 +249,17 @@ def main():
                 if hfh2_norm > 0:
                     out_features[i, 40:56] /= hfh2_norm
                     
-            # --- Group 4: Network (Cols 56-61) ---
-            # Only for NETFLOW objects. We check both obj and obj2, and max them
+            # Net features
             net_feats = np.zeros(6, dtype=np.float32)
-            if obj_id != null_uuid and obj_id in obj_dict and obj_dict[obj_id]['type_code'] == TYPE_NETFLOW:
-                f = process_network_features(obj_dict[obj_id]['remote_address'], obj_dict[obj_id]['remote_port'])
+            if ou != null_uuid and not np.isnan(otc) and int(otc) == TYPE_NETFLOW:
+                f = process_network_features(oip, oport)
                 net_feats = np.maximum(net_feats, f)
-            if obj2_id != null_uuid and obj2_id in obj_dict and obj_dict[obj2_id]['type_code'] == TYPE_NETFLOW:
-                f = process_network_features(obj_dict[obj2_id]['remote_address'], obj_dict[obj2_id]['remote_port'])
+            if o2u != null_uuid and not np.isnan(o2tc) and int(o2tc) == TYPE_NETFLOW:
+                f = process_network_features(o2ip, o2port)
                 net_feats = np.maximum(net_feats, f)
                 
             out_features[i, 56:62] = net_feats
-
+            
         # Save the enriched features
         out_path = f"{shard_dir}/enriched_shard{sid}.npz"
         np.savez_compressed(out_path, features=out_features)
