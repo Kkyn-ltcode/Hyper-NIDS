@@ -37,6 +37,8 @@ DATASET_CONFIG = {
         "splits": {
             # Preliminary small split. TRACE has 211 shards total.
             "small": {"train": list(range(8)), "val": [8, 9], "test": [10, 11, 12, 13]},
+            "full": {"train": list(range(150)), "val": list(range(150, 180)), "test": list(range(180, 211))},
+            "cross": {"train": list(range(100)), "val": list(range(100, 130)), "test": list(range(130, 211))},
         },
         # Shards 0-7 are the completely clean period before the first attacks on April 3.
         # This provides a clean baseline for normalization.
@@ -47,6 +49,8 @@ DATASET_CONFIG = {
         "splits": {
             # Preliminary small split. CADETS has 10 shards total.
             "small": {"train": [0, 1, 2, 3, 4, 5], "val": [6], "test": [7, 8, 9]},
+            "full": {"train": [0, 1, 2, 3, 4, 5, 6], "val": [7], "test": [8, 9]},
+            "cross": {"train": [0, 1, 2, 3, 4, 5], "val": [6, 7], "test": [8, 9]},
         },
         # Use first 7 shards for normalization fitting.
         "norm_train_shards": [0, 1, 2, 3, 4, 5, 6],
