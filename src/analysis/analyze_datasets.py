@@ -117,6 +117,25 @@ def analyze_dataset(dataset_name: str, dataset_path: Path):
     print(f"\nTotal Events: {total_events:,}")
     print(f"Total Crossprocess+ Events: {total_xproc:,}")
 
+    # --- Normalization Parameters ---
+    print("\n--- NORMALIZATION PARAMETERS ---")
+    scaler_path = features_dir / "scaler_params.npz"
+    if scaler_path.exists():
+        scaler = np.load(scaler_path)
+        train_shards_list = scaler.get("train_shards", [])
+        test_shards_list = scaler.get("test_shards", [])
+        is_binary = scaler.get("is_binary", [])
+        
+        print(f"  Training Shards (used for fitting): {train_shards_list}")
+        print(f"  Test Shards (normalized but not fitted): {test_shards_list}")
+        
+        if len(is_binary) > 0:
+            n_binary = int(sum(is_binary))
+            n_cont = len(is_binary) - n_binary
+            print(f"  Features: {n_cont} Continuous (Z-Scored), {n_binary} Binary (Ignored)")
+    else:
+        print("  [!] scaler_params.npz not found in features directory.")
+
     # --- Campaign / Time Gap Detection ---
     print("\n--- TIME GAPS (CAMPAIGN BOUNDARIES) ---")
     gaps_found = 0
