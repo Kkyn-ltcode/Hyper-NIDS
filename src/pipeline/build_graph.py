@@ -38,7 +38,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Build entity vocabulary and incidence graph")
     parser.add_argument("--dataset", default="theia",
-                        choices=["theia", "trace", "trace-1"])
+                        choices=["theia", "trace", "cadets", "trace-1"])
     args = parser.parse_args()
 
     labeled_dir = DATA_ROOT / args.dataset / "labeled"

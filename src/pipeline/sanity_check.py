@@ -52,7 +52,7 @@ def load_shard(dataset: str, shard: int) -> tuple:
 def main():
     parser = argparse.ArgumentParser(description="THyN pipeline sanity check")
     parser.add_argument("--dataset", default="theia",
-                        choices=["theia", "trace", "trace-1"])
+                        choices=["theia", "trace", "cadets", "trace-1"])
     parser.add_argument("--shard", type=int, default=0)
     args = parser.parse_args()
 

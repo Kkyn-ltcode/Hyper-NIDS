@@ -1,0 +1,22 @@
+{"time":"2026-07-10T11:11:01.163222+07:00","level":"INFO","msg":"wandb-core"}
+{"time":"2026-07-10T11:11:01.165245+07:00","level":"INFO","msg":"stream: starting","core version":"0.28.0"}
+{"time":"2026-07-10T11:11:01.636048+07:00","level":"INFO","msg":"stream: created new stream","id":"qjwmv5ze"}
+{"time":"2026-07-10T11:11:01.636103+07:00","level":"INFO","msg":"handler: started"}
+{"time":"2026-07-10T11:11:01.636815+07:00","level":"INFO","msg":"stream: started"}
+{"time":"2026-07-10T11:11:01.636847+07:00","level":"INFO","msg":"writer: started","stream_id":"qjwmv5ze"}
+{"time":"2026-07-10T11:11:01.636857+07:00","level":"INFO","msg":"sender: started"}
+{"time":"2026-07-10T11:11:04.995972+07:00","level":"INFO","msg":"filestream: sending request","total_files":1,"console_offset":0,"console_lines":1}
+{"time":"2026-07-10T11:11:05.640999+07:00","level":"INFO","msg":"filestream: request sent","status":"200 OK"}
+{"time":"2026-07-10T11:11:19.99675+07:00","level":"INFO","msg":"filestream: sending request","total_files":2,"console_offset":0,"console_lines":2,"uploaded_len":5}
+{"time":"2026-07-10T11:11:20.621533+07:00","level":"INFO","msg":"filestream: request sent","status":"200 OK"}
+{"time":"2026-07-10T11:11:49.997341+07:00","level":"INFO","msg":"filestream: sending request","total_files":0}
+{"time":"2026-07-10T11:11:50.545027+07:00","level":"INFO","msg":"filestream: request sent","status":"200 OK"}
+{"time":"2026-07-10T11:12:03.132661+07:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2026-07-10T11:12:03.132883+07:00","level":"INFO","msg":"filestream: sending request","total_files":0,"complete":true,"exit_code":0}
+{"time":"2026-07-10T11:12:03.734073+07:00","level":"INFO","msg":"filestream: request sent","status":"200 OK"}
+{"time":"2026-07-10T11:12:03.741113+07:00","level":"INFO","msg":"handler: operation stats","stats":{}}
+{"time":"2026-07-10T11:12:03.750489+07:00","level":"INFO","msg":"stream: finishing up"}
+{"time":"2026-07-10T11:12:03.750512+07:00","level":"INFO","msg":"handler: closed"}
+{"time":"2026-07-10T11:12:03.75076+07:00","level":"INFO","msg":"sender: closed"}
+{"time":"2026-07-10T11:12:03.75078+07:00","level":"INFO","msg":"stream: all finished"}
+{"time":"2026-07-10T11:12:03.750858+07:00","level":"ERROR","msg":"runfiles: CreateRunFiles returned error: POST https://api.wandb.ai/graphql giving up after 1 attempt(s): context canceled"}

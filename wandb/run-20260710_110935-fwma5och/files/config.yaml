@@ -1,0 +1,45 @@
+_wandb:
+    value:
+        cli_version: 0.28.0
+        e:
+            tq9qsccghn93u11k138hn9hdpu8a5vqj:
+                apple:
+                    ecpuCores: 4
+                    gpuCores: 8
+                    macModel: MacBookPro17,1
+                    memoryGb: 8
+                    name: Apple M1
+                    pcpuCores: 4
+                    ramTotalBytes: "8589934592"
+                    swapTotalBytes: "5368709120"
+                cpu_count: 8
+                cpu_count_logical: 8
+                disk:
+                    /:
+                        total: "245075738624"
+                        used: "213494206464"
+                email: work.nguyenlt@gmail.com
+                executable: /Users/nguyen/miniconda3/envs/hypermamba/bin/python
+                git:
+                    commit: c0244c978a426b6892b428330b8c6fd7b40aea41
+                    remote: https://github.com/Kkyn-ltcode/Hyper-NIDS.git
+                host: Klouds-MacBook.local
+                memory:
+                    total: "8589934592"
+                os: macOS-26.6-arm64-arm-64bit
+                program: <python with no main file>
+                python: CPython 3.10.20
+                root: /Users/nguyen/Documents/Work/NIDS/HyperMamba-NIDS
+                startedAt: "2026-07-10T04:09:35.961413Z"
+                writerId: tq9qsccghn93u11k138hn9hdpu8a5vqj
+        m: []
+        python_version: 3.10.20
+        t:
+            "3":
+                - 2
+            "4": 3.10.20
+            "5": 0.28.0
+            "8":
+                - 2
+            "12": 0.28.0
+            "13": darwin-arm64

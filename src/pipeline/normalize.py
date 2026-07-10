@@ -120,13 +120,14 @@ TRAIN_SHARDS = {
     "theia": list(range(11)),  # Updated to match the new 0-10 training split
     "trace": [0, 1, 2, 3, 4],
     "trace-1": [0],
+    "cadets": [0, 1, 2, 3], # Placeholder, adjust based on dataset
 }
 
 def main():
     parser = argparse.ArgumentParser(
         description="Normalize features using training-set statistics")
     parser.add_argument("--dataset", default="theia",
-                        choices=["theia", "trace", "trace-1"])
+                        choices=["theia", "trace", "cadets", "trace-1"])
     parser.add_argument("--train-shards", default=None,
                         help="Shard range for training (e.g., '0-10'). Default is dataset-specific.")
     args = parser.parse_args()

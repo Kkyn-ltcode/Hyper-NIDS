@@ -1,0 +1,15 @@
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+  File "/Users/nguyen/miniconda3/envs/hypermamba/lib/python3.10/site-packages/wandb/sdk/artifacts/_validators.py", line 302, in wrapper
+    return method(self, *args, **kwargs)
+  File "/Users/nguyen/miniconda3/envs/hypermamba/lib/python3.10/site-packages/wandb/sdk/artifacts/artifact.py", line 1514, in add_file
+    raise ValueError(f"Path is not a file: {local_path!r}")
+ValueError: Path is not a file: 'HyperMamba-NIDS/ta1-cadets-e3-official-1.json.tar.gz'
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+  File "/Users/nguyen/miniconda3/envs/hypermamba/lib/python3.10/site-packages/wandb/sdk/artifacts/_validators.py", line 302, in wrapper
+    return method(self, *args, **kwargs)
+  File "/Users/nguyen/miniconda3/envs/hypermamba/lib/python3.10/site-packages/wandb/sdk/artifacts/artifact.py", line 1514, in add_file
+    raise ValueError(f"Path is not a file: {local_path!r}")
+ValueError: Path is not a file: 'HyperMamba-NIDS/ta1-cadets-e3-official-1.json.tar.gz'
+<Artifact ta1-cadets-e3-official-1>

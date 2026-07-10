@@ -101,12 +101,27 @@ _TRACE_1_GT = GroundTruth(
     attack_entry_process="firefox",
 )
 
+_CADETS_GT = GroundTruth(
+    dataset="cadets",
+    attack_ips={
+        # TODO: Add CADETS attack IPs
+    },
+    malicious_file_substrings=[
+        # TODO: Add CADETS malicious files
+    ],
+    malicious_process_basenames={
+        # TODO: Add CADETS malicious processes
+    },
+    attack_entry_process="", # TODO: Add entry process
+)
+
 def load_ground_truth(dataset: str = "theia") -> GroundTruth:
     """Load ground truth IoCs for a given dataset."""
     configs = {
         "theia": _THEIA_GT,
         "trace": _TRACE_GT,
-        "trace-1": _TRACE_1_GT
+        "trace-1": _TRACE_1_GT,
+        "cadets": _CADETS_GT,
     }
     if dataset not in configs:
         raise ValueError(f"Unknown dataset: {dataset}. "

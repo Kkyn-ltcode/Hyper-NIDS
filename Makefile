@@ -26,6 +26,9 @@ pipeline-trace:  ## Run full pipeline for TRACE
 pipeline-trace-1:  ## Run full pipeline for TRACE
 	$(PYTHON) -m src.pipeline.run --dataset trace-1 --train-shards 0-4
 
+pipeline-cadets:  ## Run full pipeline for CADETS
+	$(PYTHON) -m src.pipeline.run --dataset cadets --train-shards 0-3
+
 # ============================================================
 # Individual stages
 # ============================================================
