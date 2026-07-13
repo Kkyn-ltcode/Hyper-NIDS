@@ -171,12 +171,20 @@ def main():
 
     # Fast sequential pre-computation of carry state
     print("  Pre-computing cross-shard boundaries (fast)...")
-    shard_carry_dicts = compute_subject_last_ts_per_shard(labeled_dir)
+    shard_carry_dicts, shard_unique_subs = compute_subject_last_ts_per_shard(labeled_dir)
+    
     cumulative_carry = []
     current_carry = {}
-    for d in shard_carry_dicts:
-        cumulative_carry.append(current_carry.copy())
-        current_carry.update(d)
+    for i in range(len(shard_carry_dicts)):
+        # Extract minimal carry for shard i BEFORE applying shard i's updates
+        needed = shard_unique_subs[i]
+        minimal_carry = {k: current_carry[k] for k in needed if k in current_carry}
+        cumulative_carry.append(minimal_carry)
+        
+        # Update global state with shard i's last timestamps
+        current_carry.update(shard_carry_dicts[i])
+        
+    del current_carry, shard_carry_dicts, shard_unique_subs
 
     # Build tasks
     tasks = []

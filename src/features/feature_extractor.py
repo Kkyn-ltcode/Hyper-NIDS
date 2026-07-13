@@ -135,15 +135,16 @@ def compute_global_stats(labeled_dir) -> GlobalStats:
     return stats
 
 
-def compute_subject_last_ts_per_shard(labeled_dir) -> list[dict]:
+def compute_subject_last_ts_per_shard(labeled_dir) -> tuple[list[dict], list[set]]:
     """
-    Compute each subject's last timestamp in each shard.
+    Compute each subject's last timestamp in each shard, and the unique subjects.
 
     Used to carry over time_gap_same_subject across shard boundaries.
 
     Returns:
-        List of dicts, one per shard (ordered by shard index).
-        Each dict maps subject_uuid -> last_timestamp_nanos in that shard.
+        (carry_dicts, unique_subs): 
+        - carry_dicts: List of dicts mapping subject_uuid -> last_timestamp_nanos.
+        - unique_subs: List of sets containing unique subject_uuids per shard.
     """
     from pathlib import Path
 
@@ -153,14 +154,16 @@ def compute_subject_last_ts_per_shard(labeled_dir) -> list[dict]:
     files = sorted(labeled_dir.glob("labeled_shard*.parquet"), key=_extract_idx)
 
     carry_dicts = []
+    unique_subs = []
     for f in files:
         df = pd.read_parquet(f, columns=["subject_uuid", "timestamp_nanos"])
         last_ts = df.groupby("subject_uuid")["timestamp_nanos"].max()
         carry_dicts.append(last_ts.to_dict())
+        unique_subs.append(set(df["subject_uuid"].unique()))
         del df, last_ts
         gc.collect()
 
-    return carry_dicts
+    return carry_dicts, unique_subs
 
 
 def extract_features(
