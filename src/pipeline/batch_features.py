@@ -83,9 +83,9 @@ def main():
         data = np.load(global_stats_path, allow_pickle=True)
         global_stats = GlobalStats(
             total_events=int(data["total_events"]),
-            type_counts=data["type_counts"].item(),
-            subject_first_ts=data["subject_first_ts"].item(),
-            object_first_ts=data["object_first_ts"].item(),
+            type_counts=pd.Series(data["type_counts"].item()),
+            subject_first_ts=pd.Series(data["subject_first_ts"].item()),
+            object_first_ts=pd.Series(data["object_first_ts"].item()),
         )
         print(f"  {global_stats.total_events:,} events, "
               f"{len(global_stats.type_counts)} types, "
@@ -142,14 +142,11 @@ def main():
                 shard_file,
                 columns=["subject_uuid", "timestamp_nanos"],
             )
-            # Fast groupby using factorize
-            sub_codes, uniques = pd.factorize(df_carry["subject_uuid"])
-            df_tmp = pd.DataFrame({"sub": sub_codes, "ts": df_carry["timestamp_nanos"]})
-            last_idx = df_tmp.groupby("sub").tail(1).index
-            
-            last_ts = dict(zip(uniques, df_carry["timestamp_nanos"].values[last_idx]))
+            last_ts = df_carry.groupby(
+                "subject_uuid"
+            )["timestamp_nanos"].max().to_dict()
             subject_carry.update(last_ts)
-            del df_carry, df_tmp, last_ts, sub_codes, uniques
+            del df_carry, last_ts
             gc.collect()
             continue
 
