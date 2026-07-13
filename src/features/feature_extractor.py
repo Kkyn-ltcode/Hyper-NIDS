@@ -96,8 +96,9 @@ def compute_global_stats(labeled_dir) -> GlobalStats:
 
     print(f"  Computing global stats from {len(files)} shards (parallelized)...")
 
-    sub_first_list = []
-    obj_first_list = []
+    # Use pure dicts for fast sequential O(N) accumulation without memory explosion
+    global_sub_first = {}
+    global_obj_first = {}
 
     with concurrent.futures.ProcessPoolExecutor() as executor:
         for i, result in enumerate(executor.map(_process_single_shard, files)):
@@ -105,26 +106,29 @@ def compute_global_stats(labeled_dir) -> GlobalStats:
                 t_counter, t_events, s_sub_first, s_obj_first = result
                 type_counter.update(t_counter)
                 stats.total_events += t_events
-                sub_first_list.append(s_sub_first)
-                obj_first_list.append(s_obj_first)
+                
+                # Fast iterative updates (keeps peak memory extremely low)
+                for k, v in s_sub_first.items():
+                    if k not in global_sub_first or v < global_sub_first[k]:
+                        global_sub_first[k] = v
+                
+                for k, v in s_obj_first.items():
+                    if k not in global_obj_first or v < global_obj_first[k]:
+                        global_obj_first[k] = v
+                
+                # Free memory immediately
+                del s_sub_first, s_obj_first
+                
                 print(f"    Finished {files[i].stem} ({i+1}/{len(files)})")
             except Exception as exc:
                 print(f"    {files[i].stem} generated an exception: {exc}")
 
-    print("  Merging results (this should be fast)...")
-    if sub_first_list:
-        combined_sub = pd.concat(sub_first_list)
-        stats.subject_first_ts = combined_sub.groupby(combined_sub.index).min().to_dict()
-        del combined_sub
-        
-    if obj_first_list:
-        combined_obj = pd.concat(obj_first_list)
-        stats.object_first_ts = combined_obj.groupby(combined_obj.index).min().to_dict()
-        del combined_obj
-        
+    print("  Finalizing stats...")
+    stats.subject_first_ts = global_sub_first
+    stats.object_first_ts = global_obj_first
     stats.type_counts = dict(type_counter)
-
-    del sub_first_list, obj_first_list
+    
+    del global_sub_first, global_obj_first
     gc.collect()
 
     print(f"  Done. {stats.total_events:,} events, "
