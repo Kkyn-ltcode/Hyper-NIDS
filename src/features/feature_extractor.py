@@ -28,13 +28,13 @@ class GlobalStats:
     # Total number of events across all shards
     total_events: int = 0
     # Event type -> count across all shards
-    type_counts: dict | pd.Series = field(default_factory=dict)
+    type_counts: dict = field(default_factory=dict)
     # Subject UUID -> first seen timestamp (nanos) across all shards
-    subject_first_ts: dict | pd.Series = field(default_factory=dict)
+    subject_first_ts: dict = field(default_factory=dict)
     # Object UUID -> first seen timestamp (nanos) across all shards
-    object_first_ts: dict | pd.Series = field(default_factory=dict)
+    object_first_ts: dict = field(default_factory=dict)
     # Object UUID -> total event count across all shards
-    object_event_counts: dict | pd.Series = field(default_factory=dict)
+    object_event_counts: dict = field(default_factory=dict)
 
 
 def _process_single_shard(f):
@@ -211,8 +211,10 @@ def extract_features(
     # 1. Event type one-hot
     event_type_dummies = pd.get_dummies(events_df["type"], prefix="etype")
 
-    # 2. Hour of day
-    hour = events_df["timestamp"].dt.hour.values.astype(np.float32)
+    # 2. Hour of day (fast math on nanos instead of .dt accessor)
+    ts_nanos = events_df["timestamp_nanos"].values.astype(np.float64)
+    hour = ((ts_nanos // 1_000_000_000) % 86400) // 3600
+    hour = hour.astype(np.float32)
 
     # 3. Hyperedge size
     has_sub = events_df["subject_uuid"].notna().astype(int)
@@ -241,30 +243,35 @@ def extract_features(
     ).fillna(0).values.astype(np.float32)
 
     # 6. Time gap from previous event by same subject (vectorized)
-    ts_nanos = events_df["timestamp_nanos"].values.astype(np.float64)
     subject_uuids = events_df["subject_uuid"].values
+
+    # Convert subject_uuid strings to fast integers for groupby
+    sub_codes, _ = pd.factorize(subject_uuids)
 
     # Build a temporary DataFrame for groupby operations
     _tmp = pd.DataFrame({
-        "subject_uuid": subject_uuids,
+        "sub_id": sub_codes,
         "ts": ts_nanos,
     })
 
     # Compute time gap as diff within each subject group
-    _tmp["prev_ts"] = _tmp.groupby("subject_uuid")["ts"].shift(1)
+    _tmp["prev_ts"] = _tmp.groupby("sub_id")["ts"].shift(1)
 
     # Seed first events with carry-over from previous shard
     if subject_last_ts_carry:
-        first_event_mask = _tmp["prev_ts"].isna() & _tmp["subject_uuid"].notna()
+        # Check nullity of subject_uuids without using == None
+        first_event_mask = _tmp["prev_ts"].isna() & pd.notna(subject_uuids)
         if first_event_mask.any():
-            carry_ts = _tmp.loc[first_event_mask, "subject_uuid"].map(
-                subject_last_ts_carry)
+            carry_ts = pd.Series(subject_uuids[first_event_mask]).map(
+                subject_last_ts_carry).values
             _tmp.loc[first_event_mask, "prev_ts"] = carry_ts
 
     time_gap = ((_tmp["ts"] - _tmp["prev_ts"]) / 1e9).values
 
     # Record last timestamp per subject (for next shard's carry)
-    last_ts_out = _tmp.groupby("subject_uuid")["ts"].last().to_dict()
+    # Find the last index of each subject
+    last_idx = _tmp.groupby("sub_id").tail(1).index
+    last_ts_out = dict(zip(subject_uuids[last_idx], ts_nanos[last_idx]))
     del _tmp
 
     # 7. Subject is "new" (first seen within last hour) — vectorized
@@ -279,14 +286,15 @@ def extract_features(
         del sub_first_ts, valid_sub, age
     else:
         # Per-shard fallback: first occurrence per subject
+        sub_codes, _ = pd.factorize(subject_uuids)
         sub_df = pd.DataFrame({
-            "subject_uuid": events_df["subject_uuid"].values,
+            "sub_id": sub_codes,
             "ts": ts_nanos,
         })
-        sub_first = sub_df.groupby("subject_uuid")["ts"].transform("first")
+        sub_first = sub_df.groupby("sub_id")["ts"].transform("first")
         age = sub_df["ts"] - sub_first
-        valid = sub_df["subject_uuid"].notna()
-        subject_is_new[valid.values & (age.values < 3600e9)] = 1.0
+        valid = pd.notna(subject_uuids)
+        subject_is_new[valid & (age.values < 3600e9)] = 1.0
         del sub_df, sub_first, age
 
     # 8. Object is "new" — vectorized
@@ -300,12 +308,14 @@ def extract_features(
         object_is_new[valid_obj.values & (age < 3600e9)] = 1.0
         del obj_first_ts, valid_obj, age
     else:
+        obj_codes, _ = pd.factorize(obj_uuids)
         obj_df = pd.DataFrame({
-            "obj_uuid": obj_uuids,
+            "obj_id": obj_codes,
             "ts": ts_nanos,
         })
-        obj_df = obj_df[obj_df["obj_uuid"].notna()]
-        obj_first = obj_df.groupby("obj_uuid")["ts"].transform("first")
+        valid_mask = pd.notna(obj_uuids)
+        obj_df = obj_df[valid_mask]
+        obj_first = obj_df.groupby("obj_id")["ts"].transform("first")
         age = obj_df["ts"] - obj_first
         valid_idx = obj_df.index[age.values < 3600e9]
         object_is_new[valid_idx] = 1.0
