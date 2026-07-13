@@ -28,13 +28,13 @@ class GlobalStats:
     # Total number of events across all shards
     total_events: int = 0
     # Event type -> count across all shards
-    type_counts: dict | pd.Series = field(default_factory=dict)
+    type_counts: dict = field(default_factory=dict)
     # Subject UUID -> first seen timestamp (nanos) across all shards
-    subject_first_ts: dict | pd.Series = field(default_factory=dict)
+    subject_first_ts: dict = field(default_factory=dict)
     # Object UUID -> first seen timestamp (nanos) across all shards
-    object_first_ts: dict | pd.Series = field(default_factory=dict)
+    object_first_ts: dict = field(default_factory=dict)
     # Object UUID -> total event count across all shards
-    object_event_counts: dict | pd.Series = field(default_factory=dict)
+    object_event_counts: dict = field(default_factory=dict)
 
 
 def _process_single_shard(f):
@@ -344,13 +344,13 @@ def extract_features(
 
     # 14-16. Path content indicators
     path_has_tmp = (
-        path_col.str.contains("/tmp", na=False, regex=False)
+        path_col.str.contains("/tmp", na=False)
     ).values.astype(np.float32)
     path_has_home = (
-        path_col.str.contains("/home/", na=False, regex=False)
+        path_col.str.contains("/home/", na=False)
     ).values.astype(np.float32)
     path_has_log = (
-        path_col.str.contains("/var/log", na=False, regex=False) | path_col.str.contains("/log/", na=False, regex=False)
+        path_col.str.contains("/var/log|/log/", regex=True, na=False)
     ).values.astype(np.float32)
 
     del path_col
@@ -363,7 +363,9 @@ def extract_features(
     del obj_counts
 
     # 18. Is new (subject, object) pair in this shard
-    is_new_pair = (~events_df[["subject_uuid", "predicate_object_uuid"]].duplicated(keep="first")).values.astype(np.float32)
+    pair_series = events_df["subject_uuid"].astype(str) + "||" + obj_uuid_col.astype(str)
+    is_new_pair = (~pair_series.duplicated(keep="first")).values.astype(np.float32)
+    del pair_series
 
     gc.collect()
 

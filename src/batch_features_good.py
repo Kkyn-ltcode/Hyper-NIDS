@@ -83,9 +83,9 @@ def main():
         data = np.load(global_stats_path, allow_pickle=True)
         global_stats = GlobalStats(
             total_events=int(data["total_events"]),
-            type_counts=pd.Series(data["type_counts"].item()),
-            subject_first_ts=pd.Series(data["subject_first_ts"].item()),
-            object_first_ts=pd.Series(data["object_first_ts"].item()),
+            type_counts=data["type_counts"].item(),
+            subject_first_ts=data["subject_first_ts"].item(),
+            object_first_ts=data["object_first_ts"].item(),
         )
         print(f"  {global_stats.total_events:,} events, "
               f"{len(global_stats.type_counts)} types, "
