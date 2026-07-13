@@ -100,18 +100,16 @@ def compute_global_stats(labeled_dir) -> GlobalStats:
     obj_first_list = []
 
     with concurrent.futures.ProcessPoolExecutor() as executor:
-        futures = {executor.submit(_process_single_shard, f): f for f in files}
-        for i, future in enumerate(concurrent.futures.as_completed(futures)):
-            f = futures[future]
+        for i, result in enumerate(executor.map(_process_single_shard, files)):
             try:
-                t_counter, t_events, s_sub_first, s_obj_first = future.result()
+                t_counter, t_events, s_sub_first, s_obj_first = result
                 type_counter.update(t_counter)
                 stats.total_events += t_events
                 sub_first_list.append(s_sub_first)
                 obj_first_list.append(s_obj_first)
-                print(f"    Finished {f.stem} ({i+1}/{len(files)})")
+                print(f"    Finished {files[i].stem} ({i+1}/{len(files)})")
             except Exception as exc:
-                print(f"    {f.stem} generated an exception: {exc}")
+                print(f"    {files[i].stem} generated an exception: {exc}")
 
     print("  Merging results (this should be fast)...")
     if sub_first_list:
