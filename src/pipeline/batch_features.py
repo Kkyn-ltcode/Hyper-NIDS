@@ -78,16 +78,12 @@ def main():
     print("PASS 1: Global Statistics")
     print(f"{'='*60}")
 
-    global_stats_path = features_dir / "global_stats.npz"
+    global_stats_path = features_dir / "global_stats.pkl"
     if global_stats_path.exists() and not args.validate:
         print("  Loading cached global stats...")
-        data = np.load(global_stats_path, allow_pickle=True)
-        global_stats = GlobalStats(
-            total_events=int(data["total_events"]),
-            type_counts=data["type_counts"].item(),
-            subject_first_ts=data["subject_first_ts"].item(),
-            object_first_ts=data["object_first_ts"].item(),
-        )
+        import pickle
+        with open(global_stats_path, 'rb') as f:
+            global_stats = pickle.load(f)
         print(f"  {global_stats.total_events:,} events, "
               f"{len(global_stats.type_counts)} types, "
               f"{len(global_stats.subject_first_ts):,} subjects, "
@@ -98,13 +94,9 @@ def main():
         print(f"  Time: {time.time()-t0:.1f}s")
 
         # Cache for future runs
-        np.savez(
-            global_stats_path,
-            total_events=global_stats.total_events,
-            type_counts=global_stats.type_counts,
-            subject_first_ts=global_stats.subject_first_ts,
-            object_first_ts=global_stats.object_first_ts,
-        )
+        import pickle
+        with open(global_stats_path, 'wb') as f:
+            pickle.dump(global_stats, f, protocol=pickle.HIGHEST_PROTOCOL)
         print(f"  Cached to {global_stats_path.name}")
 
     # ============================================================
