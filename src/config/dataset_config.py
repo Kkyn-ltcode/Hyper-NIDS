@@ -51,6 +51,9 @@ DATASET_CONFIG = {
             "small": {"train": [0, 1, 2, 3, 4, 5], "val": [6], "test": [7, 8, 9]},
             "full": {"train": [0, 1, 2, 3, 4, 5, 6], "val": [7], "test": [8, 9]},
             "cross": {"train": [0, 1, 2, 3, 4, 5], "val": [6, 7], "test": [8, 9]},
+            
+            # KAIROS/baseline-compatible split (train=Apr 3-5, val=Apr 9, test=Apr 10-12)
+            "kairos": {"train": [0, 1, 2], "val": [5], "test": [6, 7, 8]},
         },
         # Use first 7 shards for normalization fitting.
         "norm_train_shards": [0, 1, 2, 3, 4, 5, 6],
