@@ -22,16 +22,16 @@ from src.features.feature_extractor import (
     GlobalStats,
     compute_global_stats,
     extract_features,
-    compute_subject_last_ts_per_shard,
 )
 
 def _process_shard_pass2(args_tuple):
     import pandas as pd
     import numpy as np
+    import pickle
     import time
     from pathlib import Path
     
-    (shard_idx, shard_file_str, npz_path_str, global_stats_path_str, objects_df, subject_carry, n_shards) = args_tuple
+    (shard_idx, shard_file_str, npz_path_str, global_stats_path_str, carry_path_str, objects_df, n_shards) = args_tuple
     
     shard_file = Path(shard_file_str)
     npz_path = Path(npz_path_str)
@@ -48,6 +48,12 @@ def _process_shard_pass2(args_tuple):
         subject_first_ts=data["subject_first_ts"].item(),
         object_first_ts=data["object_first_ts"].item(),
     )
+    
+    # Load carry from disk
+    subject_carry = None
+    if carry_path_str:
+        with open(carry_path_str, 'rb') as f:
+            subject_carry = pickle.load(f)
     
     X, feat_names, _ = extract_features(
         df,
@@ -169,22 +175,44 @@ def main():
     all_feat_names = None
     total_events = 0
 
-    # Fast sequential pre-computation of carry state
-    print("  Pre-computing cross-shard boundaries (fast)...")
-    shard_carry_dicts, shard_unique_subs = compute_subject_last_ts_per_shard(labeled_dir)
+    # Fast sequential pre-computation of carry state — saves to disk
+    # to avoid holding 211 carry dicts in memory simultaneously.
+    print("  Pre-computing cross-shard boundaries (saving to disk)...")
+    import pickle
+    carry_dir = features_dir / "_carry_cache"
+    carry_dir.mkdir(parents=True, exist_ok=True)
     
-    cumulative_carry = []
     current_carry = {}
-    for i in range(len(shard_carry_dicts)):
-        # Extract minimal carry for shard i BEFORE applying shard i's updates
-        needed = shard_unique_subs[i]
-        minimal_carry = {k: current_carry[k] for k in needed if k in current_carry}
-        cumulative_carry.append(minimal_carry)
+    carry_paths = {}  # shard_idx -> carry file path
+    
+    for i, shard_file in enumerate(shard_files):
+        shard_name = shard_file.stem
+        shard_idx = int(shard_name.replace("labeled_shard", ""))
+        carry_path = carry_dir / f"carry_{shard_idx}.pkl"
         
-        # Update global state with shard i's last timestamps
-        current_carry.update(shard_carry_dicts[i])
+        # Save minimal carry for this shard (only subjects that appear in it)
+        df_sub = pd.read_parquet(shard_file, columns=["subject_uuid"])
+        needed = set(df_sub["subject_uuid"].unique())
+        del df_sub
         
-    del current_carry, shard_carry_dicts, shard_unique_subs
+        minimal = {k: current_carry[k] for k in needed if k in current_carry}
+        with open(carry_path, 'wb') as f:
+            pickle.dump(minimal, f, protocol=pickle.HIGHEST_PROTOCOL)
+        carry_paths[shard_idx] = str(carry_path)
+        del minimal, needed
+        
+        # Update current carry with this shard's last timestamps
+        df_ts = pd.read_parquet(shard_file, columns=["subject_uuid", "timestamp_nanos"])
+        last_ts = df_ts.groupby("subject_uuid")["timestamp_nanos"].max()
+        current_carry.update(last_ts.to_dict())
+        del df_ts, last_ts
+        gc.collect()
+        
+        print(f"    Shard {shard_idx} ({i+1}/{n_shards})")
+    
+    del current_carry
+    gc.collect()
+    print("  Carry states saved to disk.")
 
     # Build tasks
     tasks = []
@@ -195,7 +223,6 @@ def main():
         
         # Skip if already extracted
         if npz_path.exists() and not args.validate:
-            import pyarrow.parquet as pq
             try:
                 data = np.load(npz_path, allow_pickle=True)
                 n = len(data["y_broad"])
@@ -211,8 +238,8 @@ def main():
             str(shard_file), 
             str(npz_path), 
             str(global_stats_path), 
+            carry_paths.get(shard_idx, None),
             objects_df, 
-            cumulative_carry[i], 
             n_shards
         ))
 
@@ -233,6 +260,10 @@ def main():
                 elif feat_names != all_feat_names:
                     print(f"    ⚠ Feature name mismatch in Shard {shard_idx}! Run a consistent extraction.")
 
+    # Clean up carry cache
+    import shutil
+    if carry_dir.exists():
+        shutil.rmtree(carry_dir)
 
     # Save feature names
     if all_feat_names:
