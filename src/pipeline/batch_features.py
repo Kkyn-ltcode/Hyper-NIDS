@@ -44,7 +44,9 @@ def main():
     features_dir = DATA_ROOT / args.dataset / "features"
     features_dir.mkdir(parents=True, exist_ok=True)
 
-    shard_files = sorted(labeled_dir.glob("labeled_shard*.parquet"))
+    def _extract_idx(f):
+        return int(f.name.replace("labeled_shard", "").replace(".parquet", ""))
+    shard_files = sorted(labeled_dir.glob("labeled_shard*.parquet"), key=_extract_idx)
     if not shard_files:
         print(f"ERROR: No labeled shards in {labeled_dir}")
         print("  Run `python -m src.pipeline.batch_ingest` first.")

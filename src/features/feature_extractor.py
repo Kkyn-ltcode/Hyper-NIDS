@@ -37,78 +37,96 @@ class GlobalStats:
     object_event_counts: dict = field(default_factory=dict)
 
 
+def _process_single_shard(f):
+    import pandas as pd
+    import numpy as np
+    from collections import Counter
+    import gc
+    
+    type_counter = Counter()
+    df_type = pd.read_parquet(f, columns=["type"])
+    for t, c in df_type["type"].value_counts().items():
+        type_counter[t] += c
+    total_events = len(df_type)
+    del df_type
+    
+    df_sub = pd.read_parquet(f, columns=["subject_uuid", "timestamp_nanos"])
+    shard_sub_first = df_sub.groupby("subject_uuid")["timestamp_nanos"].min()
+    del df_sub
+    
+    obj_firsts = []
+    for col in ["predicate_object_uuid", "predicate_object2_uuid"]:
+        df_obj = pd.read_parquet(f, columns=[col, "timestamp_nanos"])
+        df_obj = df_obj.dropna(subset=[col])
+        if len(df_obj) > 0:
+            obj_firsts.append(df_obj.groupby(col)["timestamp_nanos"].min())
+        del df_obj
+        
+    if obj_firsts:
+        if len(obj_firsts) == 2:
+            combined = pd.concat(obj_firsts)
+            shard_obj_first = combined.groupby(combined.index).min()
+        else:
+            shard_obj_first = obj_firsts[0]
+    else:
+        shard_obj_first = pd.Series(dtype=np.float64)
+        
+    gc.collect()
+    return type_counter, total_events, shard_sub_first, shard_obj_first
+
 def compute_global_stats(labeled_dir) -> GlobalStats:
     """
     Compute corpus-wide statistics by scanning all labeled shards.
-
-    Only loads the columns needed (type, subject_uuid,
-    predicate_object_uuid, predicate_object2_uuid, timestamp_nanos).
-    Processes one shard at a time to limit memory. Uses vectorized
-    pandas operations instead of Python loops for scalability.
-
-    Args:
-        labeled_dir: Path to directory containing labeled_shard*.parquet
-
-    Returns:
-        GlobalStats with type_counts, subject_first_ts, object_first_ts
+    Uses ProcessPoolExecutor for parallel processing and avoids O(N^2) merge.
     """
     from pathlib import Path
     from collections import Counter
+    import concurrent.futures
+    import gc
 
     labeled_dir = Path(labeled_dir)
-    files = sorted(labeled_dir.glob("labeled_shard*.parquet"))
+    def _extract_idx(f):
+        return int(f.name.replace("labeled_shard", "").replace(".parquet", ""))
+    files = sorted(labeled_dir.glob("labeled_shard*.parquet"), key=_extract_idx)
     if not files:
         raise FileNotFoundError(f"No labeled shards in {labeled_dir}")
 
     stats = GlobalStats()
     type_counter = Counter()
 
-    # Accumulate first-seen timestamps using Series (vectorized min)
-    subject_first_series = pd.Series(dtype=np.float64)
-    object_first_series = pd.Series(dtype=np.float64)
+    print(f"  Computing global stats from {len(files)} shards (parallelized)...")
 
-    print(f"  Computing global stats from {len(files)} shards...")
+    sub_first_list = []
+    obj_first_list = []
 
-    for i, f in enumerate(files):
-        shard_name = f.stem
-        print(f"    Scanning {shard_name} ({i+1}/{len(files)})...")
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        futures = {executor.submit(_process_single_shard, f): f for f in files}
+        for i, future in enumerate(concurrent.futures.as_completed(futures)):
+            f = futures[future]
+            try:
+                t_counter, t_events, s_sub_first, s_obj_first = future.result()
+                type_counter.update(t_counter)
+                stats.total_events += t_events
+                sub_first_list.append(s_sub_first)
+                obj_first_list.append(s_obj_first)
+                print(f"    Finished {f.stem} ({i+1}/{len(files)})")
+            except Exception as exc:
+                print(f"    {f.stem} generated an exception: {exc}")
 
-        # Type counts
-        df_type = pd.read_parquet(f, columns=["type"])
-        for t, c in df_type["type"].value_counts().items():
-            type_counter[t] += c
-        stats.total_events += len(df_type)
-        del df_type
-
-        # Subject first-seen timestamps (vectorized)
-        df_sub = pd.read_parquet(
-            f, columns=["subject_uuid", "timestamp_nanos"])
-        shard_sub_first = df_sub.groupby(
-            "subject_uuid")["timestamp_nanos"].min()
-        # Merge with running minimum
-        combined = pd.concat([subject_first_series, shard_sub_first])
-        subject_first_series = combined.groupby(combined.index).min()
-        del df_sub, shard_sub_first, combined
-
-        # Object first-seen timestamps (both obj and obj2, vectorized)
-        for col in ["predicate_object_uuid", "predicate_object2_uuid"]:
-            df_obj = pd.read_parquet(f, columns=[col, "timestamp_nanos"])
-            df_obj = df_obj.dropna(subset=[col])
-            if len(df_obj) > 0:
-                shard_obj_first = df_obj.groupby(
-                    col)["timestamp_nanos"].min()
-                combined = pd.concat([object_first_series, shard_obj_first])
-                object_first_series = combined.groupby(combined.index).min()
-                del shard_obj_first, combined
-            del df_obj
-
-        gc.collect()
-
+    print("  Merging results (this should be fast)...")
+    if sub_first_list:
+        combined_sub = pd.concat(sub_first_list)
+        stats.subject_first_ts = combined_sub.groupby(combined_sub.index).min().to_dict()
+        del combined_sub
+        
+    if obj_first_list:
+        combined_obj = pd.concat(obj_first_list)
+        stats.object_first_ts = combined_obj.groupby(combined_obj.index).min().to_dict()
+        del combined_obj
+        
     stats.type_counts = dict(type_counter)
-    stats.subject_first_ts = subject_first_series.to_dict()
-    stats.object_first_ts = object_first_series.to_dict()
 
-    del subject_first_series, object_first_series
+    del sub_first_list, obj_first_list
     gc.collect()
 
     print(f"  Done. {stats.total_events:,} events, "
@@ -132,7 +150,9 @@ def compute_subject_last_ts_per_shard(labeled_dir) -> list[dict]:
     from pathlib import Path
 
     labeled_dir = Path(labeled_dir)
-    files = sorted(labeled_dir.glob("labeled_shard*.parquet"))
+    def _extract_idx(f):
+        return int(f.name.replace("labeled_shard", "").replace(".parquet", ""))
+    files = sorted(labeled_dir.glob("labeled_shard*.parquet"), key=_extract_idx)
 
     carry_dicts = []
     for f in files:
