@@ -172,6 +172,7 @@ def extract_features(
     objects_df: pd.DataFrame | None = None,
     subject_is_new_precomputed: np.ndarray | None = None,
     object_is_new_precomputed: np.ndarray | None = None,
+    canonical_event_types: list[str] | None = None,
 ) -> tuple[np.ndarray, list[str]]:
     """
     Extract per-hyperedge feature matrix from events DataFrame.
@@ -211,7 +212,12 @@ def extract_features(
     n = len(events_df)
 
     # 1. Event type one-hot
-    event_type_dummies = pd.get_dummies(events_df["type"], prefix="etype")
+    if canonical_event_types is not None:
+        # Use canonical types to ensure consistent columns across all shards
+        cat_type = pd.Categorical(events_df["type"], categories=canonical_event_types)
+        event_type_dummies = pd.get_dummies(cat_type, prefix="etype")
+    else:
+        event_type_dummies = pd.get_dummies(events_df["type"], prefix="etype")
 
     # 2. Hour of day
     hour = events_df["timestamp"].dt.hour.values.astype(np.float32)

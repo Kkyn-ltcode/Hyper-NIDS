@@ -117,6 +117,10 @@ def main():
         object_first_ts={},    # NOT loaded — pre-computed in Pass 1.5
     )
 
+    # Build canonical event type list from ALL shards (via Pass 1)
+    canonical_event_types = sorted(type_counts.index.tolist())
+    print(f"  Canonical event types ({len(canonical_event_types)}): {canonical_event_types}")
+
     # ============================================================
     # Pass 1.5: Pre-compute novelty flags (saves ~10 GB in Pass 2)
     # ============================================================
@@ -247,6 +251,7 @@ def main():
             objects_df=objects_df,
             subject_is_new_precomputed=sub_is_new,
             object_is_new_precomputed=obj_is_new,
+            canonical_event_types=canonical_event_types,
         )
         X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -255,20 +260,6 @@ def main():
 
         if all_feat_names is None:
             all_feat_names = feat_names
-        else:
-            # Ensure consistent feature names (types may vary across shards)
-            if feat_names != all_feat_names:
-                new_feats = set(feat_names) - set(all_feat_names)
-                if new_feats:
-                    print(f"    ⚠ Dropping new features not in shard 0: {new_feats}")
-                print(f"    ⚠ Feature name mismatch! Aligning to shard-0 schema...")
-                # Align columns: add missing types as zero columns
-                X_aligned = np.zeros(
-                    (n, len(all_feat_names)), dtype=np.float32)
-                for j, name in enumerate(all_feat_names):
-                    if name in feat_names:
-                        X_aligned[:, j] = X[:, feat_names.index(name)]
-                X = X_aligned
 
         # Save .npz with features + labels + timestamps
         np.savez_compressed(
