@@ -215,18 +215,20 @@ def extract_features(
     hour = events_df["timestamp"].dt.hour.values.astype(np.float32)
 
     # 3. Hyperedge size
-    has_sub = events_df["subject_uuid"].notna().values
-    has_obj = events_df["predicate_object_uuid"].notna().values
-    has_obj2 = events_df["predicate_object2_uuid"].notna().values
-    he_size = (has_sub.astype(np.int8) + has_obj.astype(np.int8) + has_obj2.astype(np.int8)).astype(np.float32)
+    has_sub = events_df["subject_uuid"].notna().astype(int)
+    has_obj = events_df["predicate_object_uuid"].notna().astype(int)
+    has_obj2 = events_df["predicate_object2_uuid"].notna().astype(int)
+    he_size = (has_sub + has_obj + has_obj2).values.astype(np.float32)
 
     # 4. Type rarity
     if global_stats is not None:
+        # Use corpus-wide frequencies
         total = global_stats.total_events
         type_freq = events_df["type"].map(
             global_stats.type_counts
         ).astype(np.float64).fillna(1).values
     else:
+        # Per-shard fallback
         total = n
         tc = events_df["type"].value_counts()
         type_freq = events_df["type"].map(tc).values.astype(np.float64)
@@ -234,23 +236,24 @@ def extract_features(
     type_rarity = (1.0 - (type_freq / total)).astype(np.float32)
 
     # 5. Event size field
-    if events_df["size"].dtype == object:
-        event_size = pd.to_numeric(
-            events_df["size"], errors="coerce"
-        ).fillna(0).values.astype(np.float32)
-    else:
-        event_size = events_df["size"].fillna(0).values.astype(np.float32)
+    event_size = pd.to_numeric(
+        events_df["size"], errors="coerce"
+    ).fillna(0).values.astype(np.float32)
 
     # 6. Time gap from previous event by same subject (vectorized)
     ts_nanos = events_df["timestamp_nanos"].values.astype(np.float64)
     subject_uuids = events_df["subject_uuid"].values
 
+    # Build a temporary DataFrame for groupby operations
     _tmp = pd.DataFrame({
         "subject_uuid": subject_uuids,
         "ts": ts_nanos,
     })
+
+    # Compute time gap as diff within each subject group
     _tmp["prev_ts"] = _tmp.groupby("subject_uuid")["ts"].shift(1)
 
+    # Seed first events with carry-over from previous shard
     if subject_last_ts_carry:
         first_event_mask = _tmp["prev_ts"].isna() & _tmp["subject_uuid"].notna()
         if first_event_mask.any():
@@ -260,28 +263,22 @@ def extract_features(
 
     time_gap = ((_tmp["ts"] - _tmp["prev_ts"]) / 1e9).values
 
+    # Record last timestamp per subject (for next shard's carry)
     last_ts_out = _tmp.groupby("subject_uuid")["ts"].last().to_dict()
     del _tmp
 
-    # 7. Subject is "new" (first seen within last hour)
+    # 7. Subject is "new" (first seen within last hour) — vectorized
     subject_is_new = np.zeros(n, dtype=np.float32)
-    if global_stats is not None and isinstance(global_stats.subject_first_ts, pd.Series) and len(global_stats.subject_first_ts) > 0:
-        # Use merge instead of map for massive speedup on 30M+ lookups
-        _first_ts_df = global_stats.subject_first_ts.rename("_first_ts").reset_index()
-        _first_ts_df.columns = ["subject_uuid", "_first_ts"]
-        _sub_lookup = pd.DataFrame({"subject_uuid": events_df["subject_uuid"].values})
-        _merged = _sub_lookup.merge(_first_ts_df, on="subject_uuid", how="left")
-        valid = _merged["_first_ts"].notna().values
-        age = ts_nanos - _merged["_first_ts"].values.astype(np.float64)
-        subject_is_new[valid & (age < 3600e9)] = 1.0
-        del _sub_lookup, _first_ts_df, _merged, valid, age
-    elif global_stats is not None:
-        sub_first_ts = events_df["subject_uuid"].map(global_stats.subject_first_ts)
+    if global_stats is not None:
+        # Use corpus-wide first-seen
+        sub_series = events_df["subject_uuid"]
+        sub_first_ts = sub_series.map(global_stats.subject_first_ts)
         valid_sub = sub_first_ts.notna()
         age = ts_nanos - sub_first_ts.values.astype(np.float64)
         subject_is_new[valid_sub.values & (age < 3600e9)] = 1.0
         del sub_first_ts, valid_sub, age
     else:
+        # Per-shard fallback: first occurrence per subject
         sub_df = pd.DataFrame({
             "subject_uuid": events_df["subject_uuid"].values,
             "ts": ts_nanos,
@@ -292,20 +289,12 @@ def extract_features(
         subject_is_new[valid.values & (age.values < 3600e9)] = 1.0
         del sub_df, sub_first, age
 
-    # 8. Object is "new"
+    # 8. Object is "new" — vectorized
     obj_uuids = events_df["predicate_object_uuid"].values
     object_is_new = np.zeros(n, dtype=np.float32)
-    if global_stats is not None and isinstance(global_stats.object_first_ts, pd.Series) and len(global_stats.object_first_ts) > 0:
-        _first_ts_df = global_stats.object_first_ts.rename("_first_ts").reset_index()
-        _first_ts_df.columns = ["predicate_object_uuid", "_first_ts"]
-        _obj_lookup = pd.DataFrame({"predicate_object_uuid": obj_uuids})
-        _merged = _obj_lookup.merge(_first_ts_df, on="predicate_object_uuid", how="left")
-        valid = _merged["_first_ts"].notna().values
-        age = ts_nanos - _merged["_first_ts"].values.astype(np.float64)
-        object_is_new[valid & (age < 3600e9)] = 1.0
-        del _obj_lookup, _first_ts_df, _merged, valid, age
-    elif global_stats is not None:
-        obj_first_ts = events_df["predicate_object_uuid"].map(global_stats.object_first_ts)
+    if global_stats is not None:
+        obj_series = events_df["predicate_object_uuid"]
+        obj_first_ts = obj_series.map(global_stats.object_first_ts)
         valid_obj = obj_first_ts.notna()
         age = ts_nanos - obj_first_ts.values.astype(np.float64)
         object_is_new[valid_obj.values & (age < 3600e9)] = 1.0
@@ -325,7 +314,7 @@ def extract_features(
     # 9. Has predicate_object_path
     has_path = events_df[
         "predicate_object_path"
-    ].notna().values.astype(np.float32)
+    ].notna().astype(np.float32).values
 
     # ------------------------------------------------------------------
     # Object-aware features (10-18)
@@ -338,27 +327,33 @@ def extract_features(
     obj_is_memory = np.zeros(n, dtype=np.float32)
 
     if objects_df is not None:
-        # Use merge instead of rebuilding a Series map every shard
-        _obj_type_lookup = pd.DataFrame({"_obj_uuid": obj_uuid_col.values})
-        _merged = _obj_type_lookup.merge(
-            objects_df.rename(columns={"uuid": "_obj_uuid"}),
-            on="_obj_uuid", how="left"
+        # Build uuid -> object_type mapping (vectorized)
+        obj_type_map = pd.Series(
+            objects_df["object_type"].astype(str).values,
+            index=objects_df["uuid"].values,
         )
-        obj_types = _merged["object_type"].values.astype(str)
-        obj_is_file = (obj_types == "FILE").astype(np.float32)
-        obj_is_netflow = (obj_types == "NETFLOW").astype(np.float32)
-        obj_is_memory = (obj_types == "MEMORY").astype(np.float32)
-        del _obj_type_lookup, _merged, obj_types
+        obj_types = obj_uuid_col.map(obj_type_map).fillna("UNKNOWN")
+        obj_is_file = (obj_types == "FILE").values.astype(np.float32)
+        obj_is_netflow = (obj_types == "NETFLOW").values.astype(np.float32)
+        obj_is_memory = (obj_types == "MEMORY").values.astype(np.float32)
+        del obj_type_map, obj_types
 
-    # 13-16. Path features using numpy for speed
-    path_values = events_df["predicate_object_path"].values
-    path_strs = np.where(pd.isna(path_values), "", path_values.astype(str))
+    # 13. Path depth (number of '/' segments)
+    path_col = events_df["predicate_object_path"].fillna("").astype(str)
+    path_depth = path_col.str.count("/").values.astype(np.float32)
 
-    path_depth = np.array([s.count("/") for s in path_strs], dtype=np.float32)
-    path_has_tmp = np.array(["/tmp" in s for s in path_strs], dtype=np.float32)
-    path_has_home = np.array(["/home/" in s for s in path_strs], dtype=np.float32)
-    path_has_log = np.array(["/var/log" in s or "/log/" in s for s in path_strs], dtype=np.float32)
-    del path_strs
+    # 14-16. Path content indicators
+    path_has_tmp = (
+        path_col.str.contains("/tmp", na=False, regex=False)
+    ).values.astype(np.float32)
+    path_has_home = (
+        path_col.str.contains("/home/", na=False, regex=False)
+    ).values.astype(np.float32)
+    path_has_log = (
+        path_col.str.contains("/var/log", na=False, regex=False) | path_col.str.contains("/log/", na=False, regex=False)
+    ).values.astype(np.float32)
+
+    del path_col
 
     # 17. Object event count: log(count + 1) per predicate_object_uuid
     obj_counts = obj_uuid_col.map(
