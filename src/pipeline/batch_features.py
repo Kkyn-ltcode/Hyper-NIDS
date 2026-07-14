@@ -81,33 +81,110 @@ def main():
     if global_stats_path.exists() and not args.validate:
         print("  Loading cached global stats...")
         data = np.load(global_stats_path, allow_pickle=True)
-        global_stats = GlobalStats(
-            total_events=int(data["total_events"]),
-            type_counts=pd.Series(data["type_counts"].item()),
-            subject_first_ts=pd.Series(data["subject_first_ts"].item()),
-            object_first_ts=pd.Series(data["object_first_ts"].item()),
-        )
-        print(f"  {global_stats.total_events:,} events, "
-              f"{len(global_stats.type_counts)} types, "
-              f"{len(global_stats.subject_first_ts):,} subjects, "
-              f"{len(global_stats.object_first_ts):,} objects")
+        total_events = int(data["total_events"])
+        type_counts = pd.Series(data["type_counts"].item())
+        n_subjects = len(data["subject_first_ts"].item())
+        n_objects = len(data["object_first_ts"].item())
+        del data
+        print(f"  {total_events:,} events, "
+              f"{len(type_counts)} types, "
+              f"{n_subjects:,} subjects, "
+              f"{n_objects:,} objects")
     else:
         t0 = time.time()
-        global_stats = compute_global_stats(labeled_dir)
+        full_stats = compute_global_stats(labeled_dir)
         print(f"  Time: {time.time()-t0:.1f}s")
 
         # Cache for future runs
         np.savez(
             global_stats_path,
-            total_events=global_stats.total_events,
-            type_counts=global_stats.type_counts,
-            subject_first_ts=global_stats.subject_first_ts,
-            object_first_ts=global_stats.object_first_ts,
+            total_events=full_stats.total_events,
+            type_counts=full_stats.type_counts,
+            subject_first_ts=full_stats.subject_first_ts,
+            object_first_ts=full_stats.object_first_ts,
         )
         print(f"  Cached to {global_stats_path.name}")
+        total_events = full_stats.total_events
+        type_counts = pd.Series(full_stats.type_counts)
+        del full_stats
+        gc.collect()
+
+    # Build a lightweight GlobalStats for Pass 2 (no first-ts dicts!)
+    global_stats = GlobalStats(
+        total_events=total_events,
+        type_counts=type_counts,
+        subject_first_ts={},   # NOT loaded — pre-computed in Pass 1.5
+        object_first_ts={},    # NOT loaded — pre-computed in Pass 1.5
+    )
 
     # ============================================================
-    # Pass 2: Per-shard feature extraction
+    # Pass 1.5: Pre-compute novelty flags (saves ~10 GB in Pass 2)
+    # ============================================================
+    novelty_dir = features_dir / "novelty"
+    novelty_dir.mkdir(parents=True, exist_ok=True)
+
+    first_shard_idx = int(shard_files[0].stem.replace("labeled_shard", ""))
+    novelty_done = (novelty_dir / f"subject_is_new_shard{first_shard_idx}.npy").exists()
+
+    if not novelty_done or args.validate:
+        print(f"\n{'='*60}")
+        print("PASS 1.5: Pre-computing Novelty Flags")
+        print(f"{'='*60}")
+
+        # --- Subject novelty ---
+        print("  Loading subject_first_ts...")
+        data = np.load(global_stats_path, allow_pickle=True)
+        sub_first_ts = pd.Series(data["subject_first_ts"].item())
+        del data
+        gc.collect()
+        print(f"  {len(sub_first_ts):,} subjects loaded")
+
+        for shard_file in shard_files:
+            shard_idx = int(shard_file.stem.replace("labeled_shard", ""))
+            out_path = novelty_dir / f"subject_is_new_shard{shard_idx}.npy"
+            df = pd.read_parquet(shard_file, columns=["subject_uuid", "timestamp_nanos"])
+            ts = df["timestamp_nanos"].values.astype(np.float64)
+            first_ts = df["subject_uuid"].map(sub_first_ts)
+            valid = first_ts.notna()
+            age = ts - first_ts.values.astype(np.float64)
+            is_new = np.zeros(len(df), dtype=np.float32)
+            is_new[valid.values & (age < 3600e9)] = 1.0
+            np.save(out_path, is_new)
+            del df, ts, first_ts, valid, age, is_new
+            gc.collect()
+        del sub_first_ts
+        gc.collect()
+        print(f"  Subject novelty: {len(shard_files)} shards saved")
+
+        # --- Object novelty ---
+        print("  Loading object_first_ts...")
+        data = np.load(global_stats_path, allow_pickle=True)
+        obj_first_ts = pd.Series(data["object_first_ts"].item())
+        del data
+        gc.collect()
+        print(f"  {len(obj_first_ts):,} objects loaded")
+
+        for shard_file in shard_files:
+            shard_idx = int(shard_file.stem.replace("labeled_shard", ""))
+            out_path = novelty_dir / f"object_is_new_shard{shard_idx}.npy"
+            df = pd.read_parquet(shard_file, columns=["predicate_object_uuid", "timestamp_nanos"])
+            ts = df["timestamp_nanos"].values.astype(np.float64)
+            first_ts = df["predicate_object_uuid"].map(obj_first_ts)
+            valid = first_ts.notna()
+            age = ts - first_ts.values.astype(np.float64)
+            is_new = np.zeros(len(df), dtype=np.float32)
+            is_new[valid.values & (age < 3600e9)] = 1.0
+            np.save(out_path, is_new)
+            del df, ts, first_ts, valid, age, is_new
+            gc.collect()
+        del obj_first_ts
+        gc.collect()
+        print(f"  Object novelty: {len(shard_files)} shards saved")
+    else:
+        print(f"\n  Novelty flags already pre-computed, skipping Pass 1.5")
+
+    # ============================================================
+    # Pass 2: Per-shard feature extraction (memory-lean)
     # ============================================================
     print(f"\n{'='*60}")
     print("PASS 2: Per-Shard Feature Extraction")
@@ -153,17 +230,23 @@ def main():
         print(f"\n  Shard {shard_idx}/{n_shards-1}...")
         t0 = time.time()
 
+        # Load pre-computed novelty arrays
+        sub_is_new = np.load(novelty_dir / f"subject_is_new_shard{shard_idx}.npy")
+        obj_is_new = np.load(novelty_dir / f"object_is_new_shard{shard_idx}.npy")
+
         # Load labeled shard
         df = pd.read_parquet(shard_file)
         n = len(df)
         total_events += n
 
-        # Extract features with global stats and carry-over
+        # Extract features with carry-over and pre-computed novelty
         X, feat_names, last_ts_out = extract_features(
             df,
             global_stats=global_stats,
             subject_last_ts_carry=subject_carry if subject_carry else None,
             objects_df=objects_df,
+            subject_is_new_precomputed=sub_is_new,
+            object_is_new_precomputed=obj_is_new,
         )
         X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 

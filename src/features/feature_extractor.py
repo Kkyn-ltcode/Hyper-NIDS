@@ -170,6 +170,8 @@ def extract_features(
     global_stats: GlobalStats | None = None,
     subject_last_ts_carry: dict | None = None,
     objects_df: pd.DataFrame | None = None,
+    subject_is_new_precomputed: np.ndarray | None = None,
+    object_is_new_precomputed: np.ndarray | None = None,
 ) -> tuple[np.ndarray, list[str]]:
     """
     Extract per-hyperedge feature matrix from events DataFrame.
@@ -268,8 +270,10 @@ def extract_features(
     del _tmp
 
     # 7. Subject is "new" (first seen within last hour) — vectorized
-    subject_is_new = np.zeros(n, dtype=np.float32)
-    if global_stats is not None:
+    if subject_is_new_precomputed is not None:
+        subject_is_new = subject_is_new_precomputed
+    elif global_stats is not None:
+        subject_is_new = np.zeros(n, dtype=np.float32)
         # Use corpus-wide first-seen
         sub_series = events_df["subject_uuid"]
         sub_first_ts = sub_series.map(global_stats.subject_first_ts)
@@ -278,6 +282,7 @@ def extract_features(
         subject_is_new[valid_sub.values & (age < 3600e9)] = 1.0
         del sub_first_ts, valid_sub, age
     else:
+        subject_is_new = np.zeros(n, dtype=np.float32)
         # Per-shard fallback: first occurrence per subject
         sub_df = pd.DataFrame({
             "subject_uuid": events_df["subject_uuid"].values,
@@ -291,8 +296,10 @@ def extract_features(
 
     # 8. Object is "new" — vectorized
     obj_uuids = events_df["predicate_object_uuid"].values
-    object_is_new = np.zeros(n, dtype=np.float32)
-    if global_stats is not None:
+    if object_is_new_precomputed is not None:
+        object_is_new = object_is_new_precomputed
+    elif global_stats is not None:
+        object_is_new = np.zeros(n, dtype=np.float32)
         obj_series = events_df["predicate_object_uuid"]
         obj_first_ts = obj_series.map(global_stats.object_first_ts)
         valid_obj = obj_first_ts.notna()
@@ -300,6 +307,7 @@ def extract_features(
         object_is_new[valid_obj.values & (age < 3600e9)] = 1.0
         del obj_first_ts, valid_obj, age
     else:
+        object_is_new = np.zeros(n, dtype=np.float32)
         obj_df = pd.DataFrame({
             "obj_uuid": obj_uuids,
             "ts": ts_nanos,
