@@ -55,15 +55,19 @@ def main():
     print(f"  Excluded UUIDs: {EXCLUDED_UUIDS}")
 
     # ============================================================
-    # Step 1: Gather all entity UUIDs (excluding sentinels)
+    # Step 1: Gather all entity UUIDs (excluding sentinels) AND
+    #         tally total_events & total_nnz for preallocation
     # ============================================================
     print(f"\n{'='*60}")
-    print("STEP 1: Gather Entity UUIDs")
+    print("STEP 1: Gather Entity UUIDs & Tally Counts")
     print(f"{'='*60}")
 
     t0 = time.time()
     subject_uuids = set()
     object_uuids = set()
+
+    total_events = 0
+    total_nnz = 0
 
     for f in shard_files:
         shard_name = f.stem
@@ -82,6 +86,18 @@ def main():
 
         obj2s = df["predicate_object2_uuid"].dropna().unique()
         object_uuids.update(o for o in obj2s if o not in EXCLUDED_UUIDS)
+
+        # ---- NEW: count total events and nnz while we have the df ----
+        has_sub = df["subject_uuid"].notna() & ~df["subject_uuid"].isin(EXCLUDED_UUIDS)
+        has_obj = df["predicate_object_uuid"].notna() & ~df["predicate_object_uuid"].isin(EXCLUDED_UUIDS)
+        has_obj2 = df["predicate_object2_uuid"].notna() & ~df["predicate_object2_uuid"].isin(EXCLUDED_UUIDS)
+
+        sizes = has_sub.astype(np.int8) + has_obj.astype(np.int8) + has_obj2.astype(np.int8)
+        valid = sizes >= 2
+
+        total_events += len(df)
+        total_nnz += int(sizes[valid].sum())
+        # -------------------------------------------------------------
 
         del df
         gc.collect()
@@ -135,27 +151,29 @@ def main():
     gc.collect()
 
     # ============================================================
-    # Step 3: Build incidence list (COO format)
+    # Step 3: Build incidence list (COO format) with preallocation
     # ============================================================
     print(f"\n{'='*60}")
-    print("STEP 3: Build Incidence (COO)")
+    print("STEP 3: Build Incidence (COO) – Preallocated")
     print(f"{'='*60}")
 
     t0 = time.time()
-    he_global_offset = 0
     shard_offsets = []
 
-    all_indices = []
-    all_indptr = [np.array([0], dtype=np.int64)]
-    current_nnz = 0
-    all_labels_broad = []
-    all_labels_narrow = []
-    all_labels_ioc = []
-    all_event_types = []
-    all_timestamps = []
-    total_events = 0
+    # Preallocate the big arrays now that we know the final sizes
+    csc_indices = np.empty(total_nnz, dtype=np.int32)
+    csc_indptr = np.empty(total_events + 1, dtype=np.int64)
+    csc_indptr[0] = 0
+    nnz_cursor = 0
+    he_cursor = 0
 
-    # Track hyperedge sizes (will vary now: 2 or 3)
+    # Preallocate label arrays (optional, but safe)
+    y_broad = np.full(total_events, -1, dtype=np.int8)
+    y_narrow = np.full(total_events, -1, dtype=np.int8)
+    y_ioc = np.full(total_events, -1, dtype=np.int8)
+    event_type_arr = np.full(total_events, -1, dtype=np.int16)
+    timestamp_arr = np.full(total_events, -1, dtype=np.int64)
+
     size_2_count = 0
     size_3_count = 0
 
@@ -173,7 +191,7 @@ def main():
         df = pd.read_parquet(f, columns=load_cols)
         n = len(df)
 
-        # Map UUIDs to integer IDs (excluded UUIDs will map to NaN)
+        # Map UUIDs to integer IDs (excluded UUIDs will map to -1)
         def map_col(series):
             return np.fromiter(
                 (uuid_to_id.get(u, -1) for u in series.fillna("")),
@@ -196,7 +214,7 @@ def main():
         if n_degenerate > 0:
             print(f"    ⚠ Filtering {n_degenerate} degenerate hyperedges "
                   f"(size < 2)")
-            # Zero out degenerate entries so they don't get COO entries
+            # Zero out degenerate entries so they contribute nothing
             subj_ids[~valid_he] = -1
             obj1_ids[~valid_he] = -1
             obj2_ids[~valid_he] = -1
@@ -204,60 +222,54 @@ def main():
         size_2_count += int((sizes == 2).sum())
         size_3_count += int((sizes == 3).sum())
 
-        # Use n (total events) as offset unit — degenerate events
-        # still occupy an index slot (labels array aligns with events)
-        he_ids = np.arange(he_global_offset, he_global_offset + n,
-                           dtype=np.int64)
-        shard_offsets.append((shard_idx, he_global_offset,
-                              he_global_offset + n,
-                              int(valid_he.sum())))  # valid count for reference
+        # Record shard offset
+        shard_offsets.append((shard_idx, he_cursor, he_cursor + n,
+                              int(valid_he.sum())))
 
-        # Build CSC components natively (events are columns)
-        # 1. Flatten valid entity IDs per event into a single array
+        # Build valid entity array and sizes
         ent_array = np.column_stack([subj_ids, obj1_ids, obj2_ids])
         valid_mask = ent_array >= 0
-        
-        # Zero out degenerate entries completely so they take 0 space
-        valid_mask[~valid_he] = False
-        shard_sizes = valid_mask.sum(axis=1)
-        
-        # 2. Extract valid entity IDs (these become the CSC indices)
-        shard_indices = ent_array[valid_mask]
-        all_indices.append(shard_indices.astype(np.int32))
-        
-        # 3. Update CSC indptr
-        shard_indptr = current_nnz + np.cumsum(shard_sizes, dtype=np.int64)
-        all_indptr.append(shard_indptr)
-        current_nnz += len(shard_indices)
+        valid_mask[~valid_he] = False   # ignore degenerate rows
+        shard_sizes = valid_mask.sum(axis=1)   # length n
+        shard_indices = ent_array[valid_mask]  # length k
 
-        he_global_offset += n
-        total_events += n
+        # ---- Write into preallocated slices ----
+        k = len(shard_indices)
+        csc_indices[nnz_cursor : nnz_cursor + k] = shard_indices.astype(np.int32)
+        csc_indptr[he_cursor + 1 : he_cursor + 1 + n] = (
+            nnz_cursor + np.cumsum(shard_sizes, dtype=np.int64)
+        )
+
+        nnz_cursor += k
+        he_cursor += n
+        # -----------------------------------------
+
+        # Fill label arrays
+        if "label_broad" in df.columns:
+            y_broad[he_cursor - n : he_cursor] = df["label_broad"].values.astype(np.int8)
+        if "label_narrow" in df.columns:
+            y_narrow[he_cursor - n : he_cursor] = df["label_narrow"].values.astype(np.int8)
+        if "label_ioc" in df.columns:
+            y_ioc[he_cursor - n : he_cursor] = df["label_ioc"].values.astype(np.int8)
+        if "type" in df.columns:
+            event_type_arr[he_cursor - n : he_cursor] = (
+                df["type"].astype("category").cat.codes.values.astype(np.int16)
+            )
+        if "timestamp_nanos" in df.columns:
+            timestamp_arr[he_cursor - n : he_cursor] = (
+                df["timestamp_nanos"].values.astype(np.int64)
+            )
+
         n_sz3 = int((sizes == 3).sum())
         print(f"    {n:,} events | size-2: {n - n_sz3:,} | "
               f"size-3: {n_sz3:,} ({100*n_sz3/n:.1f}%)")
 
-        for col, store in [
-            ("label_broad",    all_labels_broad),
-            ("label_narrow",   all_labels_narrow),
-            ("label_ioc",      all_labels_ioc),
-        ]:
-            arr = df[col].values.astype(np.int8) if col in df.columns \
-                  else np.full(n, -1, dtype=np.int8)
-            store.append(arr)
-
-        if "type" in df.columns:
-            all_event_types.append(df["type"].astype("category").cat.codes.values.astype(np.int16))
-        if "timestamp_nanos" in df.columns:
-            all_timestamps.append(df["timestamp_nanos"].values.astype(np.int64))
-
-        del df, subj_ids, obj1_ids, obj2_ids, he_ids
+        del df, subj_ids, obj1_ids, obj2_ids
         gc.collect()
 
-    # Concatenate CSC arrays
-    csc_indices = np.concatenate(all_indices)
-    csc_indptr = np.concatenate(all_indptr)
-    del all_indices, all_indptr
-    gc.collect()
+    # ---- Sanity checks ----
+    assert nnz_cursor == total_nnz, f"nnz mismatch: {nnz_cursor} != {total_nnz}"
+    assert he_cursor == total_events, f"event count mismatch: {he_cursor} != {total_events}"
 
     num_hyperedges = total_events
     print(f"\n  Total hyperedges:  {num_hyperedges:,}")
@@ -285,10 +297,7 @@ def main():
 
     t0 = time.time()
 
-    # We built the column pointers (indptr) and row indices (csc_indices)
-    # for a CSC matrix (where columns are hyperedges).
-    csc_data = np.ones(len(csc_indices), dtype=np.int8)
-    
+    csc_data = np.ones(total_nnz, dtype=np.int8)
     H_csc = sparse.csc_matrix(
         (csc_data, csc_indices, csc_indptr),
         shape=(num_entities, num_hyperedges),
@@ -300,19 +309,21 @@ def main():
 
     incidence_path = graph_dir / "incidence.npz"
     sparse.save_npz(incidence_path, H_csr)
+
+    # Save labels (now already complete arrays)
     labels_path = graph_dir / "hyperedge_labels.npz"
     np.savez_compressed(
         labels_path,
-        y_broad=np.concatenate(all_labels_broad),
-        y_narrow=np.concatenate(all_labels_narrow) if all_labels_narrow else np.array([]),
-        y_ioc=np.concatenate(all_labels_ioc) if all_labels_ioc else np.array([]),
+        y_broad=y_broad,
+        y_narrow=y_narrow,
+        y_ioc=y_ioc,
     )
 
     meta_path = graph_dir / "hyperedge_metadata.npz"
     np.savez_compressed(
         meta_path,
-        event_type=np.concatenate(all_event_types) if all_event_types else np.array([]),
-        timestamp_nanos=np.concatenate(all_timestamps) if all_timestamps else np.array([]),
+        event_type=event_type_arr,
+        timestamp_nanos=timestamp_arr,
     )
     print(f"    hyperedge_labels.npz, hyperedge_metadata.npz saved")
 
