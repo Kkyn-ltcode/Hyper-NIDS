@@ -138,7 +138,14 @@ def main():
         if not os.path.exists(shard_path):
             print(f"Skipping {shard_path}, not found.")
             continue
-            
+        
+        # ---- NEW: Skip if enriched output already exists ----
+        out_path = f"{shard_dir}/enriched_shard{sid}.npz"
+        if os.path.exists(out_path):
+            print(f"Shard {sid} already processed, skipping.")
+            continue
+        # -----------------------------------------------------
+
         print(f"Processing shard {sid}...")
         df = pd.read_parquet(shard_path, columns=['subject_uuid', 'predicate_object_uuid', 'predicate_object2_uuid'])
         
@@ -261,7 +268,6 @@ def main():
             out_features[i, 56:62] = net_feats
             
         # Save the enriched features
-        out_path = f"{shard_dir}/enriched_shard{sid}.npz"
         np.savez_compressed(out_path, features=out_features)
         print(f"Saved {out_path} with shape {out_features.shape}")
 
