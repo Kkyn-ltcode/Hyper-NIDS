@@ -17,6 +17,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq          # <-- added for metadata checks
 
 from src.features.feature_extractor import (
     GlobalStats,
@@ -204,17 +205,27 @@ def main():
         shard_idx = int(shard_name.replace("labeled_shard", ""))
         npz_path = features_dir / f"thyne_shard{shard_idx}.npz"
 
-        # Skip if already extracted
+        # ---------- FIX: stale-cache check with row-count validation ----------
+        use_cache = False
+        n_cached = -1
         if npz_path.exists() and not args.validate:
-            # Only load the minimal columns needed
-            import pyarrow.parquet as pq
-            n = pq.read_metadata(shard_file).num_rows
+            n_current = pq.read_metadata(shard_file).num_rows
             try:
-                data = np.load(npz_path, allow_pickle=True)
-                n = len(data["y_broad"])
-                del data
+                cached = np.load(npz_path, allow_pickle=True)
+                n_cached = len(cached["y_broad"])
+                del cached
             except Exception:
-                n = 0
+                n_cached = -1
+
+            if n_cached == n_current:
+                use_cache = True
+            else:
+                print(f"  Shard {shard_idx}: STALE cache "
+                      f"(cached={n_cached:,} rows, parquet now has {n_current:,}) — rebuilding")
+
+        if use_cache:
+            # ---------- Existing skip logic ----------
+            n = n_cached
             total_events += n
             print(f"  Shard {shard_idx}/{n_shards-1}: SKIPPED (exists, {n:,} events)")
 
@@ -231,6 +242,7 @@ def main():
             gc.collect()
             continue
 
+        # ---------- Normal rebuild path (unchanged) ----------
         print(f"\n  Shard {shard_idx}/{n_shards-1}...")
         t0 = time.time()
 
