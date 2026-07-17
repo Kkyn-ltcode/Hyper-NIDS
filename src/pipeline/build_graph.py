@@ -161,13 +161,15 @@ def main():
     shard_offsets = []
 
     # Preallocate the big arrays now that we know the final sizes
+    # Use int32 for both indices and indptr to avoid silent upcast
+    assert total_nnz < 2**31, "nnz too large for int32 — keep int64 here"
     csc_indices = np.empty(total_nnz, dtype=np.int32)
-    csc_indptr = np.empty(total_events + 1, dtype=np.int64)
+    csc_indptr = np.empty(total_events + 1, dtype=np.int32)
     csc_indptr[0] = 0
     nnz_cursor = 0
     he_cursor = 0
 
-    # Preallocate label arrays (optional, but safe)
+    # Preallocate label arrays
     y_broad = np.full(total_events, -1, dtype=np.int8)
     y_narrow = np.full(total_events, -1, dtype=np.int8)
     y_ioc = np.full(total_events, -1, dtype=np.int8)
@@ -237,7 +239,7 @@ def main():
         k = len(shard_indices)
         csc_indices[nnz_cursor : nnz_cursor + k] = shard_indices.astype(np.int32)
         csc_indptr[he_cursor + 1 : he_cursor + 1 + n] = (
-            nnz_cursor + np.cumsum(shard_sizes, dtype=np.int64)
+            nnz_cursor + np.cumsum(shard_sizes, dtype=np.int32)
         )
 
         nnz_cursor += k
@@ -278,6 +280,30 @@ def main():
     print(f"  Non-zero entries:  {len(csc_indices):,}")
     print(f"  Time: {time.time()-t0:.1f}s")
 
+    # ---- Free uuid_to_id (no longer needed) ----
+    del uuid_to_id
+    gc.collect()
+
+    # ---- Save labels and metadata NOW (before sparse matrix memory spike) ----
+    labels_path = graph_dir / "hyperedge_labels.npz"
+    np.savez_compressed(
+        labels_path,
+        y_broad=y_broad,
+        y_narrow=y_narrow,
+        y_ioc=y_ioc,
+    )
+    meta_path = graph_dir / "hyperedge_metadata.npz"
+    np.savez_compressed(
+        meta_path,
+        event_type=event_type_arr,
+        timestamp_nanos=timestamp_arr,
+    )
+    print(f"    hyperedge_labels.npz, hyperedge_metadata.npz saved")
+
+    # ---- Free label arrays to reclaim memory ----
+    del y_broad, y_narrow, y_ioc, event_type_arr, timestamp_arr
+    gc.collect()
+
     # Save shard offsets
     offsets_path = graph_dir / "shard_offsets.npz"
     np.savez(
@@ -289,10 +315,10 @@ def main():
     )
 
     # ============================================================
-    # Step 4: Build sparse incidence matrix
+    # Step 4: Build sparse incidence matrix (CSC only, no CSR conversion)
     # ============================================================
     print(f"\n{'='*60}")
-    print("STEP 4: Build Sparse Incidence Matrix")
+    print("STEP 4: Build Sparse Incidence Matrix (CSC)")
     print(f"{'='*60}")
 
     t0 = time.time()
@@ -302,47 +328,33 @@ def main():
         (csc_data, csc_indices, csc_indptr),
         shape=(num_entities, num_hyperedges),
     )
-
-    H_csr = H_csc.tocsr()
-    del H_csc, csc_indices, csc_indptr, csc_data
+    # Free the raw arrays now that they're referenced inside H_csc
+    del csc_data, csc_indices, csc_indptr
     gc.collect()
 
+    # Save CSC directly (no CSR conversion)
     incidence_path = graph_dir / "incidence.npz"
-    sparse.save_npz(incidence_path, H_csr)
+    sparse.save_npz(incidence_path, H_csc)  # save_npz handles CSC/CSR transparently
 
-    # Save labels (now already complete arrays)
-    labels_path = graph_dir / "hyperedge_labels.npz"
-    np.savez_compressed(
-        labels_path,
-        y_broad=y_broad,
-        y_narrow=y_narrow,
-        y_ioc=y_ioc,
-    )
-
-    meta_path = graph_dir / "hyperedge_metadata.npz"
-    np.savez_compressed(
-        meta_path,
-        event_type=event_type_arr,
-        timestamp_nanos=timestamp_arr,
-    )
-    print(f"    hyperedge_labels.npz, hyperedge_metadata.npz saved")
-
-    print(f"  Shape: {H_csr.shape}")
-    print(f"  Non-zeros: {H_csr.nnz:,}")
-    print(f"  Density: {H_csr.nnz / (H_csr.shape[0] * H_csr.shape[1]):.2e}")
+    print(f"  Shape: {H_csc.shape}")
+    print(f"  Non-zeros: {H_csc.nnz:,}")
+    print(f"  Density: {H_csc.nnz / (H_csc.shape[0] * H_csc.shape[1]):.2e}")
     print(f"  File: {incidence_path.name} "
           f"({incidence_path.stat().st_size / 1e6:.0f} MB)")
     print(f"  Time: {time.time()-t0:.1f}s")
 
     # ============================================================
-    # Step 5: Hypergraph statistics
+    # Step 5: Hypergraph statistics (compute directly on CSC)
     # ============================================================
     print(f"\n{'='*60}")
     print("STEP 5: Hypergraph Statistics")
     print(f"{'='*60}")
 
-    # Node degrees
-    node_degrees = np.array(H_csr.sum(axis=1)).flatten()
+    # Node degrees: sum over rows (axis=1) works on CSC, but may be slow.
+    # Faster: use bincount on row indices (csc_indices) – but we no longer have
+    # the raw arrays; we can get them from H_csc.indices, H_csc.indptr.
+    # We'll use the built-in method; for large matrices it's fine.
+    node_degrees = np.array(H_csc.sum(axis=1)).flatten()
 
     print(f"\n  Node degree statistics:")
     print(f"    Mean:   {node_degrees.mean():.1f}")
@@ -385,8 +397,8 @@ def main():
             print(f"    {type_names[t_val]:15s}: {cnt:>10,} entities, "
                   f"avg degree={avg_deg:.1f}, max={max_deg:,}")
 
-    nnz_count = H_csr.nnz
-    del H_csr, node_degrees
+    nnz_count = H_csc.nnz
+    del H_csc, node_degrees
     gc.collect()
 
     # ============================================================
