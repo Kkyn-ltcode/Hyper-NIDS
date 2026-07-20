@@ -46,13 +46,28 @@ class ChronoDataset(Dataset):
         
         # Load entity vocabulary to get total entities
         vocab = np.load(graph_dir / "entity_vocab.npz", allow_pickle=True)
-        uuid_to_id = {str(u): i for i, u in enumerate(vocab["uuids"])}
+        # A plain Python dict here costs ~150-200 bytes per entry (dict slot +
+        # boxed str key + boxed int value). At 176M+ entities that's tens of
+        # GB before a single event is loaded, and it's paid again every time
+        # ChronoDataset is instantiated (train/val/test), regardless of how
+        # many shards were requested. pandas' Index/get_indexer does the same
+        # position-preserving lookup (missing -> -1) using a compact internal
+        # hash table instead of one Python object per entry.
+        _uuid_index = pd.Index(vocab["uuids"].astype(str))
         # Remove the null UUID — it appears as predicate_object2_uuid on most events.
         # If left in the vocab, it gets a real integer ID, accumulates state from
         # every single event, and becomes a corrupted super-node that bleeds noise
-        # into every cross-entity aggregation. Removing it makes .map() return NaN,
-        # then .fillna(-1) correctly marks it as invalid for valid_mask.
-        uuid_to_id.pop("00000000-0000-0000-0000-000000000000", None)
+        # into every cross-entity aggregation. We keep its original position out
+        # of the lookup result (redirect to -1) without disturbing everyone
+        # else's entity id, which is just their position in vocab["uuids"].
+        _NULL_UUID = "00000000-0000-0000-0000-000000000000"
+        _null_pos = _uuid_index.get_loc(_NULL_UUID) if _NULL_UUID in _uuid_index else None
+
+        def map_uuids(series):
+            idx = _uuid_index.get_indexer(series.astype(str))
+            if _null_pos is not None:
+                idx[idx == _null_pos] = -1
+            return idx.astype(np.int64)
         self.num_entities = int(vocab["num_entities"])
         
         # Load process vocabulary for semantic embedding
@@ -148,9 +163,9 @@ class ChronoDataset(Dataset):
                 labeled_dir / f"labeled_shard{sid}.parquet",
                 columns=["subject_uuid", "predicate_object_uuid", "predicate_object2_uuid", "timestamp_nanos"],
             )
-            sub = df["subject_uuid"].map(uuid_to_id).fillna(-1).astype(np.int64).values
-            obj = df["predicate_object_uuid"].map(uuid_to_id).fillna(-1).astype(np.int64).values
-            obj2 = df["predicate_object2_uuid"].map(uuid_to_id).fillna(-1).astype(np.int64).values
+            sub = map_uuids(df["subject_uuid"])
+            obj = map_uuids(df["predicate_object_uuid"])
+            obj2 = map_uuids(df["predicate_object2_uuid"])
             ent_parts.append(np.stack([sub, obj, obj2], axis=1))
             
             # Map subject UUID to process name index (0 = unknown)
