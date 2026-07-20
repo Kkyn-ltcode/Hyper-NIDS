@@ -142,7 +142,6 @@ class ChronoDataset(Dataset):
         process_parts = []
         ts_parts = []
         raw_nanos_parts = []
-        uuid_parts = []  # raw UUID strings for node-level metrics
         _t0 = t0_nanos  # Use provided t0, or compute from first shard
         for sid in shard_ids:
             df = pd.read_parquet(
@@ -157,9 +156,6 @@ class ChronoDataset(Dataset):
             # Map subject UUID to process name index (0 = unknown)
             proc_idx = df["subject_uuid"].map(uuid_to_process_idx).fillna(0).astype(np.int64).values
             process_parts.append(proc_idx)
-            
-            # Store raw UUID strings for node-level evaluation
-            uuid_parts.append(df[["subject_uuid", "predicate_object_uuid", "predicate_object2_uuid"]].values)
             
             # Timestamps: relative seconds from a GLOBAL reference point (t0).
             # All splits (train/val/test) MUST share the same t0 so that
@@ -176,9 +172,11 @@ class ChronoDataset(Dataset):
         self.entity_ids = np.concatenate(ent_parts)
         self.process_ids = np.concatenate(process_parts)
         self.timestamps = np.concatenate(ts_parts)
+        # raw_nanos is only needed transiently, for the two filters below
+        # (corrupt-timestamp drop + chronological window). It's deleted as
+        # soon as they're done — __getitem__ never returns it.
         self.raw_nanos = np.concatenate(raw_nanos_parts)
-        self.event_uuids = np.concatenate(uuid_parts)  # (N, 3) str array: [sub, obj, obj2]
-        del ent_parts, process_parts, ts_parts, raw_nanos_parts, uuid_parts; gc.collect()
+        del ent_parts, process_parts, ts_parts, raw_nanos_parts; gc.collect()
         
         # --- Timestamp sanity filter ---
         # THEIA E3 shard 10 contains events with near-epoch (1970-01-01)
@@ -200,7 +198,6 @@ class ChronoDataset(Dataset):
             self.process_ids = self.process_ids[valid]
             self.timestamps = self.timestamps[valid]
             self.raw_nanos = self.raw_nanos[valid]
-            self.event_uuids = self.event_uuids[valid]
             gc.collect()
         
         # --- Temporal filtering (for PIDSMaker-aligned chronological splits) ---
@@ -224,8 +221,13 @@ class ChronoDataset(Dataset):
             self.process_ids = self.process_ids[mask]
             self.timestamps = self.timestamps[mask]
             self.raw_nanos = self.raw_nanos[mask]
-            self.event_uuids = self.event_uuids[mask]
             gc.collect()
+        
+        # Both filters that need raw_nanos are done — it's never used again
+        # (not returned by __getitem__), so free it now rather than holding
+        # it for the lifetime of the dataset.
+        del self.raw_nanos
+        gc.collect()
         
         self.total_events = len(self.X_cont)
         self.num_chunks = self.total_events // self.chunk_size
