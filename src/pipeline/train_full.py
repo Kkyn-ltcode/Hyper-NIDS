@@ -28,6 +28,7 @@ Usage:
 """
 
 import argparse
+import gc
 import logging
 import shutil
 import time
@@ -53,6 +54,62 @@ DATA_ROOT = Path("data/processed/darpa_tc_e3")
 #   - "cross":  Cross-campaign generalization. Train Campaign 1, test Campaign 2.
 #               Hardest setting — tests whether supervised detection transfers.
 from src.config.dataset_config import DATASET_CONFIG
+
+
+def reindex_entities(*datasets):
+    """Re-index entity IDs across datasets to a compact range [0, N_seen).
+    
+    Critical for large datasets like TRACE where the global entity vocabulary
+    has 176M entries but only a fraction appear in any given set of shards.
+    Without re-indexing, EntityStateBank allocates a 176M × d_model tensor
+    (~85 GB at d_model=128) — most of which is wasted zeros.
+    
+    After re-indexing, num_entities reflects only entities present in the
+    loaded shards, and all datasets share the same compact ID space.
+    """
+    # Collect unique entity IDs across all datasets
+    all_unique = []
+    for ds in datasets:
+        unique = np.unique(ds.entity_ids[ds.entity_ids >= 0])
+        all_unique.append(unique)
+    
+    global_unique = np.unique(np.concatenate(all_unique))
+    n_unique = len(global_unique)
+    
+    if n_unique == 0:
+        logging.warning("  No valid entity IDs found across datasets")
+        return
+    
+    max_global_id = int(global_unique.max())
+    original_num_entities = datasets[0].num_entities
+    
+    # Skip if re-indexing wouldn't save significant memory
+    if n_unique >= original_num_entities * 0.9:
+        logging.info(f"  Entity re-indexing: skipped ({n_unique:,} / {original_num_entities:,} "
+                     f"entities present, not worth re-indexing)")
+        return
+    
+    # Build remap array: global_id → compact local_id
+    # This temporary array is max_global_id+1 entries (~1.4 GB for TRACE),
+    # but it enables vectorized O(N) remapping instead of slow dict lookups.
+    logging.info(f"  Entity re-indexing: {original_num_entities:,} → {n_unique:,} entities ...")
+    remap = np.full(max_global_id + 1, -1, dtype=np.int64)
+    remap[global_unique] = np.arange(n_unique, dtype=np.int64)
+    
+    # Apply remapping to all datasets
+    for ds in datasets:
+        valid = ds.entity_ids >= 0
+        ds.entity_ids[valid] = remap[ds.entity_ids[valid]]
+        ds.num_entities = n_unique
+    
+    bank_gb = n_unique * 128 * 4 / 1e9  # estimate at d_model=128
+    logging.info(f"  Entity re-indexing complete: bank ≈ {bank_gb:.1f} GB "
+                 f"(was {original_num_entities * 128 * 4 / 1e9:.1f} GB)")
+    
+    # Free the temporary remap array
+    del remap, all_unique, global_unique
+    gc.collect()
+
 
 
 def _compute_full_metrics(valid_probs, valid_labels, prefix="", threshold=None):
@@ -582,6 +639,12 @@ def main():
     test_ds = ChronoDataset(
         shards["test"], data_root,
         chunk_size=args.chunk_size, label_type=test_lbl, t0_nanos=t0)
+
+    # --- Entity Re-indexing (critical for large datasets) ---
+    # Compact entity IDs to [0, N_seen) so the model's EntityStateBank only
+    # allocates memory for entities that actually appear in the loaded shards.
+    # For TRACE: reduces bank from 176M slots (85 GB) to ~10-20M (~5-10 GB).
+    reindex_entities(train_ds, val_ds, test_ds)
 
     # Strict chronological: batch_size=1, shuffle=False, num_workers=0
     train_loader = DataLoader(train_ds, batch_size=1, shuffle=False, num_workers=0)

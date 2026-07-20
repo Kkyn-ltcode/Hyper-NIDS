@@ -35,11 +35,8 @@ DATASET_CONFIG = {
     
     "trace": {
         "splits": {
-            # Preliminary small split. TRACE has 211 shards total.
+            # Quick iteration split. TRACE has 211 shards total.
             "small": {"train": list(range(8)), "val": [8, 9], "test": [10, 11, 12, 13]},
-            "full": {"train": list(range(150)), "val": list(range(150, 180)), "test": list(range(180, 211))},
-            "cross": {"train": list(range(100)), "val": list(range(100, 130)), "test": list(range(130, 211))},
-
             # Memory-bounded split for machines that can't load the full 211
             # shards (~835M events) at once, and that also sidesteps a labeling
             # anomaly: shards 154-203 are ~99% labeled crossprocess+ (vs. a
@@ -55,6 +52,23 @@ DATASET_CONFIG = {
             # after the event_uuids/raw_nanos fix — should fit machines with
             # roughly 64GB+ free RAM. Scale the ranges up/down from there.
             "partial": {"train": list(range(60)), "val": list(range(60, 70)), "test": list(range(204, 211))},
+            
+            # Focused cross-campaign split: 50 strategically selected shards (~200M events).
+            # Covers full temporal range (April 2-13) with entity re-indexing.
+            # Train: 25 shards spanning April 2-9 (clean baseline + 4 attack waves)
+            # Val:    7 shards at April 9-10 boundary (transition period)
+            # Test:  18 shards April 10-13 (onset → peak narrow+ → late recovery)
+            "cross": {
+                "train": [0, 3, 6, 8, 9, 10, 11, 12, 13, 18, 29, 35,
+                          48, 49, 52, 55, 56, 60, 62, 69, 77, 84, 91, 95, 99],
+                "val":   [105, 107, 112, 113, 114, 115, 116],
+                "test":  [121, 122, 123, 124, 125, 126, 136, 137, 139,
+                          154, 160, 170, 180, 190, 200, 204, 207, 210],
+            },
+            
+            # KAIROS/baseline-compatible split (pre-attack train, early attack test)
+            "kairos": {"train": list(range(0, 8)), "val": [8, 9, 10],
+                       "test": list(range(11, 20))},
         },
         # Shards 0-7 are the completely clean period before the first attacks on April 3.
         # This provides a clean baseline for normalization.
