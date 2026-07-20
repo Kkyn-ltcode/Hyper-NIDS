@@ -39,6 +39,22 @@ DATASET_CONFIG = {
             "small": {"train": list(range(8)), "val": [8, 9], "test": [10, 11, 12, 13]},
             "full": {"train": list(range(150)), "val": list(range(150, 180)), "test": list(range(180, 211))},
             "cross": {"train": list(range(100)), "val": list(range(100, 130)), "test": list(range(130, 211))},
+
+            # Memory-bounded split for machines that can't load the full 211
+            # shards (~835M events) at once, and that also sidesteps a labeling
+            # anomaly: shards 154-203 are ~99% labeled crossprocess+ (vs. a
+            # normal <0.5% elsewhere), which looks like a taint-propagation
+            # bug rather than real ground truth. "full"'s val/test ranges
+            # (150-180, 180-211) are 84-89% inside that block, which is
+            # probably not what you want to evaluate against.
+            # Train: shards 0-59, the earliest ~222M clean events (Apr 2-6).
+            # Val:   shards 60-69, ~34M clean events immediately after train.
+            # Test:  shards 204-210, ~22M clean events — the tail *after*
+            #        the anomalous block, still chronologically post-Apr-10.
+            # ~278M events total, ~26 GB in ChronoDataset's numeric fields
+            # after the event_uuids/raw_nanos fix — should fit machines with
+            # roughly 64GB+ free RAM. Scale the ranges up/down from there.
+            "partial": {"train": list(range(60)), "val": list(range(60, 70)), "test": list(range(204, 211))},
         },
         # Shards 0-7 are the completely clean period before the first attacks on April 3.
         # This provides a clean baseline for normalization.
