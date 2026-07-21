@@ -670,6 +670,11 @@ def main():
         # Handle both raw state_dict and our checkpoint dict wrapper
         state_dict = ckpt["model_state"] if "model_state" in ckpt else ckpt
         
+        # Filter out bank buffer keys — bank is no longer a registered buffer,
+        # so old checkpoints will have bank.states/bank.last_seen_time as
+        # unexpected keys. We skip them since bank is reset before training.
+        state_dict = {k: v for k, v in state_dict.items()
+                      if not k.startswith('bank.')}
         # strict=False allows loading even if the classifier head architecture has changed
         # (e.g. going from 4*d_model to 2*d_model input)
         missing, unexpected = model.load_state_dict(state_dict, strict=False)
@@ -803,7 +808,8 @@ def main():
 
     logging.info(f"Evaluating on Test Set (labels={test_lbl}) with best model [Regime {args.eval_regime}]...")
     checkpoint = torch.load(save_dir / 'best.pt')
-    model.load_state_dict(checkpoint["model_state"])
+    sd = {k: v for k, v in checkpoint["model_state"].items() if not k.startswith('bank.')}
+    model.load_state_dict(sd, strict=False)
 
     if args.eval_regime == "B":
         # Regime B (Cold detection): Reset bank, evaluate from scratch.

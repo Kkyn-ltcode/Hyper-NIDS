@@ -7,14 +7,26 @@ import math
 
 
 class EntityStateBank(nn.Module):
+    """Persistent entity state storage — always pinned to CPU.
+    
+    The bank can hold millions of entity states (e.g., 10-20M for TRACE after
+    re-indexing) which would exhaust GPU VRAM.  Only the ~12K entity states
+    touched per chunk are gathered to GPU on the fly.
+    """
     def __init__(self, num_entities, d_model):
         super().__init__()
         self.num_entities = num_entities
         self.d_model = d_model
         
-        # State tensors (not parameters, updated in-place)
-        self.register_buffer("states", torch.zeros(num_entities, d_model))
-        self.register_buffer("last_seen_time", torch.full((num_entities,), -1.0))
+        # State tensors live on CPU (not parameters, updated in-place).
+        # We do NOT use register_buffer so .to(device) won't move them.
+        self.states = torch.zeros(num_entities, d_model)
+        self.last_seen_time = torch.full((num_entities,), -1.0)
+        
+        # Pin memory for faster CPU→GPU transfers if CUDA is available
+        if torch.cuda.is_available():
+            self.states = self.states.pin_memory()
+            self.last_seen_time = self.last_seen_time.pin_memory()
         
     def reset(self):
         self.states.zero_()
@@ -284,10 +296,13 @@ class HyperMambaFull(nn.Module):
         f_e = self.input_norm(torch.cat([e_emb + gate * p_emb, c_emb], dim=-1))  # (C, d_event)
         
         # 2. Gather entity states and compute Δt
+        #    Bank lives on CPU; gather needed slices and transfer to GPU.
         safe_ids = entity_ids.clamp(min=0)
         valid_mask = entity_ids >= 0  # (C, 3)
         
-        states = self.bank.states[safe_ids.view(-1)].view(C, 3, self.d_model)
+        # Gather from CPU bank → GPU (only ~C*3 entries, not the full bank)
+        flat_safe = safe_ids.view(-1).cpu()
+        states = self.bank.states[flat_safe].to(device, non_blocking=True).view(C, 3, self.d_model)
         # Normalize gathered states to prevent unbounded accumulation from
         # causing attention score overflow (exp(>88) = inf in float32).
         # Hub entities (pid 1, shell) get updated ~157k times; without this,
@@ -295,7 +310,7 @@ class HyperMambaFull(nn.Module):
         states = F.layer_norm(states, [self.d_model])
         states = states * valid_mask.unsqueeze(-1)
         
-        last_seen = self.bank.last_seen_time[safe_ids.view(-1)].view(C, 3)
+        last_seen = self.bank.last_seen_time[flat_safe].to(device, non_blocking=True).view(C, 3)
         t_curr = timestamps.unsqueeze(1).expand(C, 3)
         
         is_first = (last_seen < 0)
@@ -327,20 +342,20 @@ class HyperMambaFull(nn.Module):
         # 4. Selective SSM State Update (E → V)
         new_states = self.updater(x_e, r_emb, states, log_dt)
         
-        # 5. Scatter updated states back to bank
+        # 5. Scatter updated states back to CPU bank
         flat_new_states = new_states.view(-1, self.d_model)
         flat_ids = safe_ids.view(-1)
         flat_valid = valid_mask.view(-1)
         
-        valid_ids = flat_ids[flat_valid]
+        valid_ids = flat_ids[flat_valid].cpu()
         valid_st = flat_new_states[flat_valid]
         
         # MUST detach before saving to bank to truncate BPTT at chunk boundary!
         # Guard against NaN before scatter — once NaN enters the bank, it cascades
         # to every future chunk that reads from the corrupted entity.
-        valid_st_safe = torch.nan_to_num(valid_st.detach(), nan=0.0, posinf=1.0, neginf=-1.0)
+        valid_st_safe = torch.nan_to_num(valid_st.detach(), nan=0.0, posinf=1.0, neginf=-1.0).cpu()
         self.bank.states.scatter_(0, valid_ids.unsqueeze(1).expand(-1, self.d_model), valid_st_safe)
-        self.bank.last_seen_time.scatter_(0, valid_ids, t_curr.reshape(-1)[flat_valid])
+        self.bank.last_seen_time.scatter_(0, valid_ids, t_curr.reshape(-1)[flat_valid].cpu())
         
         # 6. Classification: use POST-UPDATE states so gradient flows through
         #    the SSM updater and Aggregator. Using pre-update `states` (from the
