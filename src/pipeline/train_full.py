@@ -270,7 +270,14 @@ def compute_metrics(all_logits, all_labels, entity_ids=None, threshold=None):
 
 
 def train_epoch(model, loader, optimizer, device, pos_weight, grad_clip=1.0,
-                ablation="full"):
+                ablation="full", scaler=None, grad_accum_steps=1):
+    """Train for one epoch with optional AMP and gradient accumulation.
+    
+    Args:
+        scaler: torch.cuda.amp.GradScaler for mixed precision. None = fp32.
+        grad_accum_steps: Accumulate gradients over N chunks before stepping.
+            Larger values give more stable gradients at no extra GPU memory cost.
+    """
     model.train()
     model.reset_bank()
 
@@ -281,27 +288,33 @@ def train_epoch(model, loader, optimizer, device, pos_weight, grad_clip=1.0,
     events_processed = 0
 
     chunk_losses = []
-    all_train_logits = []
-    all_train_labels = []
+    # Subsample train predictions for metrics — collecting ALL logits for 43M+
+    # events creates ~1.4 GB of Python floats and becomes a CPU bottleneck.
+    # Sample every Nth chunk instead (keeps metric accuracy within ~1%).
+    train_metric_sample_rate = max(1, len(loader) // 500)  # ~500 samples
+    sampled_logits = []
+    sampled_labels = []
 
     pw_t = torch.tensor([pos_weight], device=device)
+    use_amp = scaler is not None
 
     for i, batch in enumerate(loader):
-        X_c = torch.nan_to_num(batch["X_cont"].to(device), nan=0.0).clamp(-20, 20)
-        et = batch["event_type"].to(device)
-        y = batch["y"].to(device).float()
-        ent = batch["entity_ids"].to(device)
-        proc = batch["process_ids"].to(device)
-        ts = batch["timestamp"].to(device)
+        X_c = torch.nan_to_num(batch["X_cont"].to(device, non_blocking=True), nan=0.0).clamp(-20, 20)
+        et = batch["event_type"].to(device, non_blocking=True)
+        y = batch["y"].to(device, non_blocking=True).float()
+        ent = batch["entity_ids"].to(device, non_blocking=True)
+        proc = batch["process_ids"].to(device, non_blocking=True)
+        ts = batch["timestamp"].to(device, non_blocking=True)
 
-        optimizer.zero_grad()
-
-        logits = model(X_c, et, ent, proc, ts)
-
-        # Clamp logits before loss to prevent overflow
-        logits = logits.clamp(-50, 50)
-        loss = nn.functional.binary_cross_entropy_with_logits(
-            logits, y, pos_weight=pw_t)
+        # --- Forward (with optional AMP) ---
+        with torch.amp.autocast('cuda', enabled=use_amp):
+            logits = model(X_c, et, ent, proc, ts)
+            logits = logits.clamp(-50, 50)
+            loss = nn.functional.binary_cross_entropy_with_logits(
+                logits, y, pos_weight=pw_t)
+            # Scale loss for gradient accumulation
+            if grad_accum_steps > 1:
+                loss = loss / grad_accum_steps
 
         if torch.isnan(loss) or torch.isinf(loss):
             nan_chunks += 1
@@ -311,28 +324,45 @@ def train_epoch(model, loader, optimizer, device, pos_weight, grad_clip=1.0,
                 model.detach_bank()
             continue
 
-        # Collect train predictions (detached, no grad impact)
-        all_train_logits.extend(logits.detach().squeeze(0).cpu().tolist())
-        all_train_labels.extend(y.squeeze(0).cpu().tolist())
+        # Subsample train predictions for epoch-level metrics
+        if i % train_metric_sample_rate == 0:
+            sampled_logits.extend(logits.detach().squeeze(0).cpu().tolist())
+            sampled_labels.extend(y.squeeze(0).cpu().tolist())
 
-        loss.backward()
+        # --- Backward ---
+        if use_amp:
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
 
-        # Check for NaN gradients
-        has_nan = any(
-            p.grad is not None and (torch.isnan(p.grad).any() or torch.isinf(p.grad).any())
-            for p in model.parameters()
-        )
-        if has_nan:
-            nan_chunks += 1
-            optimizer.zero_grad()
-            if ablation == "no_state":
-                model.reset_bank()
+        # Step optimizer every grad_accum_steps chunks
+        if (i + 1) % grad_accum_steps == 0 or (i + 1) == len(loader):
+            # Check for NaN gradients
+            if use_amp:
+                scaler.unscale_(optimizer)
+            
+            has_nan = any(
+                p.grad is not None and (torch.isnan(p.grad).any() or torch.isinf(p.grad).any())
+                for p in model.parameters()
+            )
+            if has_nan:
+                nan_chunks += 1
+                optimizer.zero_grad(set_to_none=True)
+                if ablation == "no_state":
+                    model.reset_bank()
+                else:
+                    model.detach_bank()
+                continue
+
+            nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+            
+            if use_amp:
+                scaler.step(optimizer)
+                scaler.update()
             else:
-                model.detach_bank()
-            continue
-
-        nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-        optimizer.step()
+                optimizer.step()
+            
+            optimizer.zero_grad(set_to_none=True)
 
         # TBPTT boundary: detach bank (or reset for no_state ablation)
         if ablation == "no_state":
@@ -340,12 +370,12 @@ def train_epoch(model, loader, optimizer, device, pos_weight, grad_clip=1.0,
         else:
             model.detach_bank()
 
-        total_loss += loss.item()
-        chunk_losses.append(loss.item())
+        total_loss += loss.item() * (grad_accum_steps if grad_accum_steps > 1 else 1)
+        chunk_losses.append(loss.item() * (grad_accum_steps if grad_accum_steps > 1 else 1))
         n_chunks += 1
         events_processed += X_c.size(1)
 
-        if (i + 1) % 100 == 0:
+        if (i + 1) % 200 == 0:
             elapsed = time.time() - t0
             throughput = events_processed / elapsed
             avg_loss = total_loss / max(n_chunks, 1)
@@ -362,12 +392,12 @@ def train_epoch(model, loader, optimizer, device, pos_weight, grad_clip=1.0,
     logging.info(f"    Epoch done: {events_processed:,} events in {elapsed:.1f}s "
           f"({throughput:.0f} events/s)")
 
-    train_metrics = compute_metrics(all_train_logits, all_train_labels)
+    train_metrics = compute_metrics(sampled_logits, sampled_labels)
     return avg_loss, chunk_losses, train_metrics
 
 
 @torch.no_grad()
-def warmup_bank(model, loaders, device):
+def warmup_bank(model, loaders, device, use_amp=False):
     """Process data shards in eval mode to warm up entity states.
     
     In real deployment, the IDS runs continuously — entity states are never
@@ -390,13 +420,14 @@ def warmup_bank(model, loaders, device):
     total_events = 0
     for loader in loaders:
         for batch in loader:
-            X_c = torch.nan_to_num(batch["X_cont"].to(device), nan=0.0).clamp(-20, 20)
-            et = batch["event_type"].to(device)
-            ent = batch["entity_ids"].to(device)
-            proc = batch["process_ids"].to(device)
-            ts = batch["timestamp"].to(device)
+            X_c = torch.nan_to_num(batch["X_cont"].to(device, non_blocking=True), nan=0.0).clamp(-20, 20)
+            et = batch["event_type"].to(device, non_blocking=True)
+            ent = batch["entity_ids"].to(device, non_blocking=True)
+            proc = batch["process_ids"].to(device, non_blocking=True)
+            ts = batch["timestamp"].to(device, non_blocking=True)
             
-            _ = model(X_c, et, ent, proc, ts)
+            with torch.amp.autocast('cuda', enabled=use_amp):
+                _ = model(X_c, et, ent, proc, ts)
             model.detach_bank()
             total_events += X_c.size(1)
     
@@ -404,13 +435,14 @@ def warmup_bank(model, loaders, device):
 
 
 @torch.no_grad()
-def evaluate(model, loader, device, return_preds=False, threshold=None):
+def evaluate(model, loader, device, return_preds=False, threshold=None, use_amp=False):
     """Evaluate model on a dataset. Always uses pos_weight=1.0 (unweighted BCE)
     since val/test may have different class distributions than training.
     
     Args:
         threshold: If provided, threshold-dependent metrics use this fixed
                    threshold (from validation) rather than self-optimizing.
+        use_amp: If True, use mixed precision for faster inference.
     """
     model.eval()
     # DO NOT reset the bank here! We want to carry the warm states
@@ -424,17 +456,17 @@ def evaluate(model, loader, device, return_preds=False, threshold=None):
     all_entity_ids = []
     
     for batch in loader:
-        X_c = torch.nan_to_num(batch["X_cont"].to(device), nan=0.0).clamp(-20, 20)
-        et = batch["event_type"].to(device)
-        y = batch["y"].to(device).float()
-        ent = batch["entity_ids"].to(device)
-        proc = batch["process_ids"].to(device)
-        ts = batch["timestamp"].to(device)
+        X_c = torch.nan_to_num(batch["X_cont"].to(device, non_blocking=True), nan=0.0).clamp(-20, 20)
+        et = batch["event_type"].to(device, non_blocking=True)
+        y = batch["y"].to(device, non_blocking=True).float()
+        ent = batch["entity_ids"].to(device, non_blocking=True)
+        proc = batch["process_ids"].to(device, non_blocking=True)
+        ts = batch["timestamp"].to(device, non_blocking=True)
 
-        logits = model(X_c, et, ent, proc, ts)
-        
-        logits_clamp = logits.clamp(-50, 50)
-        loss = nn.functional.binary_cross_entropy_with_logits(logits_clamp, y)
+        with torch.amp.autocast('cuda', enabled=use_amp):
+            logits = model(X_c, et, ent, proc, ts)
+            logits_clamp = logits.clamp(-50, 50)
+            loss = nn.functional.binary_cross_entropy_with_logits(logits_clamp, y)
             
         if not (torch.isnan(loss) or torch.isinf(loss)):
             total_loss += loss.item()
@@ -498,7 +530,9 @@ def main():
                              "A=continuation (bank carries from train), "
                              "B=cold (bank reset before eval), "
                              "C=warm (warmup pass through prior data before eval)")
-    parser.add_argument("--chunk_size", type=int, default=4096)
+    parser.add_argument("--chunk_size", type=int, default=16384,
+                        help="Events per chunk. Larger = fewer CPU↔GPU transfers "
+                             "(default: 16384, was 4096 before CPU-bank optimization)")
     parser.add_argument("--d_model", type=int, default=256)
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--max_pos_weight", type=float, default=30.0,
@@ -508,6 +542,10 @@ def main():
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for reproducibility")
     parser.add_argument("--device", default=None)
+    parser.add_argument("--amp", action="store_true",
+                        help="Enable mixed precision (AMP) for ~2× GPU speedup")
+    parser.add_argument("--grad_accum", type=int, default=1,
+                        help="Gradient accumulation steps (default: 1, no accumulation)")
     args = parser.parse_args()
 
     # Resolve ablation mode: --ablation flag takes priority over legacy booleans
@@ -726,6 +764,15 @@ def main():
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=args.epochs, eta_min=1e-5)
 
+    # --- Mixed Precision Setup ---
+    use_amp = args.amp and device.type == 'cuda'
+    scaler = torch.cuda.amp.GradScaler() if use_amp else None
+    if use_amp:
+        logging.info("  Mixed precision (AMP): ENABLED")
+    if args.grad_accum > 1:
+        logging.info(f"  Gradient accumulation: {args.grad_accum} steps")
+    logging.info(f"  Chunk size: {args.chunk_size} events")
+
     logging.info(f"Starting training ({args.epochs} epochs, patience={patience})...")
     logging.info(f"  Per-epoch test evaluation: enabled (Regime {args.eval_regime})")
 
@@ -740,7 +787,8 @@ def main():
 
         train_loss, epoch_chunk_losses, train_metrics = train_epoch(
             model, train_loader, optimizer, device, pos_weight,
-            ablation=ablation_mode)
+            ablation=ablation_mode, scaler=scaler,
+            grad_accum_steps=args.grad_accum)
 
         # --- Per-epoch evaluation with regime-specific bank handling ---
         if args.eval_regime == "B":
@@ -750,14 +798,14 @@ def main():
         # Regime A: bank carries warm state from training (no action needed)
         # Regime C: same as A per-epoch (full warmup too expensive every epoch)
 
-        val_metrics = evaluate(model, val_loader, device)
+        val_metrics = evaluate(model, val_loader, device, use_amp=use_amp)
 
         if args.eval_regime == "B":
             # Regime B (Cold): Reset bank before test too — independent cold eval
             model.reset_bank()
         # Regime A/C: bank carries warm state from train+val
 
-        test_metrics_epoch = evaluate(model, test_loader, device)
+        test_metrics_epoch = evaluate(model, test_loader, device, use_amp=use_amp)
 
         # Step LR scheduler
         scheduler.step()
@@ -823,7 +871,7 @@ def main():
         # mid-epoch weights. Re-warm using the final best weights in clean
         # eval mode for a stronger, more consistent initialization.
         logging.info(f"  Regime {args.eval_regime}: Warming up bank states with best weights...")
-        warmup_bank(model, [train_loader, val_loader], device)
+        warmup_bank(model, [train_loader, val_loader], device, use_amp=use_amp)
 
     # --- Select threshold from validation (Arp et al., 2022) ---
     # Pick the optimal F1 threshold using ONLY validation predictions,
@@ -832,7 +880,7 @@ def main():
     logging.info("  Selecting threshold from validation predictions...")
     if args.eval_regime == "B":
         model.reset_bank()
-    val_metrics_final = evaluate(model, val_loader, device)
+    val_metrics_final = evaluate(model, val_loader, device, use_amp=use_amp)
     val_threshold = val_metrics_final.get("threshold", 0.5)
     logging.info(f"  Val threshold (F1-optimal): {val_threshold:.6f}")
     
@@ -841,10 +889,11 @@ def main():
         model.reset_bank()
     elif args.eval_regime != "B":
         # Re-warmup since val evaluation consumed the val loader
-        warmup_bank(model, [train_loader, val_loader], device)
+        warmup_bank(model, [train_loader, val_loader], device, use_amp=use_amp)
 
     test_metrics, test_preds = evaluate(model, test_loader, device,
-                                        return_preds=True, threshold=val_threshold)
+                                        return_preds=True, threshold=val_threshold,
+                                        use_amp=use_amp)
     
     # Save predictions for downstream evaluation
     preds_path = save_dir / 'preds.pt'
