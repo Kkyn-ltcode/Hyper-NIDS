@@ -348,6 +348,8 @@ def train_epoch(model, loader, optimizer, device, pos_weight, grad_clip=1.0,
             if has_nan:
                 nan_chunks += 1
                 optimizer.zero_grad(set_to_none=True)
+                if use_amp:
+                    scaler.update()  # Must follow every unscale_() call
                 if ablation == "no_state":
                     model.reset_bank()
                 else:
@@ -766,7 +768,7 @@ def main():
 
     # --- Mixed Precision Setup ---
     use_amp = args.amp and device.type == 'cuda'
-    scaler = torch.cuda.amp.GradScaler() if use_amp else None
+    scaler = torch.amp.GradScaler('cuda') if use_amp else None
     if use_amp:
         logging.info("  Mixed precision (AMP): ENABLED")
     if args.grad_accum > 1:
