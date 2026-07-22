@@ -66,6 +66,15 @@ DATASET_CONFIG = {
                           154, 160, 170, 180, 190, 200, 204, 207, 210],
             },
             
+            # Compact cross-campaign split: 22 strategically selected shards (~45M events).
+            # Halves loading/training time while still fully covering all phases, campaigns,
+            # and the anomalous high attack density region.
+            "cross_compact": {
+                "train": [0, 6, 9, 12, 18, 35, 52, 69, 84, 99],
+                "val":   [105, 112, 115],
+                "test":  [121, 124, 126, 137, 154, 170, 190, 204, 210],
+            },
+            
             # KAIROS/baseline-compatible split (pre-attack train, early attack test)
             "kairos": {"train": list(range(0, 8)), "val": [8, 9, 10],
                        "test": list(range(11, 20))},

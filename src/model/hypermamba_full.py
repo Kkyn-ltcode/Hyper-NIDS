@@ -92,11 +92,19 @@ class AllSetAggregator(nn.Module):
         
         # Scaled dot-product attention
         scores = torch.bmm(q, k.transpose(1, 2)) * self.scale  # (C, 1, 3)
-        scores = scores.masked_fill(~valid_mask.unsqueeze(1), float('-inf'))
+        
+        # Identify rows where all entities are invalid to prevent NaN in softmax
+        all_invalid = (~valid_mask).all(dim=-1, keepdim=True)  # (C, 1)
+        mask_for_softmax = valid_mask.clone()
+        # Set at least one entry (e.g. index 0) to valid to prevent all -inf scores
+        mask_for_softmax[:, 0] = mask_for_softmax[:, 0] | all_invalid.squeeze(1)
+        
+        scores = scores.masked_fill(~mask_for_softmax.unsqueeze(1), float('-inf'))
         attn = F.softmax(scores, dim=-1)
-        # In case all entities are invalid (shouldn't happen, but just in case), softmax gives NaNs.
-        # Replace NaNs with 0.
-        attn = torch.nan_to_num(attn, nan=0.0)
+        
+        # Zero out attention weights for rows that were completely invalid
+        attn = attn * valid_mask.unsqueeze(1)
+        
         agg = torch.bmm(attn, v).squeeze(1)  # (C, d_model)
         
         x_e = self.out_proj(agg)

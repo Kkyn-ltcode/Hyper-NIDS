@@ -23,12 +23,6 @@ class ChronoDataset(Dataset):
         chronological train (April 2-8) / test (April 10+) split.
     """
     
-    # Cache for vocabs to avoid rebuilding massive indices multiple times
-    _cached_uuid_index = None
-    _cached_num_entities = None
-    _cached_process_idx = None
-    _cached_num_process = None
-    
     # DARPA TC E3 chronological split boundary: April 10, 2018 00:00:00 UTC
     APRIL_10_2018_NANOS = 1523318400_000000000
     
@@ -50,17 +44,22 @@ class ChronoDataset(Dataset):
         
         self.chunk_size = chunk_size
         
-        # --- Load Entity Vocab (Cached) ---
-        if ChronoDataset._cached_uuid_index is None:
-            if verbose: print("  Building entity vocabulary index (this takes a moment but is cached)...")
-            vocab = np.load(graph_dir / "entity_vocab.npz", allow_pickle=True)
-            ChronoDataset._cached_uuid_index = pd.Index(vocab["uuids"].astype(str))
-            ChronoDataset._cached_num_entities = int(vocab["num_entities"])
-            del vocab; gc.collect()
-            
-        _uuid_index = ChronoDataset._cached_uuid_index
-        self.num_entities = ChronoDataset._cached_num_entities
-        
+        # Load entity vocabulary to get total entities
+        vocab = np.load(graph_dir / "entity_vocab.npz", allow_pickle=True)
+        # A plain Python dict here costs ~150-200 bytes per entry (dict slot +
+        # boxed str key + boxed int value). At 176M+ entities that's tens of
+        # GB before a single event is loaded, and it's paid again every time
+        # ChronoDataset is instantiated (train/val/test), regardless of how
+        # many shards were requested. pandas' Index/get_indexer does the same
+        # position-preserving lookup (missing -> -1) using a compact internal
+        # hash table instead of one Python object per entry.
+        _uuid_index = pd.Index(vocab["uuids"].astype(str))
+        # Remove the null UUID — it appears as predicate_object2_uuid on most events.
+        # If left in the vocab, it gets a real integer ID, accumulates state from
+        # every single event, and becomes a corrupted super-node that bleeds noise
+        # into every cross-entity aggregation. We keep its original position out
+        # of the lookup result (redirect to -1) without disturbing everyone
+        # else's entity id, which is just their position in vocab["uuids"].
         _NULL_UUID = "00000000-0000-0000-0000-000000000000"
         _null_pos = _uuid_index.get_loc(_NULL_UUID) if _NULL_UUID in _uuid_index else None
 
@@ -69,19 +68,16 @@ class ChronoDataset(Dataset):
             if _null_pos is not None:
                 idx[idx == _null_pos] = -1
             return idx.astype(np.int64)
-            
-        # --- Load Process Vocab (Cached) ---
-        if ChronoDataset._cached_process_idx is None:
-            proc_vocab = np.load(graph_dir / "process_vocab.npz", allow_pickle=True)
-            ChronoDataset._cached_process_idx = dict(zip(
-                proc_vocab["uuid_to_idx_keys"], 
-                proc_vocab["uuid_to_idx_vals"]
-            ))
-            ChronoDataset._cached_num_process = int(proc_vocab["num_classes"])
-            del proc_vocab; gc.collect()
-            
-        uuid_to_process_idx = ChronoDataset._cached_process_idx
-        self.num_process_names = ChronoDataset._cached_num_process
+        self.num_entities = int(vocab["num_entities"])
+        
+        # Load process vocabulary for semantic embedding
+        proc_vocab = np.load(graph_dir / "process_vocab.npz", allow_pickle=True)
+        # Note: we extract it slightly differently since we saved it using dict keys/vals
+        uuid_to_process_idx = dict(zip(
+            proc_vocab["uuid_to_idx_keys"], 
+            proc_vocab["uuid_to_idx_vals"]
+        ))
+        self.num_process_names = int(proc_vocab["num_classes"])
         
         # --- Identify feature columns ---
         feat_names_path = data_root / "features" / "feature_names.txt"
