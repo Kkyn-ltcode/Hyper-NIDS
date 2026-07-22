@@ -2,14 +2,14 @@
 \providecommand\hyper@newdestlabel[2]{}
 \providecommand\HyField@AuxAddToFields[1]{}
 \providecommand\HyField@AuxAddToCoFields[2]{}
-\citation{kairos}
-\citation{magic}
-\citation{flash}
-\citation{threatrace}
+\citation{cheng2024kairos}
+\citation{jia2024magic}
+\citation{rehman2024flash}
+\citation{Wang2021THREATRACEDA}
 \@writefile{toc}{\contentsline {section}{\numberline {1}Introduction}{1}{section.1}\protected@file@percent }
 \newlabel{sec:introduction}{{1}{1}{Introduction}{section.1}{}}
-\citation{kairos,magic,flash,threatrace}
-\citation{mamba}
+\citation{cheng2024kairos,jia2024magic,rehman2024flash,Wang2021THREATRACEDA}
+\citation{gu2024mamba}
 \@writefile{toc}{\contentsline {section}{\numberline {2}Background}{2}{section.2}\protected@file@percent }
 \newlabel{sec:background}{{2}{2}{Background}{section.2}{}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {2.1}Provenance Data Model}{2}{subsection.2.1}\protected@file@percent }
@@ -19,95 +19,117 @@
 \newlabel{def:hypergraph}{{1}{2}{Provenance Hypergraph}{definition.1}{}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {2.3}Selective State Space Models}{2}{subsection.2.3}\protected@file@percent }
 \newlabel{sec:ssm_background}{{2.3}{2}{Selective State Space Models}{subsection.2.3}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Provenance hypergraph from the DARPA TC E3 Theia attack campaign. \textbf  {(a)}~Each audit event is a temporal hyperedge connecting 2--3 system entities. The \texttt  {EVENT\_MMAP} hyperedge $e_2$ natively connects three entities (process, file, memory region) as a single atomic operation. Events $e_4$ (attack) and $e_5$ (benign) have identical per-event features---both read \texttt  {/etc/resolv.conf} with the same byte count---but are distinguishable through the accumulated state of their subject entities. Gray shading marks the entry-point event (excluded from the crossprocess label). \textbf  {(b)}~Prior systems decompose multi-object events into independent pairwise edges, discarding co-occurrence structure and causal atomicity. Size-3 events are $3.0\times $ enriched among crossprocess attack events.}}{3}{figure.1}\protected@file@percent }
+\newlabel{fig:hyperedge}{{1}{3}{Provenance hypergraph from the DARPA TC E3 Theia attack campaign. \textbf {(a)}~Each audit event is a temporal hyperedge connecting 2--3 system entities. The \texttt {EVENT\_MMAP} hyperedge $e_2$ natively connects three entities (process, file, memory region) as a single atomic operation. Events $e_4$ (attack) and $e_5$ (benign) have identical per-event features---both read \texttt {/etc/resolv.conf} with the same byte count---but are distinguishable through the accumulated state of their subject entities. Gray shading marks the entry-point event (excluded from the crossprocess label). \textbf {(b)}~Prior systems decompose multi-object events into independent pairwise edges, discarding co-occurrence structure and causal atomicity. Size-3 events are $3.0\times $ enriched among crossprocess attack events}{figure.1}{}}
 \@writefile{toc}{\contentsline {section}{\numberline {3}Threat Model}{3}{section.3}\protected@file@percent }
 \newlabel{sec:threat_model}{{3}{3}{Threat Model}{section.3}{}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {3.1}Attacker Model}{3}{subsection.3.1}\protected@file@percent }
 \newlabel{sec:attacker_model}{{3.1}{3}{Attacker Model}{subsection.3.1}{}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {3.2}DARPA TC E3 Attack Instantiation}{3}{subsection.3.2}\protected@file@percent }
 \newlabel{sec:attack_instantiation}{{3.2}{3}{DARPA TC E3 Attack Instantiation}{subsection.3.2}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}Why Crossprocess Attacks Are Hard for Stateless Detection}{3}{subsection.3.3}\protected@file@percent }
-\newlabel{sec:crossprocess_hard}{{3.3}{3}{Why Crossprocess Attacks Are Hard for Stateless Detection}{subsection.3.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}Why Crossprocess Attacks Are Hard for Stateless Detection}{4}{subsection.3.3}\protected@file@percent }
+\newlabel{sec:crossprocess_hard}{{3.3}{4}{Why Crossprocess Attacks Are Hard for Stateless Detection}{subsection.3.3}{}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {3.4}Detection Task}{4}{subsection.3.4}\protected@file@percent }
 \newlabel{sec:detection_task}{{3.4}{4}{Detection Task}{subsection.3.4}{}}
 \@writefile{toc}{\contentsline {section}{\numberline {4}The HyperMamba Architecture}{4}{section.4}\protected@file@percent }
 \newlabel{sec:architecture}{{4}{4}{The HyperMamba Architecture}{section.4}{}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Overview}{4}{subsection.4.1}\protected@file@percent }
 \newlabel{sec:overview}{{4.1}{4}{Overview}{subsection.4.1}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}Event Encoding and Process Identity Modulation}{4}{subsection.4.2}\protected@file@percent }
-\newlabel{sec:event_encoding}{{4.2}{4}{Event Encoding and Process Identity Modulation}{subsection.4.2}{}}
-\newlabel{eq:process_gate}{{5}{5}{Event Encoding and Process Identity Modulation}{equation.5}{}}
-\newlabel{eq:event_repr}{{7}{5}{Event Encoding and Process Identity Modulation}{equation.7}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}Entity State Bank}{5}{subsection.4.3}\protected@file@percent }
-\newlabel{sec:entity_bank}{{4.3}{5}{Entity State Bank}{subsection.4.3}{}}
-\newlabel{eq:dt}{{8}{5}{Entity State Bank}{equation.8}{}}
-\newlabel{eq:t_curr}{{9}{5}{Entity State Bank}{equation.9}{}}
-\newlabel{eq:state_norm}{{10}{6}{Entity State Bank}{equation.10}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}Hyperedge Aggregation ($\mathcal  {V} \to \mathcal  {E}$)}{6}{subsection.4.4}\protected@file@percent }
-\newlabel{sec:aggregation}{{4.4}{6}{Hyperedge Aggregation ($\mathcal {V} \to \mathcal {E}$)}{subsection.4.4}{}}
-\newlabel{eq:entity_descriptor}{{11}{6}{Hyperedge Aggregation ($\mathcal {V} \to \mathcal {E}$)}{equation.11}{}}
-\newlabel{eq:agg_q}{{12}{6}{Hyperedge Aggregation ($\mathcal {V} \to \mathcal {E}$)}{equation.12}{}}
-\newlabel{eq:agg_k}{{13}{6}{Hyperedge Aggregation ($\mathcal {V} \to \mathcal {E}$)}{equation.13}{}}
-\newlabel{eq:agg_v}{{14}{6}{Hyperedge Aggregation ($\mathcal {V} \to \mathcal {E}$)}{equation.14}{}}
-\newlabel{eq:raw_score}{{15}{6}{Hyperedge Aggregation ($\mathcal {V} \to \mathcal {E}$)}{equation.15}{}}
-\newlabel{eq:attn_weights}{{16}{6}{Hyperedge Aggregation ($\mathcal {V} \to \mathcal {E}$)}{equation.16}{}}
-\newlabel{eq:x_e}{{17}{6}{Hyperedge Aggregation ($\mathcal {V} \to \mathcal {E}$)}{equation.17}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.5}Selective SSM State Update ($\mathcal  {E} \to \mathcal  {V}$)}{6}{subsection.4.5}\protected@file@percent }
-\newlabel{sec:ssm_update}{{4.5}{6}{Selective SSM State Update ($\mathcal {E} \to \mathcal {V}$)}{subsection.4.5}{}}
-\newlabel{eq:A}{{18}{6}{Selective SSM State Update ($\mathcal {E} \to \mathcal {V}$)}{equation.18}{}}
-\newlabel{eq:B}{{19}{7}{Selective SSM State Update ($\mathcal {E} \to \mathcal {V}$)}{equation.19}{}}
-\newlabel{eq:delta}{{20}{7}{Selective SSM State Update ($\mathcal {E} \to \mathcal {V}$)}{equation.20}{}}
-\newlabel{eq:A_bar}{{21}{7}{Selective SSM State Update ($\mathcal {E} \to \mathcal {V}$)}{equation.21}{}}
-\newlabel{eq:B_bar}{{22}{7}{Selective SSM State Update ($\mathcal {E} \to \mathcal {V}$)}{equation.22}{}}
-\newlabel{eq:ssm_raw}{{23}{7}{Selective SSM State Update ($\mathcal {E} \to \mathcal {V}$)}{equation.23}{}}
-\newlabel{eq:gate}{{24}{7}{Selective SSM State Update ($\mathcal {E} \to \mathcal {V}$)}{equation.24}{}}
-\newlabel{eq:gated_update}{{25}{7}{Selective SSM State Update ($\mathcal {E} \to \mathcal {V}$)}{equation.25}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.6}Classification Head}{7}{subsection.4.6}\protected@file@percent }
-\newlabel{sec:classification}{{4.6}{7}{Classification Head}{subsection.4.6}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.7}Training: TBPTT and Continuous Warm-Start}{7}{subsection.4.7}\protected@file@percent }
-\newlabel{sec:training}{{4.7}{7}{Training: TBPTT and Continuous Warm-Start}{subsection.4.7}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces HyperMamba architecture. Each audit event $e_t$ is processed in five stages. \textbf  {(1)}~The event encoder combines event type, continuous features, and gated process identity into $\mathbf  {f}_e$. \textbf  {(2)}~Entity states $\hat  {\mathbf  {s}}_v$ and elapsed times $\Delta t_v$ are gathered from the persistent \texttt  {EntityStateBank}. \textbf  {(3)}~Attention-based hyperedge aggregation ($\mathcal  {V} \to \mathcal  {E}$) fuses entity states conditioned on $\mathbf  {f}_e$. \textbf  {(4)}~A Selective SSM updates each entity's state ($\mathcal  {E} \to \mathcal  {V}$) and scatters results back to the bank. \textbf  {(5)}~Post-update states and event features are concatenated and classified. The bank persists across events, creating a recurrent information pathway across entities and time.}}{5}{figure.2}\protected@file@percent }
+\newlabel{fig:architecture}{{2}{5}{HyperMamba architecture. Each audit event $e_t$ is processed in five stages. \textbf {(1)}~The event encoder combines event type, continuous features, and gated process identity into $\mathbf {f}_e$. \textbf {(2)}~Entity states $\hat {\mathbf {s}}_v$ and elapsed times $\Delta t_v$ are gathered from the persistent \texttt {EntityStateBank}. \textbf {(3)}~Attention-based hyperedge aggregation ($\mathcal {V} \to \mathcal {E}$) fuses entity states conditioned on $\mathbf {f}_e$. \textbf {(4)}~A Selective SSM updates each entity's state ($\mathcal {E} \to \mathcal {V}$) and scatters results back to the bank. \textbf {(5)}~Post-update states and event features are concatenated and classified. The bank persists across events, creating a recurrent information pathway across entities and time}{figure.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}Event Encoding and Process Identity Modulation}{5}{subsection.4.2}\protected@file@percent }
+\newlabel{sec:event_encoding}{{4.2}{5}{Event Encoding and Process Identity Modulation}{subsection.4.2}{}}
+\newlabel{eq:process_gate}{{5}{6}{Event Encoding and Process Identity Modulation}{equation.5}{}}
+\newlabel{eq:event_repr}{{7}{6}{Event Encoding and Process Identity Modulation}{equation.7}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}Entity State Bank}{6}{subsection.4.3}\protected@file@percent }
+\newlabel{sec:entity_bank}{{4.3}{6}{Entity State Bank}{subsection.4.3}{}}
+\newlabel{eq:dt}{{8}{6}{Entity State Bank}{equation.8}{}}
+\newlabel{eq:t_curr}{{9}{6}{Entity State Bank}{equation.9}{}}
+\newlabel{eq:state_norm}{{10}{7}{Entity State Bank}{equation.10}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}Hyperedge Aggregation ($\mathcal  {V} \to \mathcal  {E}$)}{7}{subsection.4.4}\protected@file@percent }
+\newlabel{sec:aggregation}{{4.4}{7}{Hyperedge Aggregation ($\mathcal {V} \to \mathcal {E}$)}{subsection.4.4}{}}
+\newlabel{eq:entity_descriptor}{{11}{7}{Hyperedge Aggregation ($\mathcal {V} \to \mathcal {E}$)}{equation.11}{}}
+\newlabel{eq:agg_q}{{12}{7}{Hyperedge Aggregation ($\mathcal {V} \to \mathcal {E}$)}{equation.12}{}}
+\newlabel{eq:agg_k}{{13}{7}{Hyperedge Aggregation ($\mathcal {V} \to \mathcal {E}$)}{equation.13}{}}
+\newlabel{eq:agg_v}{{14}{7}{Hyperedge Aggregation ($\mathcal {V} \to \mathcal {E}$)}{equation.14}{}}
+\newlabel{eq:raw_score}{{15}{7}{Hyperedge Aggregation ($\mathcal {V} \to \mathcal {E}$)}{equation.15}{}}
+\newlabel{eq:attn_weights}{{16}{7}{Hyperedge Aggregation ($\mathcal {V} \to \mathcal {E}$)}{equation.16}{}}
+\newlabel{eq:x_e}{{17}{7}{Hyperedge Aggregation ($\mathcal {V} \to \mathcal {E}$)}{equation.17}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.5}Selective SSM State Update ($\mathcal  {E} \to \mathcal  {V}$)}{7}{subsection.4.5}\protected@file@percent }
+\newlabel{sec:ssm_update}{{4.5}{7}{Selective SSM State Update ($\mathcal {E} \to \mathcal {V}$)}{subsection.4.5}{}}
+\newlabel{eq:A}{{18}{7}{Selective SSM State Update ($\mathcal {E} \to \mathcal {V}$)}{equation.18}{}}
+\newlabel{eq:B}{{19}{8}{Selective SSM State Update ($\mathcal {E} \to \mathcal {V}$)}{equation.19}{}}
+\newlabel{eq:delta}{{20}{8}{Selective SSM State Update ($\mathcal {E} \to \mathcal {V}$)}{equation.20}{}}
+\newlabel{eq:A_bar}{{21}{8}{Selective SSM State Update ($\mathcal {E} \to \mathcal {V}$)}{equation.21}{}}
+\newlabel{eq:B_bar}{{22}{8}{Selective SSM State Update ($\mathcal {E} \to \mathcal {V}$)}{equation.22}{}}
+\newlabel{eq:ssm_raw}{{23}{8}{Selective SSM State Update ($\mathcal {E} \to \mathcal {V}$)}{equation.23}{}}
+\newlabel{eq:gate}{{24}{8}{Selective SSM State Update ($\mathcal {E} \to \mathcal {V}$)}{equation.24}{}}
+\newlabel{eq:gated_update}{{25}{8}{Selective SSM State Update ($\mathcal {E} \to \mathcal {V}$)}{equation.25}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.6}Classification Head}{8}{subsection.4.6}\protected@file@percent }
+\newlabel{sec:classification}{{4.6}{8}{Classification Head}{subsection.4.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.7}Training: TBPTT and Continuous Warm-Start}{8}{subsection.4.7}\protected@file@percent }
+\newlabel{sec:training}{{4.7}{8}{Training: TBPTT and Continuous Warm-Start}{subsection.4.7}{}}
 \citation{arp2022dos}
-\@writefile{toc}{\contentsline {section}{\numberline {5}Evaluation}{8}{section.5}\protected@file@percent }
-\newlabel{sec:evaluation}{{5}{8}{Evaluation}{section.5}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Experimental Setup}{8}{subsection.5.1}\protected@file@percent }
-\newlabel{sec:experimental_setup}{{5.1}{8}{Experimental Setup}{subsection.5.1}{}}
-\newlabel{sec:setup}{{5.1}{8}{Experimental Setup}{subsection.5.1}{}}
-\citation{kairos}
-\citation{magic}
-\citation{flash}
-\citation{threatrace}
+\@writefile{toc}{\contentsline {section}{\numberline {5}Evaluation}{9}{section.5}\protected@file@percent }
+\newlabel{sec:evaluation}{{5}{9}{Evaluation}{section.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Experimental Setup}{9}{subsection.5.1}\protected@file@percent }
+\newlabel{sec:experimental_setup}{{5.1}{9}{Experimental Setup}{subsection.5.1}{}}
+\newlabel{sec:setup}{{5.1}{9}{Experimental Setup}{subsection.5.1}{}}
+\citation{cheng2024kairos}
+\citation{jia2024magic}
+\citation{rehman2024flash}
+\citation{Wang2021THREATRACEDA}
 \citation{arp2022dos}
-\citation{kairos}
-\citation{magic}
-\citation{flash}
-\citation{threatrace}
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Main Results (C4)}{9}{subsection.5.2}\protected@file@percent }
-\newlabel{sec:main_results}{{5.2}{9}{Main Results (C4)}{subsection.5.2}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Detection Performance on DARPA TC E3. Baselines use the broad attack label (all attack nodes); HyperMamba crossprocess rows use the strictly harder crossprocess+ label (excluding entry-point processes). The KAIROS-protocol and CADETS rows use the broad label for direct comparison. The KAIROS-protocol row's 0.9987 node AUPRC reflects the broad label's 32\% positive rate, which includes anomalous entry-point behavior that is comparatively easy to detect; the crossprocess rows use $<1\%$ positive rate.}}{10}{table.1}\protected@file@percent }
-\newlabel{tab:main_results}{{1}{10}{Detection Performance on DARPA TC E3. Baselines use the broad attack label (all attack nodes); HyperMamba crossprocess rows use the strictly harder crossprocess+ label (excluding entry-point processes). The KAIROS-protocol and CADETS rows use the broad label for direct comparison. The KAIROS-protocol row's 0.9987 node AUPRC reflects the broad label's 32\% positive rate, which includes anomalous entry-point behavior that is comparatively easy to detect; the crossprocess rows use $<1\%$ positive rate}{table.1}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Ablation Study: Component Contributions}{10}{subsection.5.3}\protected@file@percent }
-\newlabel{sec:ablation}{{5.3}{10}{Ablation Study: Component Contributions}{subsection.5.3}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Component ablation (cross-campaign split, crossprocess label). Each row removes one or more components from the full model. $\Delta $ is the relative change in event AUPRC.}}{10}{table.2}\protected@file@percent }
-\newlabel{tab:ablation_unified}{{2}{10}{Component ablation (cross-campaign split, crossprocess label). Each row removes one or more components from the full model. $\Delta $ is the relative change in event AUPRC}{table.2}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.4}Computational Cost}{11}{subsection.5.4}\protected@file@percent }
-\newlabel{sec:computational_cost}{{5.4}{11}{Computational Cost}{subsection.5.4}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Computational Cost and Throughput}}{11}{table.3}\protected@file@percent }
-\newlabel{tab:comp_cost}{{3}{11}{Computational Cost and Throughput}{table.3}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {6}Discussion}{11}{section.6}\protected@file@percent }
-\newlabel{sec:discussion}{{6}{11}{Discussion}{section.6}{}}
-\citation{kairos}
-\citation{magic}
-\citation{flash}
-\citation{threatrace}
-\citation{loha}
-\citation{hypergat}
-\citation{hrnn}
-\citation{mamba}
-\citation{s4}
-\citation{s6}
-\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Positioning of HyperMamba against provenance-based NIDS on three axes.}}{12}{table.4}\protected@file@percent }
-\newlabel{tab:positioning}{{4}{12}{Positioning of HyperMamba against provenance-based NIDS on three axes}{table.4}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {7}Related Work}{12}{section.7}\protected@file@percent }
-\newlabel{sec:related_work}{{7}{12}{Related Work}{section.7}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {8}Conclusion}{12}{section.8}\protected@file@percent }
-\newlabel{sec:conclusion}{{8}{12}{Conclusion}{section.8}{}}
-\gdef \@abspage@last{12}
+\citation{cheng2024kairos}
+\citation{jia2024magic}
+\citation{rehman2024flash}
+\citation{Wang2021THREATRACEDA}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Main Results (C4)}{10}{subsection.5.2}\protected@file@percent }
+\newlabel{sec:main_results}{{5.2}{10}{Main Results (C4)}{subsection.5.2}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Chronological shard structure and cross-campaign evaluation splits. Each rectangle represents one data shard. \textbf  {Theia} (top): the model trains on Campaign~1 (shards 0--8) and is tested entirely on the unseen Campaign~2 (shards 12--24), separated by a 92-hour gap. \textbf  {CADETS} (middle): 10 shards with attacks concentrated in later shards. \textbf  {TRACE} (bottom): 50 strategically selected shards from 211 total ($\sim $200M of 835M events); dots mark selected shards. Small red bars indicate shards containing attack events. All splits are strictly chronological to prevent temporal data leakage.}}{11}{figure.3}\protected@file@percent }
+\newlabel{fig:timeline}{{3}{11}{Chronological shard structure and cross-campaign evaluation splits. Each rectangle represents one data shard. \textbf {Theia} (top): the model trains on Campaign~1 (shards 0--8) and is tested entirely on the unseen Campaign~2 (shards 12--24), separated by a 92-hour gap. \textbf {CADETS} (middle): 10 shards with attacks concentrated in later shards. \textbf {TRACE} (bottom): 50 strategically selected shards from 211 total ($\sim $200M of 835M events); dots mark selected shards. Small red bars indicate shards containing attack events. All splits are strictly chronological to prevent temporal data leakage}{figure.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Ablation Study: Component Contributions}{11}{subsection.5.3}\protected@file@percent }
+\newlabel{sec:ablation}{{5.3}{11}{Ablation Study: Component Contributions}{subsection.5.3}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Detection Performance on DARPA TC E3. Baselines use the broad attack label (all attack nodes); HyperMamba crossprocess rows use the strictly harder crossprocess+ label (excluding entry-point processes). The KAIROS-protocol and CADETS rows use the broad label for direct comparison. The KAIROS-protocol row's 0.9987 node AUPRC reflects the broad label's 32\% positive rate, which includes anomalous entry-point behavior that is comparatively easy to detect; the crossprocess rows use $<1\%$ positive rate.}}{12}{table.1}\protected@file@percent }
+\newlabel{tab:main_results}{{1}{12}{Detection Performance on DARPA TC E3. Baselines use the broad attack label (all attack nodes); HyperMamba crossprocess rows use the strictly harder crossprocess+ label (excluding entry-point processes). The KAIROS-protocol and CADETS rows use the broad label for direct comparison. The KAIROS-protocol row's 0.9987 node AUPRC reflects the broad label's 32\% positive rate, which includes anomalous entry-point behavior that is comparatively easy to detect; the crossprocess rows use $<1\%$ positive rate}{table.1}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Component ablation (cross-campaign split, crossprocess label). Each row removes one or more components from the full model. $\Delta $ is the relative change in event AUPRC.}}{12}{table.2}\protected@file@percent }
+\newlabel{tab:ablation_unified}{{2}{12}{Component ablation (cross-campaign split, crossprocess label). Each row removes one or more components from the full model. $\Delta $ is the relative change in event AUPRC}{table.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.4}Computational Cost}{12}{subsection.5.4}\protected@file@percent }
+\newlabel{sec:computational_cost}{{5.4}{12}{Computational Cost}{subsection.5.4}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Computational Cost and Throughput}}{12}{table.3}\protected@file@percent }
+\newlabel{tab:comp_cost}{{3}{12}{Computational Cost and Throughput}{table.3}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces Precision-Recall curves. Dots mark the F1-optimal operating point (threshold selected from validation). \textbf  {(a)}~Main results: CADETS achieves near-perfect precision across all recall levels; the Theia cross-campaign curve shows the expected performance gap from same-campaign, reflecting the difficulty of generalizing to unseen attack strategies. \textbf  {(b)}~Ablation study: removing process identity (red dashed) causes the curve to collapse below 0.35 precision at all operating points; removing both state and process (gray dotted) yields a near-flat curve indistinguishable from random, confirming that crossprocess attack events cannot be detected from isolated event features alone.}}{13}{figure.4}\protected@file@percent }
+\newlabel{fig:pr_curves}{{4}{13}{Precision-Recall curves. Dots mark the F1-optimal operating point (threshold selected from validation). \textbf {(a)}~Main results: CADETS achieves near-perfect precision across all recall levels; the Theia cross-campaign curve shows the expected performance gap from same-campaign, reflecting the difficulty of generalizing to unseen attack strategies. \textbf {(b)}~Ablation study: removing process identity (red dashed) causes the curve to collapse below 0.35 precision at all operating points; removing both state and process (gray dotted) yields a near-flat curve indistinguishable from random, confirming that crossprocess attack events cannot be detected from isolated event features alone}{figure.4}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces Component ablation on the cross-campaign split with the crossprocess label. The dashed line marks the full model's event AUPRC (0.76). Process identity is the dominant contributor ($-55\%$); removing both state and process identity collapses detection to near-random (0.20).}}{13}{figure.5}\protected@file@percent }
+\newlabel{fig:ablation}{{5}{13}{Component ablation on the cross-campaign split with the crossprocess label. The dashed line marks the full model's event AUPRC (0.76). Process identity is the dominant contributor ($-55\%$); removing both state and process identity collapses detection to near-random (0.20)}{figure.5}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {6}Discussion}{13}{section.6}\protected@file@percent }
+\newlabel{sec:discussion}{{6}{13}{Discussion}{section.6}{}}
+\citation{cheng2024kairos}
+\citation{jia2024magic}
+\citation{rehman2024flash}
+\citation{Wang2021THREATRACEDA}
+\citation{chen2025loha}
+\citation{ding-etal-2020-less}
+\citation{yang2024hrnn}
+\citation{gu2024mamba}
+\citation{gu2022efficiently}
+\citation{gu2024mamba}
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Positioning of HyperMamba against provenance-based NIDS on three axes.}}{14}{table.4}\protected@file@percent }
+\newlabel{tab:positioning}{{4}{14}{Positioning of HyperMamba against provenance-based NIDS on three axes}{table.4}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {7}Related Work}{14}{section.7}\protected@file@percent }
+\newlabel{sec:related_work}{{7}{14}{Related Work}{section.7}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {8}Conclusion}{14}{section.8}\protected@file@percent }
+\newlabel{sec:conclusion}{{8}{14}{Conclusion}{section.8}{}}
+\bibstyle{plain}
+\bibdata{refs}
+\bibcite{arp2022dos}{1}
+\bibcite{chen2025loha}{2}
+\bibcite{cheng2024kairos}{3}
+\bibcite{ding-etal-2020-less}{4}
+\bibcite{gu2024mamba}{5}
+\bibcite{gu2022efficiently}{6}
+\bibcite{jia2024magic}{7}
+\bibcite{rehman2024flash}{8}
+\bibcite{Wang2021THREATRACEDA}{9}
+\bibcite{yang2024hrnn}{10}
+\gdef \@abspage@last{15}

@@ -1,0 +1,261 @@
+﻿Foundational Architectures in Deep Sequence and Relational Learning: State Space Models and Hypergraph Neural Networks
+The Paradigm Shift in Sequence and Relational Modeling
+The landscape of deep representation learning has been fundamentally transformed by two parallel architectural revolutions. First, the quest to efficiently process ultra-long sequential data has driven a departure from traditional attention-based mechanisms toward continuous-time state space models (SSMs). Concurrently, the necessity to capture complex, polyadic relationships in non-Euclidean data has catalyzed the evolution of Graph Neural Networks (GNNs) into Hypergraph Neural Networks (HGNNs).
+Traditional sequence models, notably Transformers, rely on self-attention mechanisms that scale quadratically with sequence length, severely constraining their utility in modeling high-resolution images, long-form documents, and extended time-series data1. The introduction of Structured State Spaces (S4) and subsequently Selective State Spaces (S6, popularized by the Mamba architecture) redefined the boundaries of sequence processing, achieving linear-time complexity while maintaining the expressive power of self-attention3.
+Simultaneously, relational learning has encountered limits within simple graph topologies. Standard graphs restrict interactions to pairwise connections, which fail to natively represent multi-entity interactions inherent in natural language dependencies, network flow topologies, and persistent cyber threats. Hypergraphs resolve this limitation by permitting hyperedges that connect an arbitrary number of vertices. Architectures such as Hypergraph Attention Networks (HyperGAT), Hypergraph Recurrent Neural Networks (HRNN), and Hypergraph Masked Autoencoders (LOHA) represent the vanguard of this topological shift, enabling highly expressive, higher-order representation learning across disparate domains6.
+This report provides an exhaustive theoretical analysis, architectural deconstruction, and official publication synthesis for these six foundational models. Official BibTeX citations for each queried architecture are provided in their respective sections to facilitate further academic research.
+Sub-Quadratic Sequence Architectures: The State Space Revolution
+The theoretical foundation of the state space revolution lies in simulating continuous-time linear dynamical systems through deep neural networks. The core continuous-time state space model maps a one-dimensional input sequence    to an N-dimensional latent state    before projecting it to a one-dimensional output   , defined by the following ordinary differential equations:
+  
+
+  
+
+In this formulation,    represents the state evolution matrix,    is the input projection,    is the output projection, and    acts as a direct skip connection4. While mathematically elegant, utilizing this continuous formulation in deep learning traditionally faced catastrophic vanishing gradients and prohibitive memory consumption. Previous iterations, such as the Linear State Space Layer (LSSL), demanded memory scaling on the order of   , where    is the state dimension and    is the sequence length, rendering the approach computationally intractable for typical neural network dimensions compared to established Recurrent Neural Networks (RNNs) and Convolutional Neural Networks (CNNs)4.
+S4: Efficiently Modeling Long Sequences with Structured State Spaces
+The Structured State Space sequence model (S4) was engineered to resolve the computational bottlenecks of classical SSMs, enabling them to handle long-range dependencies both mathematically and empirically4.
+The principal innovation of S4 lies in its novel parameterization of the state matrix   . The architecture builds upon High-order Polynomial Projection Operators (HiPPO), a mathematical framework that optimally compresses historical continuous signals into fixed-size latent states by projecting them onto orthogonal polynomial bases, such as Legendre or Chebyshev polynomials2. The HiPPO framework endows the SSM with an intrinsic capability to memorize long-term context, preventing the exponential gradient decay over time that typically plagues recurrent architectures10.
+To bypass the extreme computational cost of materializing the dense    matrix, S4 conditions    with a normal plus low-rank correction. This structural decomposition transforms the matrix into a form that can be diagonalized stably5. By reparameterizing    as the sum of a low-rank and skew-symmetric term, the state space formulation reduces to the well-studied computation of a Cauchy kernel5. Instead of unrolling the recurrence sequentially—which limits parallelization—or expanding the standard SSM in coefficient space, S4 computes the truncated generating function of the SSM in the frequency domain. This transformation allows the model to compute the global convolutional kernel associated with the discretized SSM in    operations using the Fast Fourier Transform (FFT)4.
+The resulting architecture established new paradigms in sequence modeling. On the Long Range Arena (LRA) benchmark—a standard evaluation for efficient sequence models—S4 achieved an unprecedented 88% accuracy on the difficult Path-X task (involving sequence lengths of 16,384), a task where all prior architectures, including diverse Transformer variants, performed no better than random guessing4. Furthermore, the model achieved 91% accuracy on sequential CIFAR-10 without data augmentation or auxiliary losses, and halved the test error to 1.7% on raw speech classification tasks involving sequences of 16,000 steps4. The ability to transition seamlessly between continuous-time, convolutional, and recurrent model representations provided unprecedented flexibility4.
+Official Publication and BibTeX Citation for S4
+The S4 model was introduced by Albert Gu, Karan Goel, and Christopher Ré at the International Conference on Learning Representations (ICLR 2022), where it received an Outstanding Paper Honorable Mention5. The official BibTeX citation for the S4 paper is provided below:
+
+
+
+
+
+
+Code snippet
+@inproceedings{gu2022efficiently,
+ title={Efficiently Modeling Long Sequences with Structured State Spaces},
+ author={Albert Gu and Karan Goel and Christopher R{\'e}},
+ booktitle={The Tenth International Conference on Learning Representations},
+ year={2022},
+ url={https://openreview.net/forum?id=uYLFoz1vlAC}
+}
+
+S6 and Mamba: Linear-Time Sequence Modeling with Selective State Spaces
+Despite the revolutionary efficiency of S4, Linear Time-Invariant (LTI) state space models exhibit a critical vulnerability: the inability to perform content-based reasoning3. Because the dynamics of S4 (specifically the   ,   , and    matrices) are fixed and input-independent, the model applies the exact same convolutional filter to all data points. While effective for continuous signals like audio waveforms, this lack of context-awareness fails in discrete modalities such as natural language. In language modeling, a model must dynamically choose to retain critical tokens and ignore irrelevant filler words based on the semantic context16.
+The Selective State Space Mechanism (S6)
+The Selective Structured State Space Sequence Model (S6) was introduced to resolve this fundamental limitation. S6 modifies the core SSM equations by making the transition parameters functions of the input sequence. Specifically, the discretization step size   , the input projection   , and the output projection    are transformed into input-dependent variables18.
+The mathematical formulation for the selectivity in S6 is derived as follows, given a sequence of inputs   :
+  
+
+  
+
+  
+
+The continuous parameters are then discretized using a zero-order hold (ZOH) transformation and a simplified Euler discretization to omit matrix inversions:
+  
+
+  
+
+By varying the step size    based on the input, the S6 mechanism dynamically modulates the influence of the state matrix   . A large    implies a larger integration step, allowing the model to quickly overwrite the hidden state with new, high-priority information. Conversely, a small    effectively freezes the hidden state, ignoring noisy or irrelevant tokens9. This mechanism acts as a dynamic information filter, granting S6 the selective memorization capability of a Long Short-Term Memory (LSTM) network or a Transformer while maintaining mathematical elegance and polynomial gradient decay10.
+Hardware-Aware Parallel Scan and the Mamba Architecture
+Introducing input-dependent parameters breaks the convolutional equivalence that made S4 efficient; the time-varying nature of S6 dictates that the model must be computed recurrently18. To prevent S6 from suffering the sluggish training speeds of traditional RNNs, a novel hardware-aware algorithm was engineered to exploit the asymmetric memory hierarchy of modern GPUs21.
+The S6 algorithm utilizes a parallel associative scan to process the recurrence. Instead of moving massive hidden states between the slow, high-capacity High Bandwidth Memory (HBM) and the fast, limited-capacity Static Random-Access Memory (SRAM) for every sequence step, the algorithm materializes the expanded state solely within the SRAM20. The recurrence is solved iteratively in fast memory, and only the final projected outputs are written back to HBM. Furthermore, during backpropagation, intermediate states are dynamically recomputed to drastically minimize memory footprint, ensuring that memory and compute scale linearly in sequence length9.
+Mamba represents the full neural network architecture built around the S6 layer. The designers observed that standard deep learning architectures interleave sequence transformations (like attention) with Multi-Layer Perceptrons (MLPs). Mamba radically simplifies this by fusing the selective SSM directly into the gating mechanisms of a Gated Linear Unit (GLU), eliminating both attention matrices and independent MLP blocks entirely16. The model utilizes the SiLU (Swish) activation function to process the sequence transformations efficiently18.
+Architectural Feature
+	S4 (Structured State Spaces)
+	Mamba (Selective State Spaces - S6)
+	Dynamics
+	Linear Time-Invariant (LTI)
+	Time-Varying (Input-Dependent)
+	Core Parameters
+	Fixed   ,   ,   
+	Input-conditioned   ,   ,   
+	Computation Mode
+	Global Convolution (FFT)
+	Hardware-Aware Parallel Associative Scan
+	Network Block
+	Interleaved with standard MLPs
+	Homogeneous block fusing SSM and Gated MLPs
+	Memory Capacity
+	Polynomial compression of history
+	Dynamic routing (selective filtering/forgetting)
+	The result is a highly homogeneous, pure state-space architecture that achieves a 5x higher inference throughput than Transformers, scales linearly with sequence length, and demonstrates robust length extrapolation capabilities up to 1 million tokens without catastrophic memory degradation16. Across rigorous benchmarks, Mamba matches or exceeds the perplexity of identically sized Transformer models, establishing a new baseline for large-scale language and genomic modeling. Specifically, empirical studies demonstrated that the Mamba-3B model outperformed Transformers of the same size and matched Transformers twice its size in both pretraining and downstream evaluations3.
+Following the success of Mamba, the architecture has been extended into various domains. Theoretical analyses have demystified its associative recall capabilities, proving that the S6 layer represents projections onto Haar wavelets, giving it an edge in approximating discontinuous functions23. The architecture has also inspired domain-specific models, such as Vision Mamba (ViM) for multi-directional medical image segmentation, CloudMamba for point cloud analysis, and MambaStock for selective state space forecasting in financial time series24. Furthermore, researchers identified nuances in Mamba's length generalization, proposing spectrum-based modulation of the    matrix over the traditional    scaling to ensure the hidden states converge appropriately when generalizing to ultra-long contexts beyond the training distribution19.
+Official Publication and BibTeX Citation for Mamba (and S6)
+The Mamba architecture, which formally introduces the S6 mechanism, was developed by Albert Gu and Tri Dao. It was first released as a preprint in December 2023 and subsequently peer-reviewed and published at the First Conference on Language Modeling (COLM 2024), where it received an Outstanding Paper Award16. The official BibTeX citation for the Mamba paper is provided below:
+
+
+
+
+
+
+Code snippet
+@inproceedings{gu2024mamba,
+ title={Mamba: Linear-Time Sequence Modeling with Selective State Spaces},
+ author={Albert Gu and Tri Dao},
+ booktitle={First Conference on Language Modeling},
+ year={2024},
+ url={https://openreview.net/forum?id=tEYskw1VY2}
+}
+
+Higher-Order Relational Representation: The Hypergraph Epoch
+While sequence modeling aims to resolve extreme temporal and contextual length, relational modeling focuses on understanding spatial and topological connectivity. Standard Graph Neural Networks (GNNs) execute message passing over simple graphs, defining interactions strictly as pairwise links. However, in complex domains—ranging from textual co-occurrence mapping to cyber-physical system audits—relationships are intrinsically polyadic. An entity often interacts simultaneously with a vast cohort of peers, a structure that simple graphs can only approximate through transitivity or clique expansion. This forced reduction leads to severe information loss, structural noise, and an inability to maintain spatial consistency30.
+Hypergraphs formalize these high-order interactions. In a hypergraph   , the vertex set    interacts via a hyperedge set   , where a single hyperedge    can encircle an arbitrary subset of nodes. The connectivity is mathematically represented by an incidence matrix   , where    if node    belongs to hyperedge   , and    otherwise7. Hypergraph Neural Networks (HGNNs) leverage this incidence matrix to perform convolutions that aggregate features first from nodes to hyperedges, and subsequently from hyperedges back to nodes. This dual-stage propagation preserves the native, multi-way semantic fidelity of the data31.
+HyperGAT: Be More with Less via Hypergraph Attention Networks
+Inductive text classification is a canonical task in natural language processing. While traditional GNNs have attempted to model textual structure by defining words as nodes and co-occurrences as edges, these models fail to capture high-order interaction between phrases. Furthermore, they are highly inefficient when handling large datasets or transductively adding new documents, as the global corpus-level graph must be constantly reconstructed6.
+Hypergraph Attention Networks (HyperGAT), specifically introduced for inductive text classification, address these bottlenecks by translating documents into discrete hypergraphs and applying dual-tier attention mechanisms. This design achieves greater expressive power while simultaneously reducing computational consumption, fulfilling the premise of its title to "Be More with Less"33.
+Textual Hypergraph Construction and Dual Attention
+In HyperGAT, text is transformed into a document-level hypergraph where words are treated as nodes. To construct hyperedges, various textual representation strategies are employed. A common method is the Reading Order strategy (ROO), where sequential dependencies link words progressively, or the Reading Order Circular (ROC) strategy, which connects the final word back to the first to create a cyclical hyperedge constraint. Alternatively, semantic dependencies and sliding windows can be used to naturally capture the context in which multiple words coexist within a specific syntactic structure35.
+To aggregate information effectively across this complex structure, HyperGAT eschews standard mean-pooling for a dual-attention message-passing algorithm:
+1. Node-to-Hyperedge Attention: The framework learns an attention score    for each node    incident to hyperedge   . This score quantifies the contextual importance of a specific word within the higher-order phrase. The hyperedge representation is then computed as a weighted sum of its constituent nodes, utilizing scaled dot-product attention against a trainable context vector32.
+2. Hyperedge-to-Node Attention: Conversely, the model updates the node representations by aggregating the features of all hyperedges that contain the node. A second attention mechanism distinguishes the significance of various hyperedges, dynamically prioritizing semantic structures that are highly discriminative for the classification task37.
+This dual-attention propagation operator ensures that noisy or irrelevant word associations are down-weighted, while dense, high-value syntactic relationships are amplified. Because the hypergraph models a document's internal hierarchy explicitly, HyperGAT operates highly effectively in inductive settings, where it must classify entirely unseen text documents without relying on a global graph structure6. Extensive empirical evaluations demonstrated the superiority of HyperGAT over sequence-based models like BiLSTM and CNN, as well as graph-based deep learning baselines35.
+Official Publication and BibTeX Citation for HyperGAT
+The foundational HyperGAT model for inductive text classification was proposed by Kaize Ding, Jianling Wang, Jundong Li, Dingcheng Li, and Huan Liu. It was published in the Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing (EMNLP 2020)33. The official BibTeX citation for the HyperGAT paper is provided below:
+
+
+
+
+
+
+Code snippet
+@inproceedings{ding-etal-2020-less,
+   title = "Be More with Less: Hypergraph Attention Networks for Inductive Text Classification",
+   author = "Ding, Kaize  and
+     Wang, Jianling  and
+     Li, Jundong  and
+     Li, Dingcheng  and
+     Liu, Huan",
+   booktitle = "Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing (EMNLP)",
+   year = "2020",
+   publisher = "Association for Computational Linguistics",
+   pages = "4927--4936",
+   url = "https://aclanthology.org/2020.emnlp-main.399"
+}
+
+HRNN: Hypergraph Recurrent Neural Networks for Network Intrusion Detection
+As computational architectures evolved, researchers recognized the necessity of bridging spatial hypergraph topologies with temporal sequence models. Network traffic anomaly detection presents an ideal frontier for this synthesis. Modern cyber-attacks, such as automated port scans, botnet synchronizations, and distributed denial-of-service (DDoS) campaigns, are highly dynamic. They exhibit non-stationary temporal fluctuations and complex spatial distributions involving myriad IP addresses and communication protocols acting in concert8.
+Standard machine learning-based Network Intrusion Detection Systems (NIDS) primarily analyze isolated, per-flow structural features, remaining agnostic to the broader interaction events across the network. This transverse blindness inhibits the detection of coordinated attacks, as per-flow time-agnostic feature vectors fail to capture inter-arrival dynamics and event sequencing39. The Hypergraph Recurrent Neural Network (HRNN) overcomes this by explicitly fusing hypergraph spatial representations with temporal recurrences8.
+Spatial-Temporal Feature Extraction in Network Flows
+HRNN formulates raw flow data as a hypergraph structure. Within this topological space, IP addresses, ports, and protocols are constructed as nodes, while network flows that group specific interactions are mapped as hyperedges41. This mapping ensures that simultaneous multi-endpoint communications—which are characteristic of reconnaissance scanning or synchronized malware beaconing—are captured natively in a single, high-order tensor43.
+To extract temporal semantics, HRNN couples the spatial hypergraph convolutions with Recurrent Neural Network (RNN) modules, typically leveraging Gated Recurrent Units (GRU) or Long Short-Term Memory (LSTM) cells8. At each time step   , the hypergraph convolution aggregates the higher-order interactions of the flow features. The resulting spatially-enriched embeddings are concatenated with historical temporal states and fed into the recurrent module. The GRU updates its hidden state by processing the hypergraph node representations, effectively tracking the sequential evolution of the network traffic44.
+By interlocking message passing on hypergraphs with the sequential memory of RNNs, HRNN establishes an intrusion detection paradigm that effectively fuses representations imbued with rich spatial and temporal semantics8. This structural framework extends beyond cybersecurity; parallel iterations of the HRNN architecture (such as the Probabilistic Hypergraph Recurrent Neural Network) have been successfully deployed in multivariate time-series forecasting to model dynamic node-hyperedge relations as probabilistic distributions46.
+Official Publication and BibTeX Citation for HRNN
+The HRNN framework applied specifically to network intrusion detection was formalized by Zhe Yang, Zitong Ma, Wenbo Zhao, Lingzhi Li, and Fei Gu. It was published in the Journal of Grid Computing in 20248. The official BibTeX citation for the HRNN paper is provided below:
+
+
+
+
+
+
+Code snippet
+@article{yang2024hrnn,
+ title={{HRNN}: Hypergraph Recurrent Neural Network for Network Intrusion Detection},
+ author={Yang, Zhe and Ma, Zitong and Zhao, Wenbo and Li, Lingzhi and Gu, Fei},
+ journal={Journal of Grid Computing},
+ volume={22},
+ number={2},
+ pages={52},
+ year={2024},
+ publisher={Springer},
+ doi={10.1007/s10723-024-09767-1}
+}
+
+LOHA: Hypergraph Masked Autoencoder for Advanced Persistent Threat Detection
+While HRNNs excel at detecting rapid, high-volume network anomalies through temporal extraction, a distinct class of cyber threats operates on entirely different parameters. Advanced Persistent Threats (APTs) execute "low-and-slow" infiltration strategies. APTs involve sophisticated attackers establishing long-term footholds within systems, utilizing zero-day vulnerabilities, and disguising lateral movement as benign administrative traffic49. Because these attacks unfold over extensive time spans and trigger virtually no traditional volumetric alerts, rule-based heuristics and standard graph anomaly detectors consistently fail, often drowning analysts in false positives caused by benign background noise50.
+To combat this, the LOHA (Hypergraph Masked Autoencoder) framework was proposed. LOHA shifts the analytical medium from raw network flows to provenance graphs—data structures constructed from kernel and system logs (e.g., Sysmon) that track causal relationships between files, processes, and network sockets. By upgrading these linear log representations into high-order hypergraphs, LOHA captures the causal and dependency structures that are obscured in isolated logs50.
+Masked Autoencoding over Provenance Hypergraphs
+Converting a provenance graph into a hypergraph allows LOHA to aggregate multiple overlapping behaviors seamlessly. For example, a single malicious process altering a registry key, writing a payload to disk, and opening an outbound network socket is natively consolidated into a single hyperedge7. This atomized clustering minimizes graph size, reduces computational memory consumption, and preserves complex tactical semantics aligned with cybersecurity frameworks like MITRE ATT&CK7.
+The genius of LOHA lies in its application of Masked Autoencoders (MAEs) over this hypergraph topology. In traditional supervised learning, sourcing sufficient labeled data for undiscovered, zero-day APTs is impossible53. Consequently, LOHA employs a self-supervised contrastive learning framework. During training on strictly benign traffic, the system artificially corrupts the data using specific strategies:
+   1. Node Feature Masking: Randomly obscuring specific nodes' features with an all-zero vector, forcing the network to deduce the missing information from surrounding hyperedges.
+   2. Hyperedge Weight Perturbation: Applying Gaussian noise to the weights of the hyperedges, disrupting established behavioral connections.
+   3. Flow-group Membership Masking: Randomly masking the membership relationship between a flow and its associated group in the incidence matrix53.
+The Hypergraph Masked Autoencoder is then tasked with reconstructing the missing structural and feature data from the unmasked components. By forcing the model to infer unobserved entities, the neural network learns a highly robust, generalized representation of normal system behavior without relying on fragile node-specific identifiers like IPs or file paths51. During inference, when an APT subtly alters the interaction matrix of the system, the anomalous hyperedges deviate significantly from the autoencoder's learned manifold. The reconstruction error spikes, flagging the advanced threat regardless of whether the specific attack signature has ever been cataloged before39. In rigorous evaluations, this method achieved exceptionally high detection metrics, securing a 98.25% accuracy and a 0.36% false positive rate by effectively reducing the semantic gap between low-level traffic audits and high-level system behaviors7.
+Official Publication and BibTeX Citation for LOHA
+The LOHA framework for APT detection was authored by Guanwen Chen, Lizhao Wu, Hui Lin, and Zhaobin Zhou. It was accepted for publication in the Proceedings of the 2025 IEEE International Conference on High Performance Computing and Communications (HPCC 2025)49. The official BibTeX citation for the LOHA paper is provided below:
+
+
+
+
+
+
+Code snippet
+@inproceedings{chen2025loha,
+ title={{LOHA}: Hypergraph Masked Autoencoder for Advanced Persistent Threat Detection},
+ author={Chen, Guanwen and Wu, Lizhao and Lin, Hui and Zhou, Zhaobin},
+ booktitle={2025 IEEE International Conference on High Performance Computing and Communications (HPCC)},
+ year={2025},
+ publisher={IEEE}
+}
+
+Strategic Synthesis and Future Trajectories
+The six models analyzed in this report illustrate the frontier of algorithmic efficiency and representational power in modern deep learning, tackling the dual bottlenecks of sequence length and topological complexity.
+The empirical evidence and architectural frameworks presented yield several definitive conclusions:
+   1. S4 proved that structured state spaces, when mathematically optimized via low-rank diagonal decompositions, provide a scientifically rigorous alternative to Transformers for long-range dependency tasks.
+   2. Mamba and S6 demonstrated that instilling input-dependent selectivity into these state spaces unlocks context-aware reasoning. Fused with an associative parallel scan algorithm, this yields a sequence model with sub-quadratic scaling and unprecedented length extrapolation.
+   3. HyperGAT redefined inductive text classification by abandoning rigid dependency trees in favor of hypergraphs, leveraging dual attention to extract rich, high-order semantics efficiently.
+   4. HRNN successfully synthesized temporal recurrent cells with spatial hypergraph convolutions, establishing a robust defense against non-stationary, multi-vector network intrusions.
+   5. LOHA applied hypergraph masked autoencoding to provenance graphs, showcasing how self-supervised reconstruction of uncorrupted states serves as a highly effective detection vector against stealthy Advanced Persistent Threats.
+Architecture Paradigm
+	Primary Challenge Addressed
+	Core Innovation
+	Key Application Domains
+	State Space Models (S4, Mamba)
+	Quadratic attention bottleneck; extremely long sequence limits
+	Discretized ODEs; Input-dependent parameter selection; Parallel associative scan
+	Language modeling, genomics, medical imaging, audio generation
+	Hypergraph Networks (HyperGAT, HRNN, LOHA)
+	Pairwise limitation of simple graphs; transductive constraints
+	High-order incidence matrices; Dual attention mechanisms; Spatiotemporal RNN fusion
+	Text classification, network intrusion, time-series forecasting, APT detection
+	The second-order implications of these fields converging are profound. While HRNN successfully merges temporal sequence modeling with hypergraph convolutions, recurrent units still suffer from the sequential computation latency that Mamba was designed to eliminate16. Future architectural designs are highly likely to fuse Selective State Spaces (S6) directly with Hypergraph incidence matrices. By replacing the recurrent step in an HRNN with a Mamba block, researchers could theoretically achieve linear-time, hardware-aware parallel processing of multi-dimensional topological data. Such architectures would allow cybersecurity systems or dynamic relational algorithms to monitor unbounded context lengths across highly complex, non-Euclidean topologies in real time.
+As data velocity and interconnectivity scale exponentially, deep learning must move beyond the constraints of standard self-attention and pairwise message passing. The continued refinement and ultimate intersection of state-space architectures and hypergraph neural networks will serve as the engine for the next generation of predictive modeling.
+Works cited
+   1. arXiv:2401.13660v3 [cs.CL] 9 Aug 2024 - NSF PAR, https://par.nsf.gov/servlets/purl/10568125
+   2. Efficiently Modeling Long Sequences with Structured State Spaces - OpenReview, https://openreview.net/forum?id=uYLFoz1vlAC
+   3. Mamba: Linear-Time Sequence Modeling with Selective State Spaces - OpenReview, https://openreview.net/forum?id=AL1fq05o7H
+   4. EFFICIENTLY MODELING LONG SEQUENCES WITH STRUCTURED STATE SPACES - OpenReview, https://openreview.net/pdf?id=uYLFoz1vlAC
+   5. [2111.00396] Efficiently Modeling Long Sequences with Structured State Spaces - arXiv, https://arxiv.org/abs/2111.00396
+   6. Be More with Less: Hypergraph Attention Networks for Inductive Text Classification - ACL Anthology, https://aclanthology.org/2020.emnlp-main.399.pdf
+   7. HyperTTC: Hypergraph-Empowered Tactic-Specific Traffic Clustering for Atomized APT Detection - IEEE Computer Society, https://www.computer.org/csdl/proceedings-article/icnc/2025/10993920/26GreVacu1G
+   8. HRNN: Hypergraph Recurrent Neural Network for Network Intrusion Detection | Request PDF - ResearchGate, https://www.researchgate.net/publication/380665497_HRNN_Hypergraph_Recurrent_Neural_Network_for_Network_Intrusion_Detection
+   9. Mamba: Linear-Time Sequence Modeling with Selective State Spaces - Arxiv Dives, https://ghost.oxen.ai/mamba-linear-time-sequence-modeling-with-selective-state-spaces-arxiv-dives/
+   10. Mamba: The Linear-Time Architecture That Could Challenge Transformers - Medium, https://medium.com/@danieljsmit/mamba-the-linear-time-architecture-that-could-challenge-transformers-b27cf1b0dac1
+   11. Efficiently Modeling Long Sequences with Structured State Spaces - Takara TLDR, https://tldr.takara.ai/p/2111.00396
+   12. Effectively Modeling Time Series with Simple Discrete State Spaces - OpenReview, https://openreview.net/forum?id=2EpjkjzdCAa
+   13. [PDF] Efficiently Modeling Long Sequences with Structured State Spaces | Semantic Scholar, https://www.semanticscholar.org/paper/Efficiently-Modeling-Long-Sequences-with-Structured-Gu-Goel/ac2618b2ce5cdcf86f9371bcca98bc5e37e46f51
+   14. Chimera: State Space Models Beyond Sequences - OpenReview, https://openreview.net/forum?id=Sfmk5amxFu
+   15. Mamba: Linear-Time Sequence Modeling with Selective State Spaces - Semantic Scholar, https://www.semanticscholar.org/paper/Mamba%3A-Linear-Time-Sequence-Modeling-with-Selective-Gu-Dao/7bbc7595196a0606a07506c4fb1473e5e87f6082
+   16. Mamba: Linear-Time Sequence Modeling with Selective State Spaces - OpenReview, https://openreview.net/forum?id=tEYskw1VY2
+   17. Mamba: Linear-Time Sequence Modeling with Selective State Spaces - Ainiketan, https://www.ainiketan.in/papers/21-mamba-2023/
+   18. Mamba: Linear-Time Sequence Modeling with Selective State Spaces - arXiv, https://arxiv.org/pdf/2312.00752
+   19. Mamba Modulation On the Length Generalization of Mamba - OpenReview, https://openreview.net/pdf?id=QEU047bE8p
+   20. MAMBA and State Space Models Explained | by Astarag Mohapatra - Medium, https://athekunal.medium.com/mamba-and-state-space-models-explained-b1bf3cb3bb77
+   21. [2312.00752] Mamba: Linear-Time Sequence Modeling with Selective State Spaces - arXiv, https://arxiv.org/abs/2312.00752
+   22. Mamba: A Novel Deep Learning Architecture for Sequence Modeling - Studocu, https://www.studocu.vn/vn/document/truong-dai-hoc-mo-thanh-pho-ho-chi-minh/tri-tue-nhan-tao/mamba-a-novel-deep-learning-architecture-for-sequence-modeling/147416878
+   23. Understanding Input Selectivity in Mamba: Impact on Approximation Power, Memorization, and Associative Recall Capacity - ICML 2026, https://icml.cc/virtual/2025/poster/43867
+   24. MambaStock: Selective state space model for stock prediction - GitHub, https://github.com/zshicode/MambaStock
+   25. [2511.07823] CloudMamba: Grouped Selective State Spaces for Point Cloud Analysis, https://arxiv.org/abs/2511.07823
+   26. ZR2ViM: a recursive vision Mamba model for boundary-preserving medical image segmentation - PMC, https://pmc.ncbi.nlm.nih.gov/articles/PMC12996084/
+   27. Mamba Modulation On the Length Generalization of Mamba - arXiv, https://arxiv.org/html/2509.19633v1
+   28. Are Current AI Systems Unlocking Knowledge Discovery in Genomics? - MIT Press Direct, https://direct.mit.edu/daed/article/155/1-2/354/137123
+   29. Accepted Papers - COLM 2024, https://colmweb.org/2024/AcceptedPapers.html
+   30. A Hypergraph-Based Machine Learning Ensemble Network Intrusion Detection System | Request PDF - ResearchGate, https://www.researchgate.net/publication/383801234_A_Hypergraph-Based_Machine_Learning_Ensemble_Network_Intrusion_Detection_System
+   31. Adaptive Neural Message Passing for Inductive Learning on Hypergraphs - IEEE Computer Society, https://www.computer.org/csdl/journal/tp/2025/01/10612216/1YTJvMRqIiQ
+   32. Hypergraph Attention Mechanisms - Emergent Mind, https://www.emergentmind.com/topics/hypergraph-attention
+   33. Be More with Less: Hypergraph Attention Networks for Inductive Text Classification, https://aclanthology.org/2020.emnlp-main.399/
+   34. Be More with Less: Hypergraph Attention Networks for Inductive Text Classification - arXiv, https://arxiv.org/abs/2011.00387
+   35. Multi-Label Classification of Chinese Humor Texts Using Hypergraph Attention Networks, https://scholar.lib.ntnu.edu.tw/en/publications/multi-label-classification-of-chinese-humor-texts-using-hypergrap/
+   36. Full article: Exploring graph representation strategies for text classification - Taylor & Francis, https://www.tandfonline.com/doi/full/10.1080/09540091.2023.2289832
+   37. Spatio-Temporal Contrastive Heterogeneous Graph Attention Networks for Session-Based Recommendation - MDPI, https://www.mdpi.com/2227-7390/12/8/1193
+   38. HGNN-AS: Enhancing Hypergraph Neural Network for Node Classification Accuracy with Attention and Self-Attention - MDPI, https://www.mdpi.com/2079-9292/14/21/4282
+   39. Flow-based intrusion detection: Techniques and challenges | Request PDF - ResearchGate, https://www.researchgate.net/publication/317325893_Flow-based_intrusion_detection_Techniques_and_challenges
+   40. Hypergraph Convolutional Recurrent Neural Network - Semantic Scholar, https://www.semanticscholar.org/paper/Hypergraph-Convolutional-Recurrent-Neural-Network-Yi-Park/59a66354d632e8b9ccd4cebccfa9406b83b1471f
+   41. A Hypergraph-Based Machine Learning Ensemble Network Intrusion Detection System - arXiv, https://arxiv.org/pdf/2211.03933
+   42. Zhe Yang's research works | Soochow University, Suzhou (SUDA) and other places, https://www.researchgate.net/scientific-contributions/Zhe-Yang-70918740
+   43. Higher-order linegraph topology for intrusion detection: a hypergraph approach, https://www.researchgate.net/publication/403806257_Higher-order_linegraph_topology_for_intrusion_detection_a_hypergraph_approach
+   44. Recent Advances in Hypergraph Neural Networks - arXiv, https://arxiv.org/html/2503.07959v1
+   45. Hypergraph Neural Networks for Time-series Forecasting - IEEE Computer Society, https://www.computer.org/csdl/proceedings-article/bigdata/2023/10386109/1TUPaeT9LIQ
+   46. Review of Probabilistic HyperGraph and Probabilistic SuperHyperGraph - Spectrum of Operational Research (SOR), https://www.sor-journal.org/index.php/sor/article/view/51
+   47. Probabilistic Hypergraph Recurrent Neural Networks for Time-series Forecasting | Request PDF - ResearchGate, https://www.researchgate.net/publication/393845496_Probabilistic_Hypergraph_Recurrent_Neural_Networks_for_Time-series_Forecasting
+   48. Probabilistic Hypergraph Recurrent Neural Networks for Time-series Forecasting, https://vtechworks.lib.vt.edu/items/1e5225d2-7f6a-4678-9cf5-327106b64771
+   49. LOHA: Hypergraph Masked Autoencoder for Advanced Persistent Threat Detection | Request PDF - ResearchGate, https://www.researchgate.net/publication/397117085_LOHA_Hypergraph_Masked_Autoencoder_for_Advanced_Persistent_Threat_Detection
+   50. An Advanced Persistent Threat Detection Framework Based on Graph Attention Networks with Spectral Feature Refinement - IEEE Computer Society, https://www.computer.org/csdl/journal/tq/5555/01/11535000/2gM5QSbaPxm
+   51. A Review of Provenance Graph based APT Attack Detection:Applications and Developments | Request PDF - ResearchGate, https://www.researchgate.net/publication/364042481_A_Review_of_Provenance_Graph_based_APT_Attack_DetectionApplications_and_Developments
+   52. APT Detection via Hypergraph Attention Network with Community-Based Behavioral Mining, https://www.mdpi.com/2076-3417/15/11/5872
+   53. Multi-view Correlation-aware Network Traffic Detection on Flow Hypergraph - arXiv, https://arxiv.org/html/2501.08610v2
+   54. MA2RL: Masked Autoencoders for Generalizable Multi-Agent Reinforcement Learning, https://www.computer.org/csdl/journal/ai/5555/01/11398361/2edaPrhTwEo
+   55. Accepted Paper List - HPCC 2025, https://hpcn.exeter.ac.uk/hpcc2025/accepted-paper-list.php

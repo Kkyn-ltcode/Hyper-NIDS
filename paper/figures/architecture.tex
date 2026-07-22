@@ -1,0 +1,195 @@
+% HyperMamba Architecture Diagram
+% Full-width figure for two-column USENIX-style paper
+% Place this in the paper with \input{figures/architecture.tex}
+
+\begin{figure*}[t]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+    % Styles
+    stage/.style={rectangle, rounded corners=4pt, draw=#1!70, fill=#1!8, 
+                  minimum height=1.6cm, minimum width=2.6cm, align=center,
+                  font=\small\bfseries, line width=0.8pt},
+    substage/.style={rectangle, rounded corners=2pt, draw=#1!60, fill=#1!6,
+                     minimum height=0.65cm, minimum width=2.0cm, align=center,
+                     font=\scriptsize, line width=0.5pt},
+    bank/.style={rectangle, rounded corners=3pt, draw=purple!70, fill=purple!6,
+                 minimum height=2.4cm, minimum width=2.8cm, align=center,
+                 font=\small\bfseries, line width=1.0pt},
+    input/.style={rectangle, rounded corners=3pt, draw=gray!70, fill=gray!8,
+                  minimum height=0.55cm, align=center, font=\scriptsize, line width=0.5pt},
+    output/.style={circle, draw=red!70, fill=red!10, minimum size=0.9cm,
+                   font=\small\bfseries, line width=0.8pt},
+    arrow/.style={-{Stealth[length=5pt,width=4pt]}, line width=0.7pt, color=#1!70},
+    dasharrow/.style={-{Stealth[length=5pt,width=4pt]}, line width=0.7pt, 
+                      dashed, color=#1!60},
+    label/.style={font=\scriptsize\itshape, text=#1!70},
+    dimlab/.style={font=\tiny, text=black!50},
+    stagenum/.style={circle, fill=#1!20, draw=#1!50, font=\scriptsize\bfseries,
+                     inner sep=1.5pt, text=#1!80},
+]
+
+% ============================================================
+% Stage 1: Event Encoding
+% ============================================================
+\node[stage=blue] (enc) at (0, 0) {Event\\Encoder};
+\node[stagenum=blue] at ([xshift=-0.9cm, yshift=0.65cm]enc.north west) {1};
+
+% Sub-components of encoder (stacked below)
+\node[substage=blue] (evtemb) at ([yshift=-1.6cm]enc) {Event Type Embed};
+\node[substage=blue] (contproj) at ([yshift=-0.85cm]evtemb) {Continuous Proj};
+\node[substage=blue] (procgate) at ([yshift=-0.85cm]contproj) {Gated Process ID};
+
+% Input features (left of encoder)
+\node[input] (inevt) at ([xshift=-2.4cm]evtemb) {\texttt{EVENT\_MMAP}};
+\node[input] (incont) at ([xshift=-2.4cm]contproj) {$\mathbf{x}_\text{cont} \in \mathbb{R}^7$};
+\node[input] (inproc) at ([xshift=-2.4cm]procgate) {\texttt{/usr/bin/firefox}};
+
+\draw[arrow=gray] (inevt) -- (evtemb);
+\draw[arrow=gray] (incont) -- (contproj);
+\draw[arrow=gray] (inproc) -- (procgate);
+
+% Gate annotation
+\node[dimlab, anchor=west] at ([xshift=0.1cm]procgate.east) 
+    {$g_p = \sigma(\gamma_p)$};
+
+% Output of encoder
+\node[dimlab] (fedim) at ([xshift=1.6cm]enc.east) {$\mathbf{f}_e \in \mathbb{R}^{2d}$};
+
+% Dashed box around encoder sub-components
+\draw[draw=blue!30, rounded corners=3pt, dashed, line width=0.5pt]
+    ([xshift=-0.35cm, yshift=0.15cm]evtemb.north west) rectangle 
+    ([xshift=0.35cm, yshift=-0.15cm]procgate.south east);
+
+% Connect sub-components to encoder
+\draw[arrow=blue, line width=0.5pt] ([yshift=-0.05cm]enc.south) -- ([yshift=0.05cm]evtemb.north);
+
+% ============================================================
+% Stage 2: Entity State Bank (above the main flow)
+% ============================================================
+\node[bank] (bank) at (5.2, 3.0) {Entity State\\Bank};
+\node[stagenum=purple] at ([xshift=-0.9cm, yshift=0.15cm]bank.north west) {2};
+
+% Bank internal detail
+\node[dimlab] at ([yshift=-0.55cm]bank.center) 
+    {$\mathbf{S} \in \mathbb{R}^{|\mathcal{V}| \times d}$};
+\node[dimlab] at ([yshift=-0.85cm]bank.center) 
+    {$\boldsymbol{\tau} \in \mathbb{R}^{|\mathcal{V}|}$};
+\node[font=\tiny\itshape, text=purple!50] at ([yshift=0.75cm]bank.center) 
+    {Persistent (CPU)};
+
+% Entity slots (small boxes inside/below bank)
+\node[rectangle, rounded corners=2pt, draw=purple!40, fill=orange!8,
+      minimum height=0.45cm, minimum width=0.7cm, font=\tiny] 
+      (eslot1) at ([xshift=-0.8cm, yshift=-1.7cm]bank) {$v_\text{subj}$};
+\node[rectangle, rounded corners=2pt, draw=purple!40, fill=orange!8,
+      minimum height=0.45cm, minimum width=0.7cm, font=\tiny] 
+      (eslot2) at ([yshift=-1.7cm]bank) {$v_\text{obj}$};
+\node[rectangle, rounded corners=2pt, draw=purple!40, fill=orange!8,
+      minimum height=0.45cm, minimum width=0.7cm, font=\tiny] 
+      (eslot3) at ([xshift=0.8cm, yshift=-1.7cm]bank) {$v_\text{obj2}$};
+
+% Hyperedge bracket
+\draw[decorate, decoration={brace, amplitude=4pt, mirror}, line width=0.5pt, purple!40]
+    ([yshift=-0.1cm]eslot1.south west) -- ([yshift=-0.1cm]eslot3.south east)
+    node[midway, below=5pt, font=\tiny\itshape, text=purple!50] {Hyperedge $e_t$};
+
+% Gather arrows (bank → slots)
+\draw[arrow=purple] ([xshift=-0.6cm]bank.south) -- (eslot1.north);
+\draw[arrow=purple] (bank.south) -- (eslot2.north);
+\draw[arrow=purple] ([xshift=0.6cm]bank.south) -- (eslot3.north);
+\node[label=purple, anchor=east] at ([xshift=-0.8cm, yshift=-0.85cm]bank.south) {gather};
+
+% ============================================================
+% Stage 3: Hyperedge Aggregation (V→E)
+% ============================================================
+\node[stage=teal] (agg) at (5.2, 0) {Hyperedge\\Aggregation};
+\node[stagenum=teal] at ([xshift=-0.9cm, yshift=0.65cm]agg.north west) {3};
+\node[dimlab] at ([yshift=-0.35cm]agg.center) {$\mathcal{V} \to \mathcal{E}$};
+
+% Attention sub-label
+\node[font=\tiny\itshape, text=teal!50] at ([yshift=-1.15cm]agg.center)
+    {Attention: $\mathbf{f}_e \to$ query};
+\node[font=\tiny\itshape, text=teal!50] at ([yshift=-1.5cm]agg.center)
+    {$[\hat{\mathbf{s}}_v \| \mathbf{r}_v \| \log\Delta t] \to$ key/val};
+
+% Connect encoder → aggregator
+\draw[arrow=blue] (fedim) -- (agg.west) 
+    node[midway, above, dimlab] {};
+
+% Connect entity slots → aggregator
+\draw[arrow=purple, line width=0.5pt] (eslot1.south) -- ([xshift=-0.6cm]agg.north);
+\draw[arrow=purple, line width=0.5pt] (eslot2.south) -- (agg.north);
+\draw[arrow=purple, line width=0.5pt] (eslot3.south) -- ([xshift=0.6cm]agg.north);
+
+% ============================================================
+% Stage 4: SSM State Update (E→V)
+% ============================================================
+\node[stage=orange] (ssm) at (9.2, 0) {Selective SSM\\Update};
+\node[stagenum=orange] at ([xshift=-0.9cm, yshift=0.65cm]ssm.north west) {4};
+\node[dimlab] at ([yshift=-0.35cm]ssm.center) {$\mathcal{E} \to \mathcal{V}$};
+
+% SSM equations annotation
+\node[font=\tiny\itshape, text=orange!50] at ([yshift=-1.15cm]ssm.center) 
+    {$\bar{A} \odot \hat{\mathbf{s}}_v + \bar{B} \odot \mathbf{x}_e$};
+\node[font=\tiny\itshape, text=orange!50] at ([yshift=-1.5cm]ssm.center) 
+    {Gated residual};
+
+% Connect aggregator → SSM
+\draw[arrow=teal] (agg.east) -- (ssm.west) 
+    node[midway, above, dimlab] {$\mathbf{x}_e \in \mathbb{R}^d$};
+
+% Scatter: SSM → Bank (write-back)
+\draw[arrow=orange] ([xshift=0.6cm]ssm.north) -- ([xshift=0.6cm]ssm.north |- bank.south) 
+    -- ([xshift=1.0cm]bank.south);
+\node[label=orange, anchor=west] at ([xshift=0.7cm, yshift=-0.85cm]bank.south) {scatter};
+
+% ============================================================
+% Stage 5: Classification
+% ============================================================
+\node[stage=red] (cls) at (13.0, 0) {Classifier\\Head};
+\node[stagenum=red] at ([xshift=-0.9cm, yshift=0.65cm]cls.north west) {5};
+
+% MLP annotation
+\node[font=\tiny\itshape, text=red!50] at ([yshift=-1.15cm]cls.center) 
+    {$[\bar{\mathbf{s}} \| \mathbf{W}_p\mathbf{f}_e]$};
+\node[font=\tiny\itshape, text=red!50] at ([yshift=-1.5cm]cls.center) 
+    {MLP: $2d \to d \to 1$};
+
+% Connect SSM → Classifier (post-update states)
+\draw[arrow=orange] (ssm.east) -- (cls.west) 
+    node[midway, above, dimlab] {$\mathbf{s}_v^{+}$};
+
+% Connect encoder → Classifier (skip connection for event features)
+\draw[dasharrow=blue] ([yshift=0.3cm]enc.east) -- ++(1.0, 0) |- ([yshift=0.5cm]cls.north) 
+    -- (cls.north)
+    node[pos=0.45, above, dimlab] {$\mathbf{f}_e$ (event features)};
+
+% Output
+\node[output] (yhat) at (15.3, 0) {$\hat{y}_t$};
+\draw[arrow=red] (cls.east) -- (yhat.west);
+\node[dimlab] at ([yshift=-0.7cm]yhat) {$\in [0,1]$};
+
+% ============================================================
+% Recurrence annotation (large curved arrow)
+% ============================================================
+\draw[dasharrow=purple, line width=1.0pt] 
+    ([xshift=1.2cm]bank.east) arc[start angle=0, end angle=-40, radius=1.5cm]
+    node[pos=0.5, right, font=\tiny\itshape, text=purple!60, align=left] 
+    {Next event\\reads updated\\states}
+    -- ++(0, -0.5);
+
+% ============================================================
+% Title and stage labels along bottom
+% ============================================================
+\node[font=\footnotesize\bfseries, text=blue!70] at ([yshift=-2.3cm]enc) {§4.2};
+\node[font=\footnotesize\bfseries, text=purple!70] at ([yshift=1.3cm]bank) {§4.3};
+\node[font=\footnotesize\bfseries, text=teal!70] at ([yshift=-2.3cm]agg) {§4.4};
+\node[font=\footnotesize\bfseries, text=orange!70] at ([yshift=-2.3cm]ssm) {§4.5};
+\node[font=\footnotesize\bfseries, text=red!70] at ([yshift=-2.3cm]cls) {§4.6};
+
+\end{tikzpicture}%
+}
+\caption{HyperMamba architecture. Each audit event $e_t$ is processed in five stages. \textbf{(1)}~The event encoder combines event type, continuous features, and gated process identity into $\mathbf{f}_e$. \textbf{(2)}~Entity states $\hat{\mathbf{s}}_v$ and elapsed times $\Delta t_v$ are gathered from the persistent \texttt{EntityStateBank}. \textbf{(3)}~Attention-based hyperedge aggregation ($\mathcal{V} \to \mathcal{E}$) fuses entity states conditioned on $\mathbf{f}_e$. \textbf{(4)}~A Selective SSM updates each entity's state ($\mathcal{E} \to \mathcal{V}$) and scatters results back to the bank. \textbf{(5)}~Post-update states and event features are concatenated and classified. The bank persists across events, creating a recurrent information pathway across entities and time.}
+\label{fig:architecture}
+\end{figure*}

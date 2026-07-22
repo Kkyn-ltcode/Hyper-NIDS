@@ -1,0 +1,246 @@
+﻿The Convergence of State Space Models, Graph Architectures, and Cybersecurity: A Comprehensive Analysis
+Introduction to the Paradigm Shift in Sequential and Structural Modeling
+Over the past decade, deep learning architectures for sequential and structural data have been dominated by Recurrent Neural Networks (RNNs), Convolutional Neural Networks (CNNs), and Transformers. While Transformers achieved unprecedented success across various domains via the self-attention mechanism, their deployment in large-scale, real-time, or resource-constrained environments is severely bottlenecked by a quadratic computational complexity,   , relative to sequence length1. This memory wall renders Transformers infeasible for processing gigapixel images, extended system audit logs, or high-velocity network traffic. Concurrently, in the domain of graph representation learning, traditional Message-Passing Neural Networks (MPNNs) and Graph Convolutional Networks (GCNs) face persistent structural limitations. The most notable of these are over-smoothing and over-squashing, which degrade feature expressiveness as model depth increases, ultimately forcing node representations to converge indistinguishably3.
+To address these fundamental limitations, Structured State Space Sequence Models (SSMs)—particularly architectures like S4 and its selective variant, Mamba—have emerged as a transformative alternative1. By framing sequence modeling as a discretized representation of an underlying continuous-time linear dynamical system, SSMs achieve robust long-range dependency capture with linear computational complexity,   1. The underlying premise of these architectures enables hardware-aware parallelization without sacrificing the context-routing capabilities traditionally monopolized by attention mechanisms8.
+The integration of SSMs into non-Euclidean data structures (graphs and hypergraphs) and high-stakes temporal domains (cybersecurity, intrusion detection, and audit log analysis) represents a critical frontier in artificial intelligence research8. The synthesis of these fields provides a mechanism to capture both complex spatial topologies and unbounded temporal dependencies efficiently. The subsequent analysis delivers an exhaustive investigation into how State Space Models are being fused with graph topology and deployed against sophisticated cyber threats. By examining recent literature from 2023 through early 2026, the report details the theoretical adaptations required to apply SSMs to dynamic graphs, the transition to high-order hypergraph modeling, and the specific implementations of Mamba-based architectures in identifying Advanced Persistent Threats (APTs), IoT network intrusions, and anomalous audit logs.
+Theoretical Foundations: From Continuous Dynamics to Selective State Spaces
+To fully comprehend the application of SSMs in graph theory and cybersecurity, one must deconstruct the mathematical mechanisms that enable their efficiency. The foundational continuous-time state space model defines the evolution of a hidden state    in response to an input sequence   , culminating in an output   :
+  
+
+  
+
+Here, the matrices   ,   ,   , and    govern the state transitions and input-output mappings9. For computational implementation within neural network architectures, this continuous system must be discretized. Utilizing a Zero-Order Hold (ZOH) approach with a learnable step size   , the discrete parameters are derived as follows:
+  
+
+  
+
+While earlier SSM formulations like S4 utilized time-invariant parameters to achieve efficient convolutional training, this rigidity limited their ability to perform content-aware reasoning8. The Mamba architecture introduced a critical innovation: the Selective State Space mechanism5. By parameterizing   ,   , and the step size    as data-dependent functions of the input   , Mamba dynamically filters information9. The step size    allows the model to compress irrelevant context and infinitely retain critical signals9. This selective scan algorithm ensures that the recurrence dynamically modulates state transitions, effectively mirroring the context-aware routing of self-attention mechanisms without incurring the quadratic penalty9. This hardware-aware algorithm utilizes fast parallel prefix scans, ensuring that training remains highly efficient on GPUs while inference operates in constant, autoregressive time8.
+Architectural Convergence: State Space Models on Static Graph Neural Networks
+The application of sequence models to graph-structured data is inherently non-trivial. Graphs lack a canonical node ordering, presenting a unique mathematical challenge for recurrent or sequence-scanning models like Mamba, which rely on defined sequential paths to propagate hidden states12. The recent literature reveals a rapid evolution in techniques designed to project non-Euclidean topology into sequence-friendly formats while preserving structural inductive biases.
+Overcoming GNN Limitations via Selective Scanning
+Traditional Graph Neural Networks rely on local message-passing mechanisms. As layers are stacked to capture multi-hop dependencies, node representations undergo repeated Laplacian smoothing. This causes node embeddings within the same connected component to converge and become indistinguishable—a mathematical inevitability known as over-smoothing3. Conversely, Graph Transformers attempt to capture global context by computing pairwise interactions between all nodes, but they sacrifice the inductive biases of the graph structure, rely on computationally expensive positional encodings, and suffer from prohibitive    scaling13.
+The Mamba paradigm offers a structural compromise that resolves both issues. Frameworks such as MbaGCN alternate between Message Aggregation Layers (MAL) and Selective State Space Transition Layers (S3TL)4. Instead of uniformly aggregating information from all neighbors, the selective state space mechanism adaptively compresses features based on node-specific relevance at varying hop distances5. Relevant node features are preserved within the condensed state vector, while redundant data is discarded, effectively neutralizing the over-smoothing dilemma without resorting to global attention matrices4.
+Similarly, the Graph-Mamba framework formulates graph-centric node prioritization and permutation strategies to navigate the lack of canonical ordering15. By integrating a Mamba block with input-dependent node selection, Graph-Mamba translates the message-passing paradigm into a tokenized sequence generation process15. The model scans the sequence of tokens bidirectionally to ensure permutation robustness18. The selection mechanism controls which part of the graph context flows into the hidden states, achieving attention sparsification naturally through the recurrent scan rather than through heuristic or random graph subsampling15.
+For applications requiring physical interactions, such as 3D molecular dynamics and robotics, the Graph Mamba Operator (GraMO) introduces a latent-space simulator that integrates state-space models with geometric learning10. Unlike stepwise GNN predictors that accumulate errors over long forecasting horizons, GraMO maintains a persistent latent memory through an SSM-parameterized spatial message-passing layer10. This continuous-time neural operator formulation yields substantial improvements in trajectory fidelity without isolating spatial and temporal components10.
+Paper Title
+	Venue / Year
+	Summary of Application
+	Graph-Mamba: Towards Long-Range Graph Sequence Modeling with Selective State Spaces
+[cite: 13, 15, 16]
+	arXiv (2024)
+	Integrates Mamba with input-dependent node selection, utilizing graph-centric token prioritization and bidirectional scanning to outperform Graph Transformers with linear computational cost.
+	Graph Mamba: Towards Learning on Graphs with State Space Models
+[cite: 14, 20]
+	ICML (2024)
+	Presents Graph Mamba Networks (GMNs), detailing neighborhood tokenization, ordering, and bidirectional selective SSM encoding without relying on complex positional or structural encodings.
+	Mamba-Based Graph Convolutional Networks: Tackling Over-smoothing with Selective State Space
+[cite: 4, 5, 21]
+	arXiv (2025)
+	Introduces MbaGCN, alternating between message aggregation and selective state space transitions to prevent node embeddings from converging (over-smoothing) in deep graph networks.
+	Graph Mamba Operator (GraMO)
+[cite: 10, 19]
+	OpenReview (2025)
+	A latent-space neural operator simulator that jointly updates states along graph edges and temporal axes for 3D physics, particle systems, and articulated rigid body dynamics prediction.
+	Temporal and Dynamic Graph State Space Models
+Real-world systems, such as financial transaction networks, traffic grids, and social interactions, are not static; they evolve continuously over time. Prior deep learning approaches modeled dynamic graphs as discrete sequences of snapshots. This snapshot-based methodology inherently fails to capture unobserved graph mutations occurring between time steps, severely hampering temporal continuity and prediction accuracy22.
+Continuous-Time Modeling and Mixed Discretization
+To bridge the gap between discrete observations and continuous system evolution, the GraphSSM framework extends SSM theory directly to temporal graphs22. GraphSSM integrates structural information into the online approximation objective via a Laplacian regularization term, ensuring that memory compression respects the connectivity of adjacent nodes22. By combining a continuous-time linear dynamical system with a mixed discretization strategy—utilizing convolution and gated interpolation—GraphSSM approximates missing information across unobserved mutations, maintaining the temporal continuity of newly emerged nodes and evolving edges22.
+Taking a deeply theoretical and biologically inspired approach, the DyG-Mamba architecture translates dynamic graph modeling into a long-term sequence problem by treating the irregular timespans between network events as direct control signals for the SSM25. Traditional models often treat timespans merely as node features, which fails to generalize under irregular sampling. Inspired by the Ebbinghaus forgetting curve—which posits that the decay of memory correlates exponentially with the passage of time rather than the specifics of an event—DyG-Mamba dynamically adjusts the decay of historical graph states based on continuous time intervals   25. Furthermore, inspired by the Ebbinghaus review cycle, DyG-Mamba redefines core parameters to selectively review historical information, ensuring the model remains robust against temporal noise (sustaining performance even with 60% noise injection) while operating in linear time27.
+Dynamic Graph Structure Learning (DGSL)
+The topological integrity of dynamic graphs is often compromised by missing edges, redundancy, and adversarial noise. The DG-Mamba framework tackles Dynamic Graph Structure Learning (DGSL) by utilizing a kernelized dynamic message-passing operator to accelerate spatio-temporal structure learning29. By establishing the dynamic graph as a self-contained state-space system and discretizing system states via cross-snapshot adjacency matrices, DG-Mamba explicitly captures long-distance temporal dependencies29. Crucially, the framework incorporates a self-supervised Principle of Relevant Information (PRI) to regularize the learned structures, prioritizing informative edges while eliminating redundant temporal noise to bolster adversarial robustness29.
+Paper Title
+	Venue / Year
+	Summary of Application
+	State Space Models on Temporal Graphs: A First-Principles Study
+[cite: 22, 23, 32]
+	NeurIPS (2024)
+	Develops GraphSSM, formulating temporal graphs as continuous-time systems. Utilizes mixed discretization and Laplacian regularization to model unobserved graph mutations seamlessly.
+	DyG-Mamba: Continuous State Space Modeling on Dynamic Graphs
+[cite: 25, 26, 28]
+	NeurIPS (2025)
+	Addresses dynamic graph evolution by using irregular timespans as direct control signals for the SSM, drawing on the Ebbinghaus forgetting curve for adaptive, noise-resilient memory decay.
+	DG-Mamba: Robust and Efficient Dynamic Graph Structure Learning with Selective State Space Models
+[cite: 12, 29, 30]
+	AAAI (2025)
+	Proposes a kernelized dynamic message-passing operator paired with Mamba to learn robust structures in dynamic graphs, applying a self-supervised Principle of Relevant Information (PRI).
+	High-Order Interactions: Hypergraph State Space Models
+While standard graphs effectively model dyadic (pairwise) relationships, many complex systems—from cellular biology to social network rumor propagation—exhibit high-order, multipartite interactions that require hypergraphs. In a hypergraph, a single hyperedge can connect any number of nodes simultaneously8. However, the quadratic time and memory complexity    of traditional Hypergraph Neural Networks (HGNNs) strictly limits their scalability. Recent research has successfully hybridized hypergraphs with Mamba's linear scanning algorithms to achieve highly efficient high-order reasoning33.
+Sequential Hypergraphs for Propagation Dynamics
+In the domain of social network analysis, tracking the origin of rumors or malware cascades requires modeling intricate group dynamics. The SourceDetMamba framework models these propagation pathways as sequential hypergraphs8. Temporal network snapshots generated during information diffusion are fed into the Mamba architecture in reverse chronological order to infer underlying propagation origins8. To successfully integrate the topological context of the hypergraph with the sequential processing of the SSM, SourceDetMamba employs a novel graph-aware state update mechanism8. The hidden state of each node is refined simultaneously by its temporal dependencies across snapshots and its high-order hyperedge neighborhood within the current snapshot, establishing new benchmarks for detecting the origins of network cascades across multiple datasets8.
+Gigapixel Image Analysis and Pathology
+The intersection of hypergraphs and SSMs is driving a revolution in medical computer vision, particularly in Whole Slide Image (WSI) analysis for histopathology33. WSIs are ultra-high-resolution scans containing tens of thousands of image tiles per slide. Transformer architectures are computationally infeasible at this scale due to the    self-attention barrier33.
+The WSI-HGMamba (and its variant WSI-GMamba) architecture unifies the robust relational capacity of HGNNs with the sequence efficiency of Mamba33. The system constructs a dual-adjacency hypergraph combining spatial rules (the physical top/bottom/left/right adjacency of tiles) and semantic similarity (data-driven feature matching regardless of physical distance)33. Within the HGMamba block, a novel Hypergraph Scanning and Flattening mechanism converts complex multipartite hyperedges into ordered 1D sequences amenable to Mamba-based processing33. These sequences are dynamically updated via a Bidirectional State Space Model (Bi-SSM), achieving Transformer-level classification accuracy for tasks like cancer subtyping with up to a 7-fold reduction in Floating Point Operations (FLOPs)33.
+Visual Recognition and Social Relation Reasoning
+Beyond medical imaging, the challenge of Fine-Grained Visual Recognition (FGVR) requires models to differentiate subtle sub-category details. DHMamba leverages hypergraphs to guide selective patch scanning within the image2. By constructing a hypergraph over feature patches using Fuzzy C-Means clustering, DHMamba dictates a Local Information Gradient Scanning path2. The Mamba module performs bidirectional scanning strictly within these hyperedges based on patch importance, enforcing a Maximum Orthogonality Loss to ensure that sub-features extracted from independent scans remain semantically distinct and non-overlapping2.
+Similarly, in social relation recognition, models must interpret subtle visual cues—such as shared objects, physical proximity, or body language—to classify interpersonal relationships. The Hypergraph Mamba (HGM) framework models these multipartite human interactions through Person-Person Hypergraphs (PPH) and Person-Object Hypergraphs (POH)38. A Vertex Selection Algorithm filters out visual confounders to mitigate inference confusion, while the SSM captures long-range contextual dependencies across the scene, allowing the model to decipher asymmetric and high-order social dynamics far more effectively than traditional bounding-box classification paradigms38.
+Paper Title
+	Venue / Year
+	Summary of Application
+	SourceDetMamba: A Graph-aware State Space Model for Source Detection in Sequential Hypergraphs
+[cite: 8, 34]
+	IJCAI (2025)
+	Models rumor propagation in social networks using sequential hypergraphs, feeding snapshots into Mamba in reverse chronological order via graph-aware state updates.
+	Hypergraph Mamba for Efficient Whole Slide Image Understanding (WSI-HGMamba)
+[cite: 33]
+	arXiv (2025)
+	Unifies hypergraphs (for spatial/similarity WSI connections) with Mamba (for linear sequence processing) using a novel Hypergraph Scanning & Flattening mechanism to reduce FLOPs by 7x.
+	Hypergraph Mamba Reasoning-Based Social Relation Recognition
+[cite: 38]
+	IEEE TIP (2025)
+	Constructs Person-Person and Person-Object hypergraphs to decode complex multipartite social dynamics from visual inputs, utilizing a Vertex Selection Algorithm for noise filtration.
+	DHMamba: Hypergraph-Guided Mamba for Fine-Grained Visual Recognition
+[cite: 2]
+	AAAI (2024/2025)
+	Employs hypergraph structures built via Fuzzy C-Means clustering to dictate selective information gradient scanning pathways for visual state space modeling.
+	Revolutionizing Cybersecurity: SSMs in Intrusion Detection
+The theoretical efficiency of State Space Models translates directly into profound operational advantages for cybersecurity. Modern intrusion detection requires analyzing massive, high-velocity data streams across resource-constrained environments—such as the Internet of Things (IoT), Unmanned Aerial Vehicles (UAVs), and the Internet of Vehicles (IoV)—where power, memory, and latency budgets are strictly limited9.
+Edge-Deployed IoT and Network Intrusion Detection
+Deep learning-based Network Intrusion Detection Systems (NIDS) typically struggle with two severe constraints: extreme class imbalance (where malicious traffic represents a minute fraction of benign background traffic) and hardware limitations at the network edge41. The NIDS-Mamba architecture systematically addresses both paradigms39.
+By combining dynamic sparse attention with a lightweight state space, NIDS-Mamba jointly learns short-term anomaly spikes and long-term, low-and-slow attack patterns41. The architecture boasts a highly compact parameter footprint of merely 1.12 million parameters and a peak inference memory of 5.4 MB, achieving linear-time detection efficiency compatible with multi-megabyte Flash capacities39. In extensive evaluations on highly imbalanced datasets, such as NF-UNSW-NB15 and NF-CSE-CIC-IDS2018, the model recorded a 97.03% G-Mean and 0.7915 Matthews Correlation Coefficient (MCC), vastly outperforming Transformer baselines while avoiding the Out-of-Memory (OOM) errors that frequently plague edge inference39.
+Further fortifying distributed IoT environments, the ARFU-IDS framework introduces adversarial-aware federated unlearning for transformer and SSM-based intrusion detection systems42. As IoT networks rely on federated learning, the ability to selectively remove a compromised client's contribution without full retraining is vital. ARFU-IDS utilizes an Attention-Head Attribution Graph to localize removal-sensitive parameters and a Dual-Path Layer Criticality Probing mechanism to separate task-critical layers from those corrupted by adversaries42. This ensures that malicious unlearning trajectories can be audited and reversed, preserving the integrity of the global security model under severe class imbalance42.
+UAV and Aerial Network Security
+Unmanned Aerial Vehicle (UAV) swarms represent highly dynamic networks susceptible to multi-scale cyberattacks, ranging from millisecond-level Distributed Denial of Service (DDoS) bursts to minutes-long GPS spoofing drifts9. To counter this, the Mamba-KAN-Liquid (MKL) architecture provides a highly sophisticated hybrid defense mechanism for real-time UAV anomaly detection9.
+The MKL model integrates Mamba for processing extended temporal dependencies (over 1000 timesteps), Kolmogorov-Arnold Networks (KAN) for learnable, univariate feature representation on network edges, and Liquid Neural Networks for continuous-time environmental adaptation9. The dynamics of the Liquid network are governed by adaptive time constants   , which update dynamically based on the input stream's characteristics via target state equations:
+  
+
+  
+
+This formulation allows the network to shift its temporal focus dynamically, accommodating varying attack patterns with different temporal signatures9. This hybrid integration yields a multiplicative error reduction, allowing the system to achieve an 89.4% detection rate for zero-day attacks and maintain 76.5% accuracy under severe signal noise (  ), outperforming baseline transformers by up to 22 percentage points in adversarial scenarios9. Crucially, it accomplishes this with an inference latency of just 47.3 ms, ensuring real-time response capabilities on autonomous UAV flight controllers9.
+The Internet of Vehicles (IoV) and CAN Bus Defense
+The Controller Area Network (CAN) bus serves as the central nervous system of modern vehicles, facilitating communication between Electronic Control Units (ECUs). However, the CAN protocol inherently lacks native encryption or sender authentication, rendering the entire vehicle highly vulnerable to DoS, fuzzing, and replay attacks once a single node is compromised40. The Mambacnn framework offers a specialized, lightweight Intrusion Detection System tailored explicitly for vehicular networks40.
+Mambacnn employs a two-stage detection strategy for in-vehicle scenarios. Single-message detection processes localized payloads via Convolutional Neural Networks (CNNs) to enable fine-grained anomaly spotting40. Concurrently, sequence-based detection utilizes the Mamba architecture to monitor the periodic transmission intervals of CAN IDs to detect sequential anomalies40. By vectorizing CAN message sequences—including time intervals, Arbitration IDs, and Data Length Codes—and processing them through parallelized convolutional kernels integrated with SSM recurrence, the model achieves over 99.88% accuracy40. Remarkably, it delivers a sub-millisecond average detection latency (< 1 ms), fully satisfying the strict first-time requirements and computational limitations of automotive ECUs40.
+In a related context, Industrial Control Systems (ICS) protecting critical infrastructure rely on State-Space Models mapped directly to physical processes. The GeCo framework leverages SSMs mined from historical ICS process data to mathematically model sensor and actuator dependencies44. Because ICS operators typically possess backgrounds in control theory, the transition to state-space anomaly detection provides both superior detection performance against industrial intrusions and inherent mathematical interpretability, performing on par with manually derived expert rules44.
+Paper Title
+	Venue / Year
+	Summary of Application
+	NIDS-Mamba: Lightweight Network Intrusion Detection for IoT Sensor Networks
+[cite: 39, 41]
+	Sensors (2026)
+	A compact NIDS (1.12M parameters, 5.4MB memory) utilizing dynamic sparse attention and SSMs for edge-deployed IoT environments, thriving on extreme class imbalance.
+	Mambacnn: A Lightweight Intrusion Detection System Based on Mamba for IoV
+[cite: 40, 45]
+	Cybersecurity (2026)
+	Integrates Mamba with CNNs for a two-stage analysis (single message and sequence) of vehicular CAN bus data, achieving < 1 ms latency against fuzzing and DoS attacks.
+	UAV Cybersecurity with Mamba-KAN-Liquid Hybrid Model
+[cite: 9, 46]
+	Drones (2025)
+	Combines Mamba's sequence capability, KAN's feature extraction, and Liquid Neural Network's adaptive time constants for resilient drone threat detection under severe noise.
+	GeCo: Industrial Intrusion Detection Systems via State-Space Models
+[cite: 44]
+	USENIX Security (2025)
+	Leverages physical state-space models mined from historical process data to identify anomalies and cyberattacks in critical Industrial Control Systems (ICS).
+	Audit Logs, APT Hunting, and Insider Threat Detection
+The detection of Advanced Persistent Threats (APTs) and malicious insider activity relies on parsing millions of system audit logs to uncover subtle, "low-and-slow" behavioral deviations11. Traditional log analysis relies on parsing templates or flat sequences, ignoring the complex relational execution structures and long-term temporal dependencies that characterize sophisticated breaches48. Because log sequences are exceptionally long and feature intricate semantic topologies, SSMs have rapidly supplanted both LSTMs and Transformers in this domain.
+Graph-Level Anomaly Detection for APTs
+Advanced Persistent Threats operate by moving laterally across networks over extended periods, generating disparate log artifacts that evade standard threshold-based alerts50. To map these activities, cybersecurity systems construct data provenance graphs—directed acyclic graphs where nodes represent system entities (processes, files, sockets) and edges represent system calls in the direction of information flow52.
+The LogMamba framework leverages state space models for efficient graph-level anomaly detection specifically tuned for APT hunting11. By modeling the long-running execution of a system through space-efficient graph sketches, LogMamba summarizes the evolving topological state of the host computer11. The selective SSM mechanism allows the model to retain historical provenance data across thousands of execution steps, correlating seemingly benign initial file accesses with subsequent remote network connections occurring days later, effectively unmasking the entire footprint of persistent threats11.
+Insider Threat Detection and Behavioral Signal Processing
+Insider threats present a unique paradigm because the malicious activity is executed by authenticated users utilizing legitimate system commands, making standard signature-based detection useless53. Recent frameworks analyze these audit logs by treating human behavior as a complex, multi-modal signal rather than a flat list of text strings.
+The Log2Sig framework innovates by transforming discrete user log events into continuous multivariate behavioral frequency signals47. It utilizes Multivariate Variational Mode Decomposition (MVMD) to extract Intrinsic Mode Functions (IMFs) across behavioral channels47. This mathematical decomposition separates normal daily periodicity (e.g., standard working hours) from anomalous, non-stationary frequency spikes47. Log2Sig features a dual-view architecture: the raw temporal behavior is encoded using a Mamba sequence encoder to capture long-range dependencies, while a parallel branch processes the decomposed frequency signals53. The fused representation identifies multiscale anomalies over extended time windows that conventional sequence-based models overlook entirely53.
+Similarly, the MambaITD framework targets the cross-modal nature of insider threats by explicitly modeling the physical time elapsed between log events56. It extracts behavioral sequences, temporal interval sequences, and statistical features57. By encoding the temporal intervals, MambaITD recognizes that the density and pacing of commands—such as rapid, high-volume data access late at night—are among the strongest indicators of malicious intent58. The SSM's state transition matrices natively integrate this time-interval data, while a probability-driven adaptive decision engine maximizes inter-class variance to continuously adjust detection thresholds against concept drift, significantly outperforming benchmark Transformer models on the CERT datasets57.
+To bridge the gap between structured behavioral modeling and semantic intent, the DMFI (Dual-Modality Fine-Tuning and Inference) framework leverages Large Language Models (LLMs) tuned via Low-Rank Adaptation (LoRA)59. DMFI converts raw logs into a semantic view processing content-rich artifacts (e.g., emails, HTTP payloads) and a behavioral abstraction utilizing a 4W-guided (When-Where-What-Which) transformation59. This dual-branch architecture ensures that the semantic reasoning of the LLM is anchored by structured action sequences, drastically reducing false positives in enterprise environments59.
+Large-Scale System Reliability and Vulnerability Detection
+Beyond malicious intrusions, SSMs are actively deployed to ensure the operational reliability of massive distributed architectures. For cloud-native microservice environments, the ChronoSage framework provides self-supervised spatio-temporal fault detection61. Operating on multimodal monitoring data (metrics, traces, and logs), ChronoSage combines GraphSAGE to map the evolving topological dependencies between microservices, and Mamba to capture the long-range temporal degradation of service states, resulting in an F1-score of 0.972 for system-level fault detection61.
+To further accelerate text-heavy log processing in AIOps, RAMamba introduces a GPU-parallelized Mamba architecture enhanced with Retrieval-Augmentation63. Recognizing the difficulty of modeling extremely rare system faults from a single log sequence, RAMamba retrieves historically similar temporal failure patterns from a vector database to augment the SSM's context63. Exploiting Mamba's support for parallel associative scan operations, RAMamba achieves massive throughput scalability on dense datasets like HDFS and BGL, reaching a recall exceeding 99.7% with linear computational complexity63.
+Finally, predicting software vulnerabilities and detecting malicious code clones directly from source code repositories has benefited from the SSM paradigm. The CodeSSM framework demonstrates that state space models possess vastly superior sample efficiency compared to BERT or RoFormer architectures for code-understanding tasks1. Most importantly, CodeSSM addresses a fundamental flaw in Transformer models: the inability to extrapolate to sequence lengths unseen during pretraining1. By reliably processing downstream input sequences that extend far beyond their pretraining context window, SSMs provide a highly robust mechanism for scanning massive codebases for zero-day vulnerabilities1.
+Paper Title
+	Venue / Year
+	Summary of Application
+	Log2Sig: Frequency-Aware Insider Threat Detection via Multivariate Behavioral Signal Decomposition
+[cite: 47, 53, 55]
+	IEEE TrustCom (2025)
+	Converts user log sequences into frequency signals via Multivariate Variational Mode Decomposition, fusing them with a Mamba sequence encoder to detect insider anomalies.
+	MambaITD: An Efficient Cross-Modal Mamba Network for Insider Threat Detection
+[cite: 56, 57, 65]
+	ICDM (2025)
+	Uses a cross-modal Mamba architecture to align behavioral sequences, temporal physical intervals, and statistical features, deploying an adaptive engine to mitigate concept drift.
+	LogMamba: Efficient Graph-Level Anomaly Detection for APTs via State Space Models
+[cite: 11, 66]
+	CSCWD (2026)
+	Analyzes system provenance graphs to identify stealthy, multi-stage Advanced Persistent Threats (APTs) by tracking long-term entity-level behavior in memory-efficient sketches.
+	GPU-Accelerated Parallel Mamba with Retrieval-Augmentation for Linear-Complexity Log Anomaly Detection
+[cite: 63, 67]
+	Academic Preprint (2026)
+	Proposes RAMamba to process massive industrial log streams (HDFS, BGL) using parallel associative scans and retrieval-augmentation to contextualize rare failure events.
+	Integrating GraphSAGE and Mamba for Self-Supervised Spatio-Temporal Fault Detection in Microservice Systems
+[cite: 61, 62]
+	IEEE Symposium (2025)
+	ChronoSage framework fusing GraphSAGE (for service topology) with Mamba (for temporal state evolution) to detect systemic microservice anomalies from multimodal logs and traces.
+	CodeSSM: State Space Models for Code Understanding
+[cite: 1, 64]
+	EMNLP (2025)
+	An SSM-based model for vulnerability classification and clone detection that exhibits superior sample efficiency and extrapolates to longer contexts than Transformers.
+	Conclusion and Future Trajectories
+The rapid assimilation of State Space Models into graph topologies, hypergraphs, and cybersecurity frameworks between 2023 and early 2026 marks a decisive paradigm shift in computational modeling. Based on an exhaustive analysis of the contemporary literature, several fundamental implications arise.
+First, the integration of SSMs into graph and hypergraph structures indicates that topological message-passing is fundamentally being reconceptualized as a sequential scanning problem. By utilizing graph-aware token ordering, bidirectional processing, and selective state transitions, models can now navigate non-Euclidean data without triggering the mathematical decay of over-smoothing4. This effectively solves one of the most persistent bottlenecks in deep graph learning, permitting the construction of infinitely deep graph networks that retain localized feature distinctiveness.
+Secondly, the handling of time in dynamic models has shifted from discrete indexing to continuous dynamic control. Architectures like DyG-Mamba and GraphSSM prove that incorporating physical time intervals—inspired by cognitive phenomena such as the Ebbinghaus curve—allows SSMs to inherently account for unobserved network mutations and temporal decay23. This biological regularization transforms how AI interprets the pacing of events, an insight fully capitalized upon by insider threat frameworks like MambaITD to detect the malicious intent behind rapid data access57.
+Finally, within the cybersecurity domain, SSMs have breached the hardware constraints that historically blocked deep learning at the network edge. The ability of systems like NIDS-Mamba and Mambacnn to execute complex anomaly detection with minimal memory footprints (< 6 MB) enables the deployment of highly sophisticated sequence analysis directly onto automotive CAN buses, UAV flight controllers, and industrial IoT gateways9. Concurrently, the application of SSMs to vast streams of system audit logs and provenance graphs demonstrates that long-range memory retention is the most critical variable in hunting stealthy, lateral-moving Advanced Persistent Threats11.
+Moving forward, the architectural fusion of State Space Models with dynamically adaptive networks—such as Liquid Time-Constant networks, KANs, and Large Language Models—is poised to produce fully autonomous intrusion detection systems. These systems will not only identify geometric and temporal anomalies in real-time but will actively unlearn compromised data, rewrite local control theories, and neutralize zero-day exploits entirely on the edge.
+Works cited
+1. CodeSSM: Towards State Space Models for Code Understanding - ACL Anthology, https://aclanthology.org/2025.emnlp-main.1735.pdf
+2. Disentangled Hypergraph-Guided Mamba Scanning for Fine-Grained Visual Recognition, https://ojs.aaai.org/index.php/AAAI/article/view/38098/42060
+3. Dual Mamba for Node-Specific Representation Learning: Tackling Over-Smoothing with Selective State Space Modeling - AAAI Publications, https://ojs.aaai.org/index.php/AAAI/article/view/39317/43278
+4. Mamba-Based Graph Convolutional Networks: Tackling Over-smoothing with Selective State Space - arXiv, https://arxiv.org/html/2501.15461v1
+5. Mamba-Based Graph Convolutional Networks: Tackling Over-smoothing with Selective State Space - IJCAI, https://www.ijcai.org/proceedings/2025/0595.pdf
+6. MaGNet: A Mamba Dual-Hypergraph Network for Stock Prediction via Temporal-Causal and Global Relational Learning - arXiv, https://arxiv.org/html/2511.00085v1
+7. Hybrid Mamba–Graph Fusion with Multi-Stage Pseudo-Label Refinement for Semi-Supervised Hyperspectral–LiDAR Classification - MDPI, https://www.mdpi.com/1424-8220/26/3/1005
+8. SourceDetMamba: A Graph-aware State Space Model for Source Detection in Sequential Hypergraphs - IJCAI, https://www.ijcai.org/proceedings/2025/0306.pdf
+9. UAV Cybersecurity with Mamba-KAN-Liquid Hybrid Model: Deep Learning-Based Real-Time Anomaly Detection - MDPI, https://www.mdpi.com/2504-446X/9/11/806
+10. Graph Mamba Operator: A Latent Simulator for Interacting Particle Systems - arXiv, https://arxiv.org/html/2606.09432v1
+11. LogMamba: Efficient Graph-Level Anomaly Detection for APTs via State Space Models, https://www.researchgate.net/publication/408540979_LogMamba_Efficient_Graph-Level_Anomaly_Detection_for_APTs_via_State_Space_Models
+12. DG-Mamba: Robust and Efficient Dynamic Graph Structure Learning with Selective State Space Models - AAAI Publications, https://ojs.aaai.org/index.php/AAAI/article/view/34382/36537
+13. Graph Mamba: Towards Learning on Graphs with State Space Models - Hugging Face, https://huggingface.co/papers/2402.08678
+14. [2402.08678] Graph Mamba: Towards Learning on Graphs with State Space Models - arXiv, https://arxiv.org/abs/2402.08678
+15. Towards Long-Range Graph Sequence Mod - arXiv, https://arxiv.org/pdf/2402.00789
+16. [2402.00789] Graph-Mamba: Towards Long-Range Graph Sequence Modeling with Selective State Spaces - arXiv, https://arxiv.org/abs/2402.00789
+17. Graph-Mamba: Towards Long-Range Graph Sequence Modeling with Selective State Spaces - Semantic Scholar, https://www.semanticscholar.org/paper/Graph-Mamba%3A-Towards-Long-Range-Graph-Sequence-with-Wang-Tsepa/1df04f33a8ef313cc2067147dbb79c3ca7c5c99f
+18. Graph Mamba: Towards Learning on Graphs with State Space Models - arXiv, https://arxiv.org/pdf/2402.08678
+19. Graph Mamba Operator for Learning the Dynamics of Particle-based Systems - OpenReview, https://openreview.net/forum?id=6CO8dwHl4F
+20. Graph Mamba: Towards Learning on Graphs with State Space Models - Semantic Scholar, https://www.semanticscholar.org/paper/Graph-Mamba%3A-Towards-Learning-on-Graphs-with-State-Behrouz-Hashemi/2dda6da7375bf5e8bcf60f87b17ba10757f3bc57
+21. [2501.15461] Mamba-Based Graph Convolutional Networks: Tackling Over-smoothing with Selective State Space - arXiv, https://arxiv.org/abs/2501.15461
+22. State Space Models on Temporal Graphs: A First-Principles Study, https://chat.powerdrill.ai/discover/discover-State-Space-Models-clx4kuhmx053r019n24g7zvjm
+23. State Space Models on Temporal Graphs: A First-Principles Study - OpenReview, https://openreview.net/forum?id=UaJErAOssN
+24. [Literature Review] State Space Models on Temporal Graphs: A First-Principles Study, https://www.themoonlight.io/en/review/state-space-models-on-temporal-graphs-a-first-principles-study
+25. NeurIPS Poster DyG-Mamba: Continuous State Space Modeling on Dynamic Graphs, https://neurips.cc/virtual/2025/poster/116449
+26. DyG-Mamba: Continuous State Space Modeling on Dynamic Graphs - ResearchGate, https://www.researchgate.net/publication/383091188_DyG-Mamba_Continuous_State_Space_Modeling_on_Dynamic_Graphs
+27. DyG-Mamba: Continuous State Space Modeling on Dynamic Graphs | OpenReview, https://openreview.net/forum?id=ja2wA4UncJ
+28. The Source Code of DyG-Mamba: Continuous State Space Modeling on Dynamic Graphs - GitHub, https://github.com/Clearloveyuan/DyG-Mamba
+29. DG-Mamba: Robust and Efficient Dynamic Graph Structure Learning with Selective State Space Models | Request PDF - ResearchGate, https://www.researchgate.net/publication/390711419_DG-Mamba_Robust_and_Efficient_Dynamic_Graph_Structure_Learning_with_Selective_State_Space_Models
+30. [2412.08160] DG-Mamba: Robust and Efficient Dynamic Graph Structure Learning with Selective State Space Models - arXiv, https://arxiv.org/abs/2412.08160
+31. [AAAI 2025] DG-Mamba: Robust and Efficient Dynamic Graph Structure Learning with Selective State Space Models - GitHub, https://github.com/haonan-yuan/DG-Mamba
+32. [2406.00943] State Space Models on Temporal Graphs: A First-Principles Study - arXiv, https://arxiv.org/abs/2406.00943
+33. Hypergraph Mamba for Efficient Whole Slide Image Understanding - arXiv, https://arxiv.org/pdf/2505.17457
+34. A Graph-aware State Space Model for Source Detection in Sequential Hypergraphs - IJCAI, https://www.ijcai.org/proceedings/2025/306
+35. Graph Mamba for Efficient Whole Slide Image Understanding - arXiv, https://arxiv.org/html/2505.17457v1
+36. Graph Mamba for Efficient Whole Slide Image Understanding - arXiv, https://arxiv.org/pdf/2505.17457v1.pdf?utm_source=xrayinterpreter.com
+37. Hypergraph Mamba for Efficient Whole Slide Image Understanding - arXiv, https://arxiv.org/html/2505.17457v2
+38. Hypergraph Mamba Reasoning-Based Social Relation Recognition - ResearchGate, https://www.researchgate.net/publication/394123060_Hypergraph_Mamba_Reasoning-Based_Social_Relation_Recognition
+39. NIDS-Mamba: Lightweight Network Intrusion Detection for IoT Sensor Networks via State Space Models - PubMed, https://pubmed.ncbi.nlm.nih.gov/42122486/
+40. (PDF) Mambacnn: a lightweight intrusion detection system based on mamba for the internet of vehicles - ResearchGate, https://www.researchgate.net/publication/404478258_Mambacnn_a_lightweight_intrusion_detection_system_based_on_mamba_for_the_internet_of_vehicles
+41. NIDS-Mamba: Lightweight Network Intrusion Detection for IoT Sensor Networks via State Space Models - MDPI, https://www.mdpi.com/1424-8220/26/9/2766
+42. ARFU-IDS: Robust Federated Unlearning for Transformer-Based Intrusion Detection in IoT and Sensor Networks - Preprints.org, https://www.preprints.org/manuscript/202605.0951
+43. A Lightweight Intrusion Detection System for Vehicular Networks Based on an Improved ViT Model - ResearchGate, https://www.researchgate.net/publication/383256461_A_Lightweight_Intrusion_Detection_System_for_Vehicular_Networks_Based_on_an_Improved_ViT_Model
+44. GeCos Replacing Experts: Generalizable and Comprehensible Industrial Intrusion Detection - USENIX, https://www.usenix.org/system/files/usenixsecurity25-wolsing.pdf
+45. A novel wide & deep transfer learning stacked GRU framework for network intrusion detection | Semantic Scholar, https://www.semanticscholar.org/paper/937d69ce992111fd86bcb858216596ce23e48ae4
+46. Distributed Artificial Intelligence and Edge Computing Architectures in Resource-Constrained Environments: A PRISMA-Based Systematic Literature Review on Autonomous UAV Systems - Journal of Aviation - DergiPark, https://dergipark.org.tr/en/pub/jav/article/1914164
+47. (PDF) Log2Sig: Frequency-Aware Insider Threat Detection via Multivariate Behavioral Signal Decomposition - ResearchGate, https://www.researchgate.net/publication/394427545_Log2Sig_Frequency-Aware_Insider_Threat_Detection_via_Multivariate_Behavioral_Signal_Decomposition
+48. Benchmarking Small Language Models and Small Reasoning Language Models on System Log Severity Classification - MDPI, https://www.mdpi.com/2073-431X/15/7/430
+49. State Machine Guided Multi-Relational Synthetic Data from Logs for Anomaly Detection (Extended Version) - arXiv, https://arxiv.org/html/2606.00531v1
+50. (PDF) A Survey on Advanced Persistent Threats: Techniques, Solutions, Challenges, and Research Opportunities - ResearchGate, https://www.researchgate.net/publication/330269772_A_Survey_on_Advanced_Persistent_Threats_Techniques_Solutions_Challenges_and_Research_Opportunities
+51. Flash: A Comprehensive Approach to Intrusion Detection via Provenance Graph Representation Learning | Request PDF - ResearchGate, https://www.researchgate.net/publication/383802829_Flash_A_Comprehensive_Approach_to_Intrusion_Detection_via_Provenance_Graph_Representation_Learning
+52. threaTrace: Detecting and Tracing Host-based Threats in Node Level Through Provenance Graph Learning | Request PDF - ResearchGate, https://www.researchgate.net/publication/363776766_threaTrace_Detecting_and_Tracing_Host-based_Threats_in_Node_Level_Through_Provenance_Graph_Learning
+53. [2508.05696] Log2Sig: Frequency-Aware Insider Threat Detection via Multivariate Behavioral Signal Decomposition - arXiv, https://arxiv.org/abs/2508.05696
+54. DMFI: A Dual-Modality Log Analysis Framework for Insider Threat Detection with LoRA-Tuned Language Models | Request PDF - ResearchGate, https://www.researchgate.net/publication/401238050_DMFI_A_Dual-Modality_Log_Analysis_Framework_for_Insider_Threat_Detection_with_LoRA-Tuned_Language_Models
+55. Log2Sig: Frequency-Aware Insider Threat Detection via Multivariate Behavioral Signal Decomposition - arXiv, https://arxiv.org/html/2508.05696v1
+56. Zhiying Li's research works | Jinan University, Guangzhou and other places - ResearchGate, https://www.researchgate.net/scientific-contributions/Zhiying-Li-2239955967
+57. (PDF) MambaITD: An Efficient Cross-Modal Mamba Network for Insider Threat Detection, https://www.researchgate.net/publication/394427267_MambaITD_An_Efficient_Cross-Modal_Mamba_Network_for_Insider_Threat_Detection
+58. MambaITD: An Efficient Cross-Modal Mamba Network for Insider Threat Detection - arXiv, https://arxiv.org/html/2508.05695v1
+59. [2508.05694] DMFI: A Dual-Modality Log Analysis Framework for Insider Threat Detection with LoRA-Tuned Language Models - arXiv, https://arxiv.org/abs/2508.05694
+60. DMFI: Dual-Modality Fine-Tuning and Inference Framework for LLM-Based Insider Threat Detection - arXiv, https://arxiv.org/html/2508.05694v1
+61. Integrating GraphSAGE and Mamba for Self-Supervised Spatio-Temporal Fault Detection in Microservice Systems, https://nkcs.iops.ai/wp-content/uploads/2026/01/Integrating_GraphSAGE_and_Mamba_for_Self-Supervised_Spatio-Temporal_Fault_Detection_in_Microservice_Systems.pdf
+62. Integrating GraphSAGE and Mamba for Self-Supervised Spatio-Temporal Fault Detection in Microservice Systems - Tsinghua NetMan Lab, https://netman.aiops.org/wp-content/uploads/2025/09/Integrating_GraphSAGE_and_Mamba_for_Self-Supervised_Spatio-Temporal_Fault_Detection_in_Microservice_Systems.pdf
+63. GPU-Accelerated Parallel Mamba with Retrieval-Augmentation for Linear-Complexity Log Anomaly Detection - Beijing Institute of Technology, https://pure.bit.edu.cn/en/publications/gpu-accelerated-parallel-mamba-with-retrieval-augmentation-for-li/
+64. CodeSSM: Towards State Space Models for Code Understanding - arXiv, https://arxiv.org/html/2505.01475v2
+65. MambaITD: An Efficient Cross-Modal Mamba Network for Insider Threat Detection - arXiv, https://arxiv.org/abs/2508.05695
+66. 2026 29th International Conference on Computer Supported Cooperative Work in Design (CSCWD 2026), https://fyust.edu.cn/gjhyqk/cscwd2026/program.pdf
+67. [Chlorophyll Content Nondestructive Measurement Method ... - AMiner, https://www.aminer.cn/pub/5489051f45ce471f90a1f72e

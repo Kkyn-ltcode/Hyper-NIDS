@@ -1,0 +1,226 @@
+% Provenance Hypergraph Example — Theia APT Campaign
+% Full-width figure showing attack events as hyperedges vs pairwise decomposition
+% Place with \input{figures/hyperedge_example.tex}
+
+\begin{figure*}[t]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+    % Entity node styles (by type)
+    proc/.style={rectangle, rounded corners=3pt, draw=#1!80, fill=#1!12, 
+                 minimum height=0.7cm, minimum width=1.7cm, align=center,
+                 font=\footnotesize\bfseries, line width=0.7pt},
+    file/.style={trapezium, trapezium left angle=75, trapezium right angle=75,
+                 draw=#1!70, fill=#1!10, minimum height=0.55cm, minimum width=1.2cm,
+                 align=center, font=\scriptsize, line width=0.6pt},
+    sock/.style={diamond, draw=#1!70, fill=#1!10, minimum size=0.7cm,
+                 align=center, font=\tiny, line width=0.6pt, inner sep=1pt},
+    mem/.style={regular polygon, regular polygon sides=6, draw=#1!70, fill=#1!10,
+                minimum size=0.7cm, align=center, font=\tiny, line width=0.6pt},
+    % Hyperedge styles
+    hedge/.style={rounded corners=6pt, line width=1.2pt, draw=#1!50, fill=#1!4},
+    hedgelabel/.style={font=\scriptsize\ttfamily, text=#1!70},
+    % Pairwise edge
+    pair/.style={-{Stealth[length=4pt,width=3pt]}, line width=0.7pt, draw=#1!60},
+    pairlabel/.style={font=\tiny\ttfamily, text=#1!50},
+    % Phase label
+    phase/.style={font=\scriptsize\bfseries, text=#1!80},
+    % Arrow
+    arr/.style={-{Stealth[length=5pt,width=4pt]}, line width=0.7pt, draw=#1!70},
+    % Timeline
+    tick/.style={line width=0.4pt, draw=black!30},
+    tlabel/.style={font=\tiny, text=black!50},
+    % Section titles
+    sectitle/.style={font=\normalsize\bfseries, text=#1!80},
+    % Lost info
+    lostbox/.style={rectangle, rounded corners=3pt, draw=red!50, fill=red!5,
+                    line width=0.6pt, dashed},
+]
+
+% ============================================================
+% LEFT PANEL: Provenance Hypergraph
+% ============================================================
+\node[sectitle=black] at (5.0, 6.8) {(a) Provenance Hypergraph (ours)};
+
+% --- Entity nodes ---
+% Entry-point process (gray = excluded from crossprocess label)
+\node[proc=gray] (firefox) at (0.5, 5.0) {Firefox};
+\node[font=\tiny\itshape, text=gray!60] at (0.5, 4.4) {entry-point};
+
+% Dropped file
+\node[file=red] (clean) at (4.0, 5.0) {\texttt{/home/.../clean}};
+
+% Spawned attack processes (red = crossprocess)
+\node[proc=red] (pulse) at (4.0, 2.5) {\texttt{pulseaudio}};
+\node[font=\tiny\itshape, text=red!50] at (4.0, 1.9) {crossprocess};
+
+% Shared library file
+\node[file=red] (libso) at (1.0, 1.0) {\texttt{libpulse.so}};
+
+% Memory region (hexagon)
+\node[mem=red] (memreg) at (1.0, 2.5) {\rotatebox{0}{mem}};
+
+% Config file (benign target)
+\node[file=blue] (resolv) at (7.5, 1.0) {\texttt{/etc/resolv.conf}};
+
+% C2 socket
+\node[sock=red] (c2sock) at (7.5, 3.8) {C2};
+\node[font=\tiny, text=red!40] at (8.6, 3.8) {\texttt{10.0.2.15}};
+
+% Benign process for contrast
+\node[proc=blue] (bash) at (7.5, 5.0) {\texttt{bash}};
+\node[font=\tiny\itshape, text=blue!50] at (7.5, 4.4) {benign};
+
+% --- Hyperedges ---
+
+% e1: Firefox → clean (WRITE) — 2-entity, entry-point
+\begin{scope}[on background layer]
+\draw[hedge=gray, fill=gray!4]
+    ([xshift=-0.4cm, yshift=0.35cm]firefox.north west) 
+    .. controls (2.2, 6.0) ..
+    ([xshift=0.4cm, yshift=0.35cm]clean.north east)
+    -- ([xshift=0.4cm, yshift=-0.35cm]clean.south east)
+    .. controls (2.2, 4.2) ..
+    ([xshift=-0.4cm, yshift=-0.35cm]firefox.south west) -- cycle;
+\end{scope}
+\node[hedgelabel=gray] at (2.2, 5.85) {\small $e_1$: EVENT\_WRITE};
+\node[phase=gray, anchor=west] at (-1.8, 5.6) {Phase 1};
+\node[font=\tiny\itshape, text=gray!50, anchor=west] at (-1.8, 5.2) {Initial};
+\node[font=\tiny\itshape, text=gray!50, anchor=west] at (-1.8, 4.85) {compromise};
+
+% e2: pulseaudio → libpulse.so → mem (MMAP) — 3-entity hyperedge!
+\begin{scope}[on background layer]
+\draw[hedge=red, fill=red!5, line width=1.5pt]
+    ([xshift=-0.3cm, yshift=0.3cm]pulse.north west) 
+    .. controls (1.0, 3.6) ..
+    ([xshift=-0.3cm, yshift=0.25cm]memreg.north west)
+    -- ([xshift=-0.3cm, yshift=-0.3cm]memreg.south west)
+    .. controls (0.2, 1.0) ..
+    ([xshift=-0.3cm, yshift=-0.2cm]libso.south west)
+    -- ([xshift=0.3cm, yshift=-0.2cm]libso.south east)
+    .. controls (2.8, 0.5) ..
+    ([xshift=0.3cm, yshift=-0.3cm]pulse.south east)
+    -- cycle;
+\end{scope}
+\node[hedgelabel=red, font=\small\ttfamily\bfseries] at (1.5, 0.35) {$e_2$: EVENT\_MMAP};
+\node[phase=red, anchor=west] at (-1.8, 2.5) {Phase 2};
+\node[font=\tiny\itshape, text=red!50, anchor=west] at (-1.8, 2.1) {Payload};
+\node[font=\tiny\itshape, text=red!50, anchor=west] at (-1.8, 1.75) {activation};
+
+% Annotation: 3-entity hyperedge
+\draw[arr=red, line width=1.0pt] (2.8, -0.2) -- (1.8, 0.15);
+\node[font=\scriptsize\bfseries, text=red!70, anchor=west] at (2.85, -0.2) 
+    {3-entity hyperedge};
+\node[font=\tiny, text=red!50, anchor=west] at (2.85, -0.55) 
+    {$3.0\times$ enriched in attacks};
+
+% e3: pulseaudio → C2 socket (CONNECT) — 2-entity
+\begin{scope}[on background layer]
+\draw[hedge=red]
+    ([xshift=0.2cm, yshift=0.35cm]pulse.north east) 
+    .. controls (6.5, 4.4) ..
+    ([xshift=-0.3cm, yshift=0.25cm]c2sock.north west)
+    -- ([xshift=-0.3cm, yshift=-0.25cm]c2sock.south west)
+    .. controls (6.5, 2.5) ..
+    ([xshift=0.2cm, yshift=-0.35cm]pulse.south east)
+    -- cycle;
+\end{scope}
+\node[hedgelabel=red] at (6.3, 4.3) {\small $e_3$: EVENT\_CONNECT};
+\node[phase=red, anchor=west] at (9.2, 4.3) {Phase 3};
+\node[font=\tiny\itshape, text=red!50, anchor=west] at (9.2, 3.9) {C2 setup};
+
+% e4: pulseaudio → /etc/resolv.conf (READ) — 2-entity, looks identical to benign
+\begin{scope}[on background layer]
+\draw[hedge=red]
+    ([xshift=0.1cm, yshift=-0.35cm]pulse.south east) 
+    .. controls (5.5, 0.8) ..
+    ([xshift=-0.1cm, yshift=0.2cm]resolv.north west)
+    -- ([xshift=-0.1cm, yshift=-0.2cm]resolv.south west)
+    .. controls (5.5, 1.5) ..
+    ([xshift=-0.1cm, yshift=-0.35cm]pulse.south west)
+    -- cycle;
+\end{scope}
+\node[hedgelabel=red] at (4.8, 0.5) {\small $e_4$};
+
+% e5: bash → /etc/resolv.conf (READ) — benign, identical features
+\begin{scope}[on background layer]
+\draw[hedge=blue]
+    ([xshift=0.1cm, yshift=-0.35cm]bash.south east) 
+    .. controls (8.5, 2.5) ..
+    ([xshift=0.3cm, yshift=0.2cm]resolv.north east)
+    -- ([xshift=0.3cm, yshift=-0.2cm]resolv.south east)
+    .. controls (8.5, 4.2) ..
+    ([xshift=-0.1cm, yshift=-0.35cm]bash.south west)
+    -- cycle;
+\end{scope}
+\node[hedgelabel=blue] at (8.8, 2.4) {\small $e_5$};
+
+% Indistinguishable annotation
+\draw[{Stealth[length=4pt]}-{Stealth[length=4pt]}, line width=0.5pt, 
+      draw=black!40, dashed] 
+    (5.4, 0.4) -- (8.1, 1.8);
+\node[font=\tiny\itshape, text=black!50, rotate=31, anchor=south] at (6.7, 1.2)
+    {Identical features};
+
+% Legend
+\node[font=\scriptsize\bfseries, anchor=west] at (-1.8, -1.2) {Legend:};
+\node[proc=red, minimum width=0.8cm, minimum height=0.35cm, font=\tiny] 
+    (leg1) at (-0.2, -1.6) {proc};
+\node[font=\tiny, anchor=west] at (0.45, -1.6) {Attack process};
+\node[proc=blue, minimum width=0.8cm, minimum height=0.35cm, font=\tiny] 
+    (leg2) at (2.8, -1.6) {proc};
+\node[font=\tiny, anchor=west] at (3.45, -1.6) {Benign process};
+\node[file=red, minimum width=0.8cm, font=\tiny, inner sep=2pt] 
+    (leg3) at (5.5, -1.6) {file};
+\node[font=\tiny, anchor=west] at (6.2, -1.6) {File};
+\node[sock=red, minimum size=0.35cm] (leg4) at (7.3, -1.6) {};
+\node[font=\tiny, anchor=west] at (7.65, -1.6) {Socket};
+\node[mem=red, minimum size=0.35cm] (leg5) at (8.8, -1.6) {};
+\node[font=\tiny, anchor=west] at (9.15, -1.6) {Memory};
+
+% Shape semantics
+\node[font=\tiny, text=black!40, anchor=west] at (-1.8, -1.2) {};
+
+% ============================================================
+% RIGHT PANEL: Pairwise Decomposition (what baselines do)
+% ============================================================
+\node[sectitle=black] at (15.3, 6.8) {(b) Pairwise decomposition (prior work)};
+
+% Show just the MMAP event decomposed
+\node[proc=red] (pulse2) at (15.3, 4.5) {\texttt{pulseaudio}};
+\node[file=red] (libso2) at (12.3, 2.5) {\texttt{libpulse.so}};
+\node[mem=red] (mem2) at (18.3, 2.5) {\rotatebox{0}{mem}};
+
+% Pairwise edges (decomposition of the 3-entity MMAP)
+\draw[pair=gray] (pulse2) -- (libso2) 
+    node[midway, left, pairlabel=gray] {MMAP};
+\draw[pair=gray] (pulse2) -- (mem2) 
+    node[midway, right, pairlabel=gray] {MMAP};
+\draw[pair=gray, dashed, draw=gray!30] (libso2) -- (mem2)
+    node[midway, below, pairlabel=gray] {?};
+
+% Lost information box
+\node[lostbox, minimum width=5.5cm, minimum height=2.0cm, align=left] (lost) 
+    at (15.3, 0.3) {};
+\node[font=\scriptsize\bfseries, text=red!70] at (15.3, 1.0) 
+    {Information lost by decomposition:};
+\node[font=\scriptsize, text=black!60, align=left, anchor=north west] at (12.8, 0.7) {%
+    \textbullet~Co-occurrence: all three entities\\
+    \phantom{\textbullet~}participated in the \emph{same} event\\
+    \textbullet~Atomicity: the library was mapped\\
+    \phantom{\textbullet~}into \emph{this specific} memory region\\
+    \textbullet~Two edges lack causal direction\\
+    \phantom{\textbullet~}(which entity initiated the operation?)
+};
+
+% Cross annotation between panels
+\draw[line width=1.5pt, draw=red!30, -{Stealth[length=6pt,width=5pt]}] 
+    (10.2, 1.5) -- (11.5, 3.5)
+    node[midway, above, rotate=60, font=\scriptsize\itshape, text=red!40] 
+    {decompose $e_2$};
+
+\end{tikzpicture}%
+}
+\caption{Provenance hypergraph from the DARPA TC E3 Theia attack campaign. \textbf{(a)}~Each audit event is a temporal hyperedge connecting 2--3 system entities. The \texttt{EVENT\_MMAP} hyperedge $e_2$ natively connects three entities (process, file, memory region) as a single atomic operation. Events $e_4$ (attack) and $e_5$ (benign) have identical per-event features---both read \texttt{/etc/resolv.conf} with the same byte count---but are distinguishable through the accumulated state of their subject entities. Gray shading marks the entry-point event (excluded from the crossprocess label). \textbf{(b)}~Prior systems decompose multi-object events into independent pairwise edges, discarding co-occurrence structure and causal atomicity. Size-3 events are $3.0\times$ enriched among crossprocess attack events.}
+\label{fig:hyperedge}
+\end{figure*}

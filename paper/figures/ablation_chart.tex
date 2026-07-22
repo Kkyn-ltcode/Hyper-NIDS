@@ -1,0 +1,198 @@
+% Ablation Component Hierarchy — Horizontal Bar Chart
+% Single-column figure for Section 5.2
+% Place with \input{figures/ablation_chart.tex}
+
+\begin{figure}[t]
+\centering
+\resizebox{\columnwidth}{!}{%
+\begin{tikzpicture}[
+    font=\small,
+]
+
+% ============================================================
+% Configuration
+% ============================================================
+\def\barheight{0.28}     % Height of each bar
+\def\gapbetween{0.08}    % Gap between Event/Node bars in same group
+\def\groupgap{0.85}      % Vertical gap between groups
+\def\xscale{9.5}         % Horizontal scale (0-1 maps to 0-\xscale cm)
+\def\labeloffset{-4.6}   % X offset for variant labels
+
+% Colors
+\definecolor{evtcolor}{HTML}{2563EB}   % Blue for Event AUPRC
+\definecolor{nodecolor}{HTML}{7C3AED}  % Purple for Node AUPRC
+\definecolor{fullcolor}{HTML}{059669}   % Green for full model
+\definecolor{deltacolor}{HTML}{DC2626} % Red for delta annotations
+
+% ============================================================
+% Data (from Table 2 in paper)
+% ============================================================
+% Row 0 (top): Full model
+% Row 1: no_cross_entity
+% Row 2: no_state  
+% Row 3: no_process_identity
+% Row 4 (bottom): no_state + no_process
+
+% Y positions for each group (top to bottom)
+\def\yA{3.4}   % Full
+\def\yB{2.55}  % no_cross_entity
+\def\yC{1.7}   % no_state
+\def\yD{0.85}  % no_process_identity
+\def\yE{0.0}   % no_state + no_process
+
+% ============================================================
+% Axes
+% ============================================================
+% X axis
+\draw[line width=0.5pt, black!40] (0, -0.5) -- (\xscale, -0.5);
+% X axis ticks and labels
+\foreach \val in {0.0, 0.2, 0.4, 0.6, 0.8, 1.0} {
+    \pgfmathsetmacro{\xpos}{\val * \xscale}
+    \draw[line width=0.4pt, black!30] (\xpos, -0.5) -- (\xpos, -0.65);
+    \node[font=\scriptsize, text=black!50, anchor=north] at (\xpos, -0.7) {\val};
+}
+% X axis label
+\node[font=\scriptsize, text=black!60, anchor=north] at ({\xscale/2}, -1.05) {AUPRC};
+
+% Vertical grid lines
+\foreach \val in {0.2, 0.4, 0.6, 0.8} {
+    \pgfmathsetmacro{\xpos}{\val * \xscale}
+    \draw[line width=0.3pt, black!8] (\xpos, -0.5) -- (\xpos, 3.85);
+}
+
+% Reference line at Full model Event AUPRC (0.7586)
+\pgfmathsetmacro{\refx}{0.7586 * \xscale}
+\draw[line width=0.7pt, dashed, fullcolor!50] (\refx, -0.5) -- (\refx, 3.85);
+
+% ============================================================
+% Bars — Full Model (highlighted)
+% ============================================================
+% Event AUPRC bar
+\pgfmathsetmacro{\evtw}{0.7586 * \xscale}
+\fill[fullcolor!70, rounded corners=1.5pt] 
+    (0, {\yA + \gapbetween/2}) rectangle (\evtw, {\yA + \gapbetween/2 + \barheight});
+\node[font=\tiny\bfseries, text=white, anchor=east] 
+    at ({\evtw - 0.08}, {\yA + \gapbetween/2 + \barheight/2}) {0.759};
+
+% Node AUPRC bar
+\pgfmathsetmacro{\nodew}{0.8939 * \xscale}
+\fill[fullcolor!45, rounded corners=1.5pt] 
+    (0, {\yA - \gapbetween/2 - \barheight}) rectangle (\nodew, {\yA - \gapbetween/2});
+\node[font=\tiny\bfseries, text=white, anchor=east] 
+    at ({\nodew - 0.08}, {\yA - \gapbetween/2 - \barheight/2}) {0.894};
+
+% Label
+\node[font=\scriptsize\bfseries, text=fullcolor!80, anchor=east] 
+    at (\labeloffset, \yA) {Full Model};
+
+% ============================================================
+% Bars — no_cross_entity
+% ============================================================
+\pgfmathsetmacro{\evtw}{0.6968 * \xscale}
+\fill[evtcolor!65, rounded corners=1.5pt] 
+    (0, {\yB + \gapbetween/2}) rectangle (\evtw, {\yB + \gapbetween/2 + \barheight});
+\node[font=\tiny, text=white, anchor=east] 
+    at ({\evtw - 0.08}, {\yB + \gapbetween/2 + \barheight/2}) {0.697};
+
+\pgfmathsetmacro{\nodew}{0.8592 * \xscale}
+\fill[nodecolor!40, rounded corners=1.5pt] 
+    (0, {\yB - \gapbetween/2 - \barheight}) rectangle (\nodew, {\yB - \gapbetween/2});
+\node[font=\tiny, text=white, anchor=east] 
+    at ({\nodew - 0.08}, {\yB - \gapbetween/2 - \barheight/2}) {0.859};
+
+\node[font=\scriptsize, text=black!70, anchor=east] 
+    at (\labeloffset, \yB) {\texttt{no\_cross\_entity}};
+\node[font=\scriptsize\bfseries, text=deltacolor!80, anchor=west] 
+    at ({\xscale + 0.15}, \yB) {$-$8.1\%};
+
+% ============================================================
+% Bars — no_state
+% ============================================================
+\pgfmathsetmacro{\evtw}{0.7234 * \xscale}
+\fill[evtcolor!65, rounded corners=1.5pt] 
+    (0, {\yC + \gapbetween/2}) rectangle (\evtw, {\yC + \gapbetween/2 + \barheight});
+\node[font=\tiny, text=white, anchor=east] 
+    at ({\evtw - 0.08}, {\yC + \gapbetween/2 + \barheight/2}) {0.723};
+
+\pgfmathsetmacro{\nodew}{0.8366 * \xscale}
+\fill[nodecolor!40, rounded corners=1.5pt] 
+    (0, {\yC - \gapbetween/2 - \barheight}) rectangle (\nodew, {\yC - \gapbetween/2});
+\node[font=\tiny, text=white, anchor=east] 
+    at ({\nodew - 0.08}, {\yC - \gapbetween/2 - \barheight/2}) {0.837};
+
+\node[font=\scriptsize, text=black!70, anchor=east] 
+    at (\labeloffset, \yC) {\texttt{no\_state}};
+\node[font=\scriptsize\bfseries, text=deltacolor!80, anchor=west] 
+    at ({\xscale + 0.15}, \yC) {$-$4.6\%};
+
+% ============================================================
+% Bars — no_process_identity (dramatic drop)
+% ============================================================
+\pgfmathsetmacro{\evtw}{0.3407 * \xscale}
+\fill[evtcolor!65, rounded corners=1.5pt] 
+    (0, {\yD + \gapbetween/2}) rectangle (\evtw, {\yD + \gapbetween/2 + \barheight});
+\node[font=\tiny, text=evtcolor!90, anchor=west] 
+    at ({\evtw + 0.08}, {\yD + \gapbetween/2 + \barheight/2}) {0.341};
+
+\pgfmathsetmacro{\nodew}{0.3466 * \xscale}
+\fill[nodecolor!40, rounded corners=1.5pt] 
+    (0, {\yD - \gapbetween/2 - \barheight}) rectangle (\nodew, {\yD - \gapbetween/2});
+\node[font=\tiny, text=nodecolor!70, anchor=west] 
+    at ({\nodew + 0.08}, {\yD - \gapbetween/2 - \barheight/2}) {0.347};
+
+\node[font=\scriptsize, text=black!70, anchor=east] 
+    at (\labeloffset, \yD) {\texttt{no\_process}};
+\node[font=\scriptsize\bfseries, text=deltacolor, anchor=west] 
+    at ({\xscale + 0.15}, \yD) {$-$55.1\%};
+
+% ============================================================
+% Bars — no_state + no_process (near-random)
+% ============================================================
+\pgfmathsetmacro{\evtw}{0.1981 * \xscale}
+\fill[evtcolor!65, rounded corners=1.5pt] 
+    (0, {\yE + \gapbetween/2}) rectangle (\evtw, {\yE + \gapbetween/2 + \barheight});
+\node[font=\tiny, text=evtcolor!90, anchor=west] 
+    at ({\evtw + 0.08}, {\yE + \gapbetween/2 + \barheight/2}) {0.198};
+
+\pgfmathsetmacro{\nodew}{0.2887 * \xscale}
+\fill[nodecolor!40, rounded corners=1.5pt] 
+    (0, {\yE - \gapbetween/2 - \barheight}) rectangle (\nodew, {\yE - \gapbetween/2});
+\node[font=\tiny, text=nodecolor!70, anchor=west] 
+    at ({\nodew + 0.08}, {\yE - \gapbetween/2 - \barheight/2}) {0.289};
+
+\node[font=\scriptsize, text=black!70, anchor=east] 
+    at (\labeloffset, \yE) {\texttt{no\_state + no\_proc}};
+\node[font=\scriptsize\bfseries, text=deltacolor, anchor=west] 
+    at ({\xscale + 0.15}, \yE) {$-$73.9\%};
+
+% "Near random" annotation
+\draw[line width=0.5pt, deltacolor!50, -{Stealth[length=3pt]}] 
+    ({\evtw + 0.5}, {\yE + \gapbetween/2 + \barheight + 0.15}) -- ({\evtw + 0.08}, {\yE + \gapbetween/2 + \barheight + 0.02});
+\node[font=\tiny\itshape, text=deltacolor!70, anchor=south west] 
+    at ({\evtw + 0.5}, {\yE + \gapbetween/2 + \barheight + 0.1}) {near-random};
+
+% ============================================================
+% Separators between groups
+% ============================================================
+\foreach \y in {3.02, 2.17, 1.32, 0.47} {
+    \draw[line width=0.3pt, black!10] (\labeloffset, \y) -- ({\xscale + 1.0}, \y);
+}
+
+% ============================================================
+% Legend
+% ============================================================
+\fill[evtcolor!65, rounded corners=1pt] (2.5, 4.25) rectangle (3.1, 4.45);
+\node[font=\scriptsize, text=black!70, anchor=west] at (3.2, 4.35) {Event AUPRC};
+
+\fill[nodecolor!40, rounded corners=1pt] (5.8, 4.25) rectangle (6.4, 4.45);
+\node[font=\scriptsize, text=black!70, anchor=west] at (6.5, 4.35) {Node AUPRC};
+
+% Delta column header
+\node[font=\scriptsize\bfseries, text=deltacolor!60, anchor=west] 
+    at ({\xscale + 0.15}, 3.9) {$\Delta$};
+
+\end{tikzpicture}%
+}
+\caption{Component ablation on the cross-campaign split with the crossprocess label. The dashed line marks the full model's event AUPRC (0.76). Process identity is the dominant contributor ($-55\%$); removing both state and process identity collapses detection to near-random (0.20).}
+\label{fig:ablation}
+\end{figure}
