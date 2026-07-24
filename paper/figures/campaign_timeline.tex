@@ -157,98 +157,80 @@
 \node[timelabel, anchor=north] at ({\xstart + 9 * \shardw}, {\cy - 0.6}) {Apr 13};
 
 % ============================================================
-% TRACE DATASET (bottom row)  
+% TRACE DATASET (bottom row) — 20 shards (baseline-compatible window)
 % ============================================================
-\def\tcy{0.9}
+\def\tcy{0}   % Y position
+\def\trw{0.62}  % Width per shard (slightly wider since only 20 shards)
 
+% Dataset label
 \node[dslabel] at (\labx, \tcy) {TRACE};
-\node[font=\tiny\itshape, text=black!40, anchor=east] at (\labx, {\tcy - 0.45}) {211 shards};
-\node[font=\tiny\itshape, text=black!40, anchor=east] at (\labx, {\tcy - 0.7}) {835M events};
+\node[font=\tiny\itshape, text=black!40, anchor=east] at (\labx, {\tcy - 0.45}) {20 shards};
+\node[font=\tiny\itshape, text=black!40, anchor=east] at (\labx, {\tcy - 0.7}) {74M events};
 
-% TRACE is too large to show all 211 shards individually.
-% Show a compressed timeline with selected shard markers.
-\def\tracew{12.48}  % Total width for TRACE timeline (same as 24 Theia shards)
-\def\tracestart{\xstart}
-
-% Background bar showing full extent
-\fill[black!4, rounded corners=2pt] 
-    ({\tracestart - 0.26}, {\tcy - 0.275}) rectangle ({\tracestart + \tracew + 0.26}, {\tcy + 0.275});
-\draw[black!15, line width=0.3pt, rounded corners=2pt] 
-    ({\tracestart - 0.26}, {\tcy - 0.275}) rectangle ({\tracestart + \tracew + 0.26}, {\tcy + 0.275});
-
-% Train region (shards 0-99, roughly first 47% of timeline)
-\pgfmathsetmacro{\trainend}{99/210 * \tracew}
-\fill[blue!20, rounded corners=1pt] 
-    ({\tracestart}, {\tcy - 0.24}) rectangle ({\tracestart + \trainend}, {\tcy + 0.24});
-
-% Val region (shards 105-116, roughly 50-55%)
-\pgfmathsetmacro{\valstart}{105/210 * \tracew}
-\pgfmathsetmacro{\valend}{116/210 * \tracew}
-\fill[orange!25, rounded corners=1pt] 
-    ({\tracestart + \valstart}, {\tcy - 0.24}) rectangle ({\tracestart + \valend}, {\tcy + 0.24});
-
-% Test region (shards 121-210, roughly 58-100%)
-\pgfmathsetmacro{\teststart}{121/210 * \tracew}
-\fill[red!20, rounded corners=1pt] 
-    ({\tracestart + \teststart}, {\tcy - 0.24}) rectangle ({\tracestart + \tracew}, {\tcy + 0.24});
-
-% Selected shard markers (dots for the 50 selected shards)
-% Train shards (blue dots)
-\foreach \s in {0, 3, 6, 8, 9, 10, 11, 12, 13, 18, 29, 35, 48, 49, 52, 55, 56, 60, 62, 69, 77, 84, 91, 95, 99} {
-    \pgfmathsetmacro{\xpos}{\tracestart + \s/210 * \tracew}
-    \fill[blue!60] (\xpos, {\tcy + 0.08}) circle (1.2pt);
-}
-% Val shards (orange dots)
-\foreach \s in {105, 107, 112, 113, 114, 115, 116} {
-    \pgfmathsetmacro{\xpos}{\tracestart + \s/210 * \tracew}
-    \fill[orange!70] (\xpos, {\tcy + 0.08}) circle (1.2pt);
-}
-% Test shards (red dots)
-\foreach \s in {121, 122, 123, 124, 125, 126, 136, 137, 139, 154, 160, 170, 180, 190, 200, 204, 207, 210} {
-    \pgfmathsetmacro{\xpos}{\tracestart + \s/210 * \tracew}
-    \fill[red!60] (\xpos, {\tcy + 0.08}) circle (1.2pt);
+% Train shards 0-10
+\foreach \i in {0,...,10} {
+    \pgfmathsetmacro{\xpos}{\xstart + \i * \trw}
+    \node[trainshard, minimum width={\trw cm}] at (\xpos, \tcy) {};
 }
 
-% Shard number markers
-\foreach \s/\lab in {0/0, 50/50, 100/100, 150/150, 210/210} {
-    \pgfmathsetmacro{\xpos}{\tracestart + \s/210 * \tracew}
-    \node[shardnum, anchor=north] at (\xpos, {\tcy - 0.35}) {\lab};
+% Val shards 11-13
+\foreach \i in {11, 12, 13} {
+    \pgfmathsetmacro{\xpos}{\xstart + \i * \trw}
+    \node[valshard, minimum width={\trw cm}] at (\xpos, \tcy) {};
 }
 
-% Anomalous label region annotation
-\pgfmathsetmacro{\anomstart}{154/210 * \tracew}
-\pgfmathsetmacro{\anomend}{203/210 * \tracew}
-\draw[line width=0.5pt, red!30, dashed] 
-    ({\tracestart + \anomstart}, {\tcy - 0.24}) -- ({\tracestart + \anomstart}, {\tcy - 0.55});
-\draw[line width=0.5pt, red!30, dashed] 
-    ({\tracestart + \anomend}, {\tcy - 0.24}) -- ({\tracestart + \anomend}, {\tcy - 0.55});
-\draw[{Stealth[length=2pt]}-{Stealth[length=2pt]}, line width=0.4pt, red!30]
-    ({\tracestart + \anomstart}, {\tcy - 0.5}) -- ({\tracestart + \anomend}, {\tcy - 0.5});
-\node[font=\tiny\itshape, text=red!40, anchor=north] 
-    at ({\tracestart + (\anomstart + \anomend)/2}, {\tcy - 0.55}) {high attack density};
+% Test shards 14-19
+\foreach \i in {14,...,19} {
+    \pgfmathsetmacro{\xpos}{\xstart + \i * \trw}
+    \node[testshard, minimum width={\trw cm}] at (\xpos, \tcy) {};
+}
 
-% 50-shard annotation
+% Shard numbers (every 5 + endpoints)
+\foreach \s in {0, 5, 10, 15, 19} {
+    \pgfmathsetmacro{\xpos}{\xstart + \s * \trw}
+    \node[shardnum, anchor=north] at (\xpos, {\tcy - 0.35}) {\s};
+}
+
+% Attack event bars (shards 8-13 have crossprocess+ attacks, shard 18 has residual)
+\foreach \i in {8,...,13} {
+    \pgfmathsetmacro{\xpos}{\xstart + \i * \trw}
+    \node[attackbar, minimum width={\trw cm}] at (\xpos, {\tcy - 0.28}) {};
+}
+% Shard 18 residual attack
+\pgfmathsetmacro{\xpos}{\xstart + 18 * \trw}
+\node[attackbar, minimum width={\trw cm}] at (\xpos, {\tcy - 0.28}) {};
+
+% Split labels
+\pgfmathsetmacro{\trainmid}{\xstart + 5 * \trw}
+\pgfmathsetmacro{\valmid}{\xstart + 12 * \trw}
+\pgfmathsetmacro{\testmid}{\xstart + 16.5 * \trw}
+\node[splitlabel=blue] at (\trainmid, {\tcy + 0.5}) {train (0--10)};
+\node[splitlabel=orange] at (\valmid, {\tcy + 0.5}) {val};
+\node[splitlabel=red] at (\testmid, {\tcy + 0.5}) {test (14--19)};
+
+% Campaign annotation (single engagement window)
+\pgfmathsetmacro{\tcend}{\xstart + 19 * \trw}
+\draw[decorate, decoration={brace, amplitude=3pt, mirror}, line width=0.4pt, black!30]
+    ({\xstart - 0.26}, {\tcy - 0.55}) -- ({\tcend + 0.26}, {\tcy - 0.55});
 \node[font=\tiny\itshape, text=black!40, anchor=north] 
-    at ({\tracestart + \tracew/2}, {\tcy - 0.8}) {50 selected shards (dots) from 211 total};
-
-\node[splitlabel=black, anchor=west] at ({\tracestart + \tracew + 0.55}, \tcy) 
-    {cross split};
+    at ({(\xstart + \tcend)/2}, {\tcy - 0.7}) {Baseline-compatible window (shards 0--19 of 211)};
 
 % Date labels
-\node[timelabel, anchor=north] at ({\tracestart}, {\tcy - 0.6}) {Apr 2};
-\node[timelabel, anchor=north] at ({\tracestart + \tracew}, {\tcy - 0.6}) {Apr 13};
+\node[timelabel, anchor=north] at (\xstart, {\tcy - 0.4}) {Apr 2};
+\pgfmathsetmacro{\xend}{\xstart + 19 * \trw}
+\node[timelabel, anchor=north] at (\xend, {\tcy - 0.4}) {Apr 4};
 
 % ============================================================
 % Attack events legend (small red bars)
 % ============================================================
-\node[attackbar, minimum width=0.3cm] at ({\xstart + 20 * \shardw}, {\cy - 0.65}) {};
-\node[font=\tiny, text=red!60, anchor=west] at ({\xstart + 20 * \shardw + 0.25}, {\cy - 0.65}) 
+\node[attackbar, minimum width=0.3cm] at ({20 * \shardw}, {\cy - 0.65}) {};
+\node[font=\tiny, text=red!60, anchor=west] at ({20 * \shardw + 0.25}, {\cy - 0.65}) 
     {Attack events present};
 
 % ============================================================
 % Legend (bottom)
 % ============================================================
-\def\legy{-0.5}
+\def\legy{-1.5}
 \node[trainshard, minimum width=0.5cm, minimum height=0.35cm] at (2.0, \legy) {};
 \node[font=\scriptsize, text=black!60, anchor=west] at (2.35, \legy) {Train};
 
@@ -263,6 +245,6 @@
 
 \end{tikzpicture}%
 }
-\caption{Chronological shard structure and cross-campaign evaluation splits. Each rectangle represents one data shard. \textbf{Theia} (top): the model trains on Campaign~1 (shards 0--8) and is tested entirely on the unseen Campaign~2 (shards 12--24), separated by a 92-hour gap. \textbf{CADETS} (middle): 10 shards with attacks concentrated in later shards. \textbf{TRACE} (bottom): 50 strategically selected shards from 211 total ($\sim$200M of 835M events); dots mark selected shards. Small red bars indicate shards containing attack events. All splits are strictly chronological to prevent temporal data leakage.}
+\caption{Chronological shard structure and evaluation splits. Each rectangle represents one data shard. \textbf{Theia} (top): the model trains on Campaign~1 (shards 0--8) and is tested entirely on the unseen Campaign~2 (shards 12--24), separated by a 92-hour gap. \textbf{CADETS} (middle): 10 shards with attacks concentrated in later shards. \textbf{TRACE} (bottom): following prior work, we use the first 20 of 211 total shards ($\sim$74M events); the first attack wave begins at shard~8. Small red bars indicate shards containing crossprocess attack events. All splits are strictly chronological to prevent temporal data leakage.}
 \label{fig:timeline}
 \end{figure*}

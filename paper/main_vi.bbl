@@ -1,0 +1,72 @@
+\begin{thebibliography}{10}
+
+\bibitem{arp2022dos}
+Daniel Arp, Erwin Quiring, Feargus Pendlebury, Alexander Warnecke, Fabio
+  Pierazzi, Christian Wressnegger, Lorenzo Cavallaro, and Konrad Rieck.
+\newblock Dos and don'ts of machine learning in computer security.
+\newblock In {\em 31st USENIX Security Symposium (USENIX Security 22)}, pages
+  3971--3988, 2022.
+
+\bibitem{chen2025loha}
+Guanwen Chen, Lizhao Wu, Hui Lin, and Zhaobin Zhou.
+\newblock {LOHA}: Hypergraph masked autoencoder for advanced persistent threat
+  detection.
+\newblock In {\em 2025 IEEE International Conference on High Performance
+  Computing and Communications (HPCC)}. IEEE, 2025.
+
+\bibitem{cheng2024kairos}
+Zijun Cheng, Qiujian Lv, Jinyuan Liang, Yang Wang, Degang Sun, Thomas Pasquier,
+  and Xueyuan Han.
+\newblock Kairos: Practical intrusion detection and investigation using
+  whole-system provenance.
+\newblock In {\em 2024 IEEE Symposium on Security and Privacy (SP)}, pages
+  3533--3551, 2024.
+
+\bibitem{ding-etal-2020-less}
+Kaize Ding, Jianling Wang, Jundong Li, Dingcheng Li, and Huan Liu.
+\newblock Be more with less: Hypergraph attention networks for inductive text
+  classification.
+\newblock In {\em Proceedings of the 2020 Conference on Empirical Methods in
+  Natural Language Processing (EMNLP)}, pages 4927--4936. Association for
+  Computational Linguistics, 2020.
+
+\bibitem{gu2024mamba}
+Albert Gu and Tri Dao.
+\newblock Mamba: Linear-time sequence modeling with selective state spaces.
+\newblock In {\em First Conference on Language Modeling}, 2024.
+
+\bibitem{gu2022efficiently}
+Albert Gu, Karan Goel, and Christopher R{\'e}.
+\newblock Efficiently modeling long sequences with structured state spaces.
+\newblock In {\em The Tenth International Conference on Learning
+  Representations}, 2022.
+
+\bibitem{jia2024magic}
+Zian Jia, Yun Xiong, Yuhong Nan, Yao Zhang, Jinjing Zhao, and Mi~Wen.
+\newblock {MAGIC}: Detecting advanced persistent threats via masked graph
+  representation learning.
+\newblock In {\em 33rd USENIX Security Symposium (USENIX Security 24)}, pages
+  5197--5214, 2024.
+
+\bibitem{rehman2024flash}
+Mati~Ur Rehman, Hadi Ahmadi, and Wajih~Ul Hassan.
+\newblock Flash: A comprehensive approach to intrusion detection via provenance
+  graph representation learning.
+\newblock In {\em 45th IEEE Symposium on Security and Privacy (SP)}, pages
+  3552--3570. IEEE, 2024.
+
+\bibitem{Wang2021THREATRACEDA}
+Su~Wang, Zhiliang Wang, Tao Zhou, Hongbin Sun, Xia Yin, Dongqi Han, Han Zhang,
+  Xingang Shi, and Jiahai Yang.
+\newblock Threatrace: Detecting and tracing host-based threats in node level
+  through provenance graph learning.
+\newblock {\em IEEE Transactions on Information Forensics and Security},
+  17:3972--3987, 2022.
+
+\bibitem{yang2024hrnn}
+Zhe Yang, Zitong Ma, Wenbo Zhao, Lingzhi Li, and Fei Gu.
+\newblock {HRNN}: Hypergraph recurrent neural network for network intrusion
+  detection.
+\newblock {\em Journal of Grid Computing}, 22(2):52, 2024.
+
+\end{thebibliography}

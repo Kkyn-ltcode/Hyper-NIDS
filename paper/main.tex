@@ -380,7 +380,7 @@ All unique entity UUIDs across all shards are collected (excluding the CDM null 
     \item \textbf{Mixed-campaign (\texttt{full}):} Both campaigns are present in the training set. We assign shards $\{0..7, 12..19\}$ to training, shards $\{8, 9, 20, 21\}$ to validation, and shards $\{10, 22..24\}$ to testing. This matches the standard evaluation protocol of our baselines.
     \item \textbf{Cross-campaign (\texttt{cross}):} Tests generalization to entirely unseen attack strategies. The model is trained exclusively on Campaign 1 (train shards $\{0..8\}$, validation shards $\{9, 10\}$) and tested exclusively on Campaign 2 (test shards $\{12..24\}$).
 \end{itemize}
-For CADETS, we use the cross-campaign split: shards 0--5 for training, shards 6--7 for validation, and shards 8--9 for testing, under the broad attack label. Figure~\ref{fig:timeline} visualizes the shard structure and split boundaries for all datasets.
+For CADETS, we use the cross-campaign split: shards 0--5 for training, shards 6--7 for validation, and shards 8--9 for testing, under the broad attack label. For TRACE, following prior work~\cite{cheng2024kairos,jia2024magic}, we restrict to the first 20 of 211 total shards ($\sim$74M events), which covers the initial engagement window (April~2--4, 2018). We assign shards 0--10 (clean baseline and first attack wave) to training, shards 11--13 to validation, and shards 14--19 (post-attack aftermath) to testing. Figure~\ref{fig:timeline} visualizes the shard structure and split boundaries for all datasets.
 
 \input{figures/campaign_timeline}
 

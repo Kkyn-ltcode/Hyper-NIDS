@@ -37,45 +37,41 @@ DATASET_CONFIG = {
         "splits": {
             # Quick iteration split. TRACE has 211 shards total.
             "small": {"train": list(range(8)), "val": [8, 9], "test": [10, 11, 12, 13]},
-            # Memory-bounded split for machines that can't load the full 211
-            # shards (~835M events) at once, and that also sidesteps a labeling
-            # anomaly: shards 154-203 are ~99% labeled crossprocess+ (vs. a
-            # normal <0.5% elsewhere), which looks like a taint-propagation
-            # bug rather than real ground truth. "full"'s val/test ranges
-            # (150-180, 180-211) are 84-89% inside that block, which is
-            # probably not what you want to evaluate against.
-            # Train: shards 0-59, the earliest ~222M clean events (Apr 2-6).
-            # Val:   shards 60-69, ~34M clean events immediately after train.
-            # Test:  shards 204-210, ~22M clean events — the tail *after*
-            #        the anomalous block, still chronologically post-Apr-10.
-            # ~278M events total, ~26 GB in ChronoDataset's numeric fields
-            # after the event_uuids/raw_nanos fix — should fit machines with
-            # roughly 64GB+ free RAM. Scale the ranges up/down from there.
-            "partial": {"train": list(range(60)), "val": list(range(60, 70)), "test": list(range(204, 211))},
-            
-            # Focused cross-campaign split: 50 strategically selected shards (~200M events).
-            # Covers full temporal range (April 2-13) with entity re-indexing.
-            # Train: 25 shards spanning April 2-9 (clean baseline + 4 attack waves)
-            # Val:    7 shards at April 9-10 boundary (transition period)
-            # Test:  18 shards April 10-13 (onset → peak narrow+ → late recovery)
+
+            # ──────────────────────────────────────────────────────────────
+            # IMPORTANT: TRACE shards are NOT strictly chronological!
+            # Shard 16 starts at 15:30 but shard 15 ends at 20:09;
+            # shard 34 jumps back to 14:46, shard 55 to 14:27, etc.
+            # Processing out-of-order shards corrupts dt = t_curr - last_seen
+            # for the SSM state updates, producing cascading NaN under AMP.
+            #
+            # The splits below restrict to the first 20 shards (0-19),
+            # which is the same evaluation window that KAIROS, MAGIC, FLASH,
+            # and ThreaTrace use. This gives ~74M events, avoids temporal
+            # overlap issues, and enables direct comparison with baselines.
+            # ──────────────────────────────────────────────────────────────
+
+            # Supervised cross-campaign split on the baseline-compatible window.
+            # Shards 0-7 are clean (no attacks), 8-13 are first attack wave
+            # (~6K xproc+ each), 14-19 are mostly clean aftermath.
+            # Train includes the clean baseline AND the first attack wave so
+            # the supervised model sees positive examples.
+            # Test: aftermath + any residual attacks (shard 18 has 1.5K xproc+).
+            #
+            # | Split  | Shards | Events  | xproc+  |
+            # |--------|--------|---------|---------|
+            # | train  |  0-10  |  39.6M  | 17,742  |
+            # | val    | 11-13  |  10.3M  | 18,388  |
+            # | test   | 14-19  |  21.0M  |  1,496  |
             "cross": {
-                "train": [0, 3, 6, 8, 9, 10, 11, 12, 13, 18, 29, 35,
-                          48, 49, 52, 55, 56, 60, 62, 69, 77, 84, 91, 95, 99],
-                "val":   [105, 107, 112, 113, 114, 115, 116],
-                "test":  [121, 122, 123, 124, 125, 126, 136, 137, 139,
-                          154, 160, 170, 180, 190, 200, 204, 207, 210],
+                "train": list(range(0, 11)),   # shards 0-10: clean + first attack wave
+                "val":   [11, 12, 13],          # shards 11-13: continued attack wave
+                "test":  list(range(14, 20)),   # shards 14-19: aftermath (shard 18 has residual)
             },
-            
-            # Compact cross-campaign split: 22 strategically selected shards (~45M events).
-            # Halves loading/training time while still fully covering all phases, campaigns,
-            # and the anomalous high attack density region.
-            "cross_compact": {
-                "train": [0, 6, 9, 12, 18, 35, 52, 69, 84, 99],
-                "val":   [105, 112, 115],
-                "test":  [121, 124, 126, 137, 154, 170, 190, 204, 210],
-            },
-            
-            # KAIROS/baseline-compatible split (pre-attack train, early attack test)
+
+            # KAIROS/baseline-compatible split (unsupervised-friendly:
+            # pre-attack train, early attack test). For supervised models,
+            # prefer "cross" above since train has 0 positive examples here.
             "kairos": {"train": list(range(0, 8)), "val": [8, 9, 10],
                        "test": list(range(11, 20))},
         },

@@ -70,6 +70,7 @@
 \@writefile{toc}{\contentsline {subsection}{\numberline {4.7}Training: TBPTT and Continuous Warm-Start}{8}{subsection.4.7}\protected@file@percent }
 \newlabel{sec:training}{{4.7}{8}{Training: TBPTT and Continuous Warm-Start}{subsection.4.7}{}}
 \citation{arp2022dos}
+\citation{cheng2024kairos,jia2024magic}
 \@writefile{toc}{\contentsline {section}{\numberline {5}Evaluation}{9}{section.5}\protected@file@percent }
 \newlabel{sec:evaluation}{{5}{9}{Evaluation}{section.5}{}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Experimental Setup}{9}{subsection.5.1}\protected@file@percent }
@@ -86,8 +87,8 @@
 \citation{Wang2021THREATRACEDA}
 \@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Main Results (C4)}{10}{subsection.5.2}\protected@file@percent }
 \newlabel{sec:main_results}{{5.2}{10}{Main Results (C4)}{subsection.5.2}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Chronological shard structure and cross-campaign evaluation splits. Each rectangle represents one data shard. \textbf  {Theia} (top): the model trains on Campaign~1 (shards 0--8) and is tested entirely on the unseen Campaign~2 (shards 12--24), separated by a 92-hour gap. \textbf  {CADETS} (middle): 10 shards with attacks concentrated in later shards. \textbf  {TRACE} (bottom): 50 strategically selected shards from 211 total ($\sim $200M of 835M events); dots mark selected shards. Small red bars indicate shards containing attack events. All splits are strictly chronological to prevent temporal data leakage.}}{11}{figure.3}\protected@file@percent }
-\newlabel{fig:timeline}{{3}{11}{Chronological shard structure and cross-campaign evaluation splits. Each rectangle represents one data shard. \textbf {Theia} (top): the model trains on Campaign~1 (shards 0--8) and is tested entirely on the unseen Campaign~2 (shards 12--24), separated by a 92-hour gap. \textbf {CADETS} (middle): 10 shards with attacks concentrated in later shards. \textbf {TRACE} (bottom): 50 strategically selected shards from 211 total ($\sim $200M of 835M events); dots mark selected shards. Small red bars indicate shards containing attack events. All splits are strictly chronological to prevent temporal data leakage}{figure.3}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Chronological shard structure and evaluation splits. Each rectangle represents one data shard. \textbf  {Theia} (top): the model trains on Campaign~1 (shards 0--8) and is tested entirely on the unseen Campaign~2 (shards 12--24), separated by a 92-hour gap. \textbf  {CADETS} (middle): 10 shards with attacks concentrated in later shards. \textbf  {TRACE} (bottom): following prior work, we use the first 20 of 211 total shards ($\sim $74M events); the first attack wave begins at shard~8. Small red bars indicate shards containing crossprocess attack events. All splits are strictly chronological to prevent temporal data leakage.}}{11}{figure.3}\protected@file@percent }
+\newlabel{fig:timeline}{{3}{11}{Chronological shard structure and evaluation splits. Each rectangle represents one data shard. \textbf {Theia} (top): the model trains on Campaign~1 (shards 0--8) and is tested entirely on the unseen Campaign~2 (shards 12--24), separated by a 92-hour gap. \textbf {CADETS} (middle): 10 shards with attacks concentrated in later shards. \textbf {TRACE} (bottom): following prior work, we use the first 20 of 211 total shards ($\sim $74M events); the first attack wave begins at shard~8. Small red bars indicate shards containing crossprocess attack events. All splits are strictly chronological to prevent temporal data leakage}{figure.3}{}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Ablation Study: Component Contributions}{11}{subsection.5.3}\protected@file@percent }
 \newlabel{sec:ablation}{{5.3}{11}{Ablation Study: Component Contributions}{subsection.5.3}{}}
 \@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Detection Performance on DARPA TC E3. Baselines use the broad attack label (all attack nodes); HyperMamba crossprocess rows use the strictly harder crossprocess+ label (excluding entry-point processes). The KAIROS-protocol and CADETS rows use the broad label for direct comparison. The KAIROS-protocol row's 0.9987 node AUPRC reflects the broad label's 32\% positive rate, which includes anomalous entry-point behavior that is comparatively easy to detect; the crossprocess rows use $<1\%$ positive rate.}}{12}{table.1}\protected@file@percent }
@@ -118,8 +119,6 @@
 \newlabel{tab:positioning}{{4}{14}{Positioning of HyperMamba against provenance-based NIDS on three axes}{table.4}{}}
 \@writefile{toc}{\contentsline {section}{\numberline {7}Related Work}{14}{section.7}\protected@file@percent }
 \newlabel{sec:related_work}{{7}{14}{Related Work}{section.7}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {8}Conclusion}{14}{section.8}\protected@file@percent }
-\newlabel{sec:conclusion}{{8}{14}{Conclusion}{section.8}{}}
 \bibstyle{plain}
 \bibdata{refs}
 \bibcite{arp2022dos}{1}
@@ -131,5 +130,7 @@
 \bibcite{jia2024magic}{7}
 \bibcite{rehman2024flash}{8}
 \bibcite{Wang2021THREATRACEDA}{9}
+\@writefile{toc}{\contentsline {section}{\numberline {8}Conclusion}{15}{section.8}\protected@file@percent }
+\newlabel{sec:conclusion}{{8}{15}{Conclusion}{section.8}{}}
 \bibcite{yang2024hrnn}{10}
-\gdef \@abspage@last{15}
+\gdef \@abspage@last{16}

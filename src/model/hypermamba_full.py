@@ -40,8 +40,14 @@ class EntityStateBank(nn.Module):
         propagation (0.95^8 = 0.66 signal loss over the 8-chunk attack gap).
         """
         self.states = self.states.detach()
-        # Clean any NaN that slipped through — prevents cascade across chunks
-        self.states = torch.nan_to_num(self.states, nan=0.0)
+        # Clean NaN/Inf and clamp magnitude — hub entities (pid 1, shell) can
+        # be updated hundreds of thousands of times, causing state magnitude to
+        # grow unboundedly.  Under AMP (float16, max ~65504), the subsequent
+        # k_proj/v_proj/q_proj linear layers amplify these values, overflowing
+        # to inf and producing NaN in softmax/loss.  Clamping to [-10, 10]
+        # keeps states within a safe dynamic range while preserving direction.
+        self.states = torch.nan_to_num(self.states, nan=0.0, posinf=0.0, neginf=0.0)
+        self.states.clamp_(-10.0, 10.0)
         self.last_seen_time = self.last_seen_time.detach()
 
 
@@ -359,9 +365,11 @@ class HyperMambaFull(nn.Module):
         valid_st = flat_new_states[flat_valid]
         
         # MUST detach before saving to bank to truncate BPTT at chunk boundary!
-        # Guard against NaN before scatter — once NaN enters the bank, it cascades
-        # to every future chunk that reads from the corrupted entity.
-        valid_st_safe = torch.nan_to_num(valid_st.detach(), nan=0.0, posinf=1.0, neginf=-1.0).cpu()
+        # Guard against NaN/Inf before scatter — once NaN enters the bank, it
+        # cascades to every future chunk that reads from the corrupted entity.
+        # Also clamp magnitude to prevent unbounded state growth in hub entities.
+        valid_st_safe = torch.nan_to_num(valid_st.detach(), nan=0.0, posinf=0.0, neginf=0.0)
+        valid_st_safe = valid_st_safe.clamp(-10.0, 10.0).cpu()
         self.bank.states.scatter_(0, valid_ids.unsqueeze(1).expand(-1, self.d_model), valid_st_safe)
         self.bank.last_seen_time.scatter_(0, valid_ids, t_curr.reshape(-1)[flat_valid].cpu())
         
